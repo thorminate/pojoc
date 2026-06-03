@@ -1,0 +1,14 @@
+[package]
+name = "pojoc-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "pojoc"
+path = "src/main.rs"
+
+[dependencies]
+pojoc-compiler = { path = "../compiler" }
+pojoc-runtime  = { path = "../runtime" }
+pojoc-schema   = { path = "../schema" }
+pojoc-core     = { path = "../core" }

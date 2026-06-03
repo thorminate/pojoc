@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cli",
+    "crates/compiler",
+    "crates/runtime",
+    "crates/schema",
+    "crates/core",
+]

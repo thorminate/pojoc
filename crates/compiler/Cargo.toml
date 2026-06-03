@@ -1,0 +1,8 @@
+[package]
+name = "pojoc-compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pojoc-schema = { path = "../schema" }
+pojoc-core   = { path = "../core" }
