@@ -1,0 +1,49 @@
+﻿schema Player {
+
+  version 1 {
+    fields {
+      id: float = 0.0
+      name: string = "Player"
+      level: int = 0
+      inventory: [string] = []
+    }
+  }
+
+  version 2 {
+    type Vector3 {
+      x: float
+      y: float
+      z: float
+    }
+
+    diff {
+      + position: Vector3
+      ~ level: float
+    }
+  }
+ //comments work too!
+  version 3 {
+    type Vector3 extends Vector3 {
+      + w: float = 1.0
+    }
+
+    diff {
+      ~ id -> player_id: f64
+      ~ position: Vector3
+      - name
+      + tags: [string] = []
+    }
+  }
+
+  version 4 {
+    diff {
+      + is_nauseous: bool = false
+    }
+  }
+
+  version 5 {
+    diff {
+      + is_dead: boolean = false
+    }
+  }
+}

@@ -1,0 +1,12 @@
+﻿schema Edge {
+  version 1 {
+    fields {
+      empty_str: string = ""
+      empty_arr: [string] = []
+      large_int: i64 = 0
+      min_float: f32 = 0.0
+      nan_float: f32 = 0.0
+      inf_float: f32 = 0.0
+    }
+  }
+}

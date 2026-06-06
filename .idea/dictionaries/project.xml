@@ -1,9 +1,17 @@
 <component name="ProjectDictionaryState">
   <dictionary name="project">
     <words>
+      <w>cap'n</w>
+      <w>capnp</w>
+      <w>capnproto</w>
+      <w>flatbuf</w>
+      <w>flatbuffers</w>
       <w>msgs</w>
       <w>pojoc</w>
+      <w>pojvec</w>
       <w>roundtrip</w>
+      <w>serde</w>
+      <w>typeref</w>
       <w>varint</w>
     </words>
   </dictionary>

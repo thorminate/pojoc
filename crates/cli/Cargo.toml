@@ -8,7 +8,5 @@ name = "pojoc"
 path = "src/main.rs"
 
 [dependencies]
-pojoc-compiler = { path = "../compiler" }
-pojoc-runtime  = { path = "../runtime" }
 pojoc-schema   = { path = "../schema" }
-pojoc-core     = { path = "../core" }
+pojoc-codegen = {path = "../codegen"}

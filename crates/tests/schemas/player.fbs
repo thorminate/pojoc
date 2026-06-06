@@ -1,0 +1,19 @@
+namespace player_fb;
+
+struct Vector3 {
+  x: float32;
+  y: float32;
+  z: float32;
+  w: float32;
+}
+
+table Player {
+  player_id: float64;
+  level: float32;
+  inventory: [string];
+  position: Vector3 (required);
+  tags: [string];
+  is_nauseous: bool;
+}
+
+root_type Player;

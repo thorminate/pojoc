@@ -1,16 +1,39 @@
-﻿#[derive(Debug, Clone, PartialEq)]
+﻿use crate::error::*;
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
     Schema,
     Version,
     Type,
     Fields,
     Diff,
+    Extends,
+    True,
+    False,
+}
+
+impl std::fmt::Display for Keyword {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self { 
+            Keyword::Schema => write!(f, "schema"),
+            Keyword::Version => write!(f, "version"),
+            Keyword::Type => write!(f, "type"),
+            Keyword::Fields => write!(f, "fields"),
+            Keyword::Diff => write!(f, "diff"),
+            Keyword::Extends => write!(f, "extends"),
+            Keyword::True => write!(f, "true"),
+            Keyword::False => write!(f, "false"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Ident(String),
     Number(u32),
+    Equals,
+    Float(f64),
+    StringLit(String),
     Keyword(Keyword),
     LBrace,
     RBrace,
@@ -25,15 +48,34 @@ pub enum Token {
     Eof,
 }
 
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self { 
+            Token::Ident(s) => write!(f, "{}", s),
+            Token::Number(n) => write!(f, "{}", n),
+            Token::Equals => write!(f, "="),
+            Token::Float(n) => write!(f, "{}", n),
+            Token::StringLit(s) => write!(f, "\"{}\"", s),
+            Token::Keyword(k) => write!(f, "{}", k),
+            Token::LBrace => write!(f, "{{"),
+            Token::RBrace => write!(f, "}}"),
+            Token::LBracket => write!(f, "["),
+            Token::RBracket => write!(f, "]"),
+            Token::Colon => write!(f, ":"),
+            Token::Arrow => write!(f, "->"),
+            Token::Plus => write!(f, "+"),
+            Token::Minus => write!(f, "-"),
+            Token::Tilde => write!(f, "~"),
+            Token::Comma => write!(f, ","),
+            Token::Eof => write!(f, "EOF"),
+        }
+    }
+}
+
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
     pub line: usize,
-}
-
-#[derive(Debug)]
-pub enum LexError {
-    UnexpectedChar(char, usize),
 }
 
 impl Lexer {
@@ -84,6 +126,9 @@ impl Lexer {
             "type"    => Token::Keyword(Keyword::Type),
             "fields"  => Token::Keyword(Keyword::Fields),
             "diff"    => Token::Keyword(Keyword::Diff),
+            "extends" => Token::Keyword(Keyword::Extends),
+            "true"    => Token::Keyword(Keyword::True),
+            "false"   => Token::Keyword(Keyword::False),
             _         => Token::Ident(s),
         }
     }
@@ -93,9 +138,29 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             s.push(self.advance().unwrap());
         }
-        Token::Number(s.parse().unwrap())
+        if self.peek() == Some('.') {
+            s.push(self.advance().unwrap());
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                s.push(self.advance().unwrap());
+            }
+            Token::Float(s.parse().unwrap())
+        } else {
+            Token::Number(s.parse().unwrap())
+        }
     }
 
+    fn read_string_lit(&mut self) -> Result<Token, LexError> {
+        self.advance(); // consume opening "
+        let mut s = String::new();
+        loop {
+            match self.advance() {
+                Some('"') => break,
+                Some(c)   => s.push(c),
+                None      => return Err(LexError::UnexpectedChar('"', self.line)),
+            }
+        }
+        Ok(Token::StringLit(s))
+    }
     pub fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
         let mut tokens = Vec::new();
         loop {
@@ -111,6 +176,8 @@ impl Lexer {
                         ':'  => { self.advance(); Token::Colon }
                         '+'  => { self.advance(); Token::Plus }
                         '~'  => { self.advance(); Token::Tilde }
+                        '=' => { self.advance(); Token::Equals }
+                        '"' => self.read_string_lit()?,
                         ','  => { self.advance(); Token::Comma }
                         '-'  => {
                             self.advance();
