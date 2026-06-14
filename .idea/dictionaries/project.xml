@@ -1,18 +1,30 @@
 <component name="ProjectDictionaryState">
   <dictionary name="project">
     <words>
+      <w>Bitpacking</w>
+      <w>Varints</w>
+      <w>callsign</w>
       <w>cap'n</w>
       <w>capnp</w>
       <w>capnproto</w>
+      <w>coords</w>
       <w>flatbuf</w>
       <w>flatbuffers</w>
       <w>msgs</w>
+      <w>partialeq</w>
+      <w>partialord</w>
+      <w>pojmap</w>
       <w>pojoc</w>
+      <w>pojstr</w>
+      <w>pojtup</w>
       <w>pojvec</w>
       <w>roundtrip</w>
       <w>serde</w>
       <w>typeref</w>
+      <w>uchar</w>
       <w>varint</w>
+      <w>varints</w>
+      <w>vfloat</w>
     </words>
   </dictionary>
 </component>

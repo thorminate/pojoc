@@ -1,12 +1,7 @@
-﻿use std::collections::HashMap;
-use crate::ast::DefaultValueAst;
 use super::lineage::SchemaLineage;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TypeId {
-    pub name: String,
-    pub version: u32,
-}
+use crate::ast::DefaultValueAst;
+use pojoc_core::types::*;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldId(pub u64);
@@ -17,7 +12,7 @@ pub struct TypeRegistry {
 }
 
 impl TypeRegistry {
-    pub fn latest_before(&self, name: &str, before_version: u32) -> Option<&ResolvedType> {
+    pub fn latest_before(&self, name: &str, before_version: i128) -> Option<&ResolvedType> {
         self.types
             .iter()
             .filter(|(id, _)| id.name == name && id.version < before_version)
@@ -36,21 +31,6 @@ pub enum TypeIR {
     Struct(TypeId),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ResolvedTypeRef {
-    Scalar(TypeId),
-    Array(Box<ResolvedTypeRef>),
-}
-
-impl ResolvedTypeRef {
-    pub fn type_id(&self) -> &TypeId {
-        match self {
-            ResolvedTypeRef::Scalar(id) => id,
-            ResolvedTypeRef::Array(id) => id.type_id(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct FieldIR {
     pub id: FieldId,
@@ -61,19 +41,103 @@ pub struct FieldIR {
 
 #[derive(Clone, Debug)]
 pub struct VersionContext {
-    pub version: u32,
+    pub version: i128,
     pub fields: Vec<FieldIR>,
+    pub const_fields: Vec<ResolvedConst>
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub wire_value: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedEnum {
+    pub variants: Vec<EnumVariant>,
+}
+
+impl ResolvedEnum {
+    pub fn wire_value(&self, variant_name: &str) -> Option<u32> {
+        self.variants
+            .iter()
+            .find(|v| v.name == variant_name)
+            .map(|v| v.wire_value)
+    }
+
+    pub fn next_wire_value(&self) -> u32 {
+        self.variants
+            .iter()
+            .map(|v| v.wire_value)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct EnumRegistry {
+    pub enums: HashMap<TypeId, ResolvedEnum>,
+}
+
+impl EnumRegistry {
+    pub fn latest_before(
+        &self,
+        name: &str,
+        before_version: i128,
+    ) -> Option<(&TypeId, &ResolvedEnum)> {
+        self.enums
+            .iter()
+            .filter(|(id, _)| id.name == name && id.version < before_version)
+            .max_by_key(|(id, _)| id.version)
+            .map(|(id, e)| (id, e))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedBitset {
+    pub variants: Vec<String>,
+}
+
+impl ResolvedBitset {
+    pub fn byte_width(&self) -> u8 {
+        match self.variants.len() {
+            n if n <= 8 => 1,
+            n if n <= 16 => 2,
+            _ => 4,
+        }
+    }
+    pub fn backing_type(&self) -> &'static str {
+        match self.byte_width() {
+            1 => "u8",
+            2 => "u16",
+            _ => "u32",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BitsetRegistry {
+    pub bitsets: HashMap<TypeId, ResolvedBitset>,
 }
 
 #[derive(Debug)]
 pub struct ResolvedType {
     pub fields: Vec<FieldIR>,
+    pub const_fields: Vec<ResolvedConst>
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedConst {
+    pub name: String,
+    pub rust_type: &'static str,
+    pub value: DefaultValue,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedVersion {
-    pub version: u32,
+    pub version: i128,
     pub fields: Vec<FieldIR>,
+    pub const_fields: Vec<ResolvedConst>
 }
 
 #[derive(Debug)]
@@ -81,27 +145,61 @@ pub struct ResolvedSchema {
     pub name_hint: String,
     pub versions: Vec<ResolvedVersion>,
     pub types: TypeRegistry,
+    pub enums: EnumRegistry,
+    pub bitsets: BitsetRegistry,
     pub lineage: SchemaLineage,
 }
 
 #[derive(Debug, Clone)]
 pub enum DefaultValue {
+    None,
     Bool(bool),
-    Int(i64),
+    Int(i128),
     Float(f64),
     Str(String),
-    EmptyArray,
+    Array(Vec<DefaultValue>),
+    Map(Vec<(DefaultValue, DefaultValue)>),
     Struct,
+    FixedBytes(Vec<u8>),
+    Tuple(Vec<DefaultValue>),
+    EnumVariant {
+        ty_name: String,
+        variant: String,
+    },
+    BitsetLiteral {
+        ty_name: String,
+        kvs: Vec<(String, bool)>,
+    },
 }
 
 impl From<&DefaultValueAst> for DefaultValue {
     fn from(ast: &DefaultValueAst) -> Self {
         match ast {
-            DefaultValueAst::Bool(b)  => DefaultValue::Bool(*b),
-            DefaultValueAst::Int(i)   => DefaultValue::Int(*i),
+            DefaultValueAst::Bool(b) => DefaultValue::Bool(*b),
+            DefaultValueAst::Int(i) => DefaultValue::Int(*i),
             DefaultValueAst::Float(f) => DefaultValue::Float(*f),
-            DefaultValueAst::Str(s)   => DefaultValue::Str(s.clone()),
-            DefaultValueAst::EmptyArray => DefaultValue::EmptyArray,
+            DefaultValueAst::Str(s) => DefaultValue::Str(s.clone()),
+            DefaultValueAst::Array(els) => {
+                DefaultValue::Array(els.iter().map(DefaultValue::from).collect())
+            }
+            DefaultValueAst::Map(pairs) => DefaultValue::Map(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (DefaultValue::from(k), DefaultValue::from(v)))
+                    .collect(),
+            ),
+            DefaultValueAst::FixedBytes(b) => DefaultValue::FixedBytes(b.clone()),
+            DefaultValueAst::Tuple(elements) => {
+                DefaultValue::Tuple(elements.iter().map(DefaultValue::from).collect())
+            }
+            DefaultValueAst::EnumVariant { ty, variant } => DefaultValue::EnumVariant {
+                ty_name: ty.clone(),
+                variant: variant.clone(),
+            },
+            DefaultValueAst::BitsetLiteral { ty, kvs } => DefaultValue::BitsetLiteral {
+                ty_name: ty.clone(),
+                kvs: kvs.clone(),
+            },
         }
     }
 }

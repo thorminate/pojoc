@@ -1,19 +1,140 @@
-namespace player_fb;
+namespace fb_player;
+
+enum Status : uint32 {
+  Alive        = 0,
+  Dead         = 1,
+  Downed       = 2,  // renamed from Dying
+  Disqualified = 3,
+  Spectating   = 4,
+}
+
+enum Class : uint32 {
+  Warrior     = 0,
+  Mage        = 1,
+  Assassin    = 2,  // renamed from Rogue
+  Necromancer = 3,
+  Paladin     = 4,
+}
+
+enum Region : uint32 {
+  North   = 0,
+  South   = 1,
+  East    = 2,
+  West    = 3,
+  Central = 4,
+  Void    = 5,
+}
 
 struct Vector3 {
-  x: float32;
-  y: float32;
-  z: float32;
-  w: float32;
+  x: float;
+  y: float;
+  z: float;
+  w: float;
+}
+
+struct AABB {
+  min_x: float;
+  min_y: float;
+  max_x: float;
+  max_y: float;
+}
+
+struct Transform {
+  position: Vector3;
+  bounds:   AABB;
+}
+
+struct Velocity {
+  x: float;
+  y: float;
+  z: float;
+}
+
+struct Coordinates {
+  x: float;
+  y: float;
+}
+
+struct KillDeath {
+  kills:  int;
+  deaths: int;
+}
+
+struct Point3D {
+  x: float;
+  y: float;
+  z: float;
+}
+
+table Stats {
+  strength:     int;
+  agility:      int;
+  intelligence: int;
+  endurance:    int;
+  luck:         int (deprecated); // removed in V6
+  charisma:     int = 0;
+  resistance:   float = 0.0;
+}
+
+table QuestProgressEntry {
+  key:   string (key);
+  value: int;
+}
+
+table QuickSlotsEntry {
+  key:   int (key);
+  value: string;
+}
+
+table SkillLevelsEntry {
+  key:   string (key);
+  value: float;
+}
+
+table LoadoutEntry {
+  item:     string;
+  quantity: int;
+}
+
+table LeaderboardScoresEntry {
+  key:   string (key);
+  value: long;
 }
 
 table Player {
-  player_id: float64;
-  level: float32;
-  inventory: [string];
-  position: Vector3 (required);
-  tags: [string];
-  is_nauseous: bool;
+  player_id:          double;
+  level:              float;
+  status:             Status = Alive;
+  class:              Class = Warrior;
+  inventory:          [string];
+  callsign:           string;      // string(6)   — no fixed-len string in fbs
+  position:           Vector3;
+  tags:               [string];
+  transform:          Transform;
+  velocity:           Velocity;
+  status_code:        string;      // string(8)   — no fixed-len string in fbs
+  is_nauseous:        bool;
+
+  region:             Region = North;
+  stats:              Stats;
+  hotbar:             [string];    // string(6)   — no fixed-len array in fbs
+  session_token:      string;      // string(16)  — no fixed-len string in fbs
+  coordinates:        Coordinates;
+  kill_death:         KillDeath;
+  recent_zones:       [string];    // string(8)   — no fixed-len array in fbs
+  chat_history:       [string];    // string(32)  — no fixed-len array in fbs
+  guild_tag:          string;      // string(4)   — no fixed-len string in fbs
+  spawn_point:        Point3D;
+  achievement_ids:    [uint];
+  active_perks:       uint = 0;    // bitset Perks
+  account_flags:      uint = 0;    // bitset Flags
+  quest_progress:     [QuestProgressEntry];
+  quick_slots:        [QuickSlotsEntry]; // map(10)
+  skill_levels:       [SkillLevelsEntry];
+  loadout:            [LoadoutEntry];    // loadout(4)
+  leaderboard_scores: [LeaderboardScoresEntry];
+  party_members:      [uint];      // u32(4)
+  last_position:      Point3D;
 }
 
 root_type Player;

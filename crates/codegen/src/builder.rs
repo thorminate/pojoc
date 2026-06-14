@@ -1,9 +1,5 @@
-﻿use std::{
-    fs,
-    path::{PathBuf},
-    process::Command,
-};
 use std::str::from_utf8;
+use std::{fs, path::PathBuf, process::Command};
 
 pub struct BuildOptions {
     pub project_name: String,
@@ -17,7 +13,7 @@ pub fn build_project(
     opts: &BuildOptions,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let project_name_lower = opts.project_name.to_lowercase();
-    
+
     let build_dir = std::env::temp_dir().join(format!("pojoc_build_{}", project_name_lower));
     let src_dir = build_dir.join("src");
 
@@ -34,7 +30,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pojoc-runtime = {{ path = "{runtime_path}" }}
+pojoc = {{ path = "{runtime_path}" }}
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -106,17 +102,17 @@ fn encode(input: &str, output: Option<&str>) {{
         }}
     }}
 }}
-"#, 
+"#,
         project_name = opts.project_name
     );
 
     fs::write(src_dir.join("main.rs"), main_rs)?;
     fs::write(src_dir.join("generated.rs"), generated_code)?;
-    
+
     let cache_dir = std::env::temp_dir().join("pojoc_cache");
 
     let mut cmd = Command::new("cargo");
-    
+
     cmd.env("CARGO_TARGET_DIR", &cache_dir);
     cmd.arg("build");
 
@@ -132,7 +128,12 @@ fn encode(input: &str, output: Option<&str>) {{
 
     let out = cmd.output()?;
     if !out.status.success() {
-        return Err(format!("cargo build failed: {}\n{}", out.status, from_utf8(out.stderr.as_slice()).expect("could not ascertain stderr from cargo build")).into());
+        return Err(format!(
+            "cargo build failed: {}\n{}",
+            out.status,
+            from_utf8(out.stderr.as_slice()).expect("could not ascertain stderr from cargo build")
+        )
+        .into());
     }
 
     let profile = if opts.release { "release" } else { "debug" };

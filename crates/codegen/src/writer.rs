@@ -1,4 +1,4 @@
-﻿#[derive(Default)]
+#[derive(Default)]
 pub struct CodeWriter {
     buf: String,
     indent: usize,

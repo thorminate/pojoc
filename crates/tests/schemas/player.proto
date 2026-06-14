@@ -1,18 +1,120 @@
-﻿syntax = "proto3";
-package player;
+﻿syntax = "proto3"; 
+
+package proto_player; 
+
+enum Status {
+  ALIVE          = 0; 
+  DEAD           = 1; 
+  DOWNED         = 2; 
+  DISQUALIFIED   = 3; 
+  SPECTATING     = 4; 
+}
+
+enum Class {
+  WARRIOR      = 0; 
+  MAGE         = 1; 
+  ASSASSIN     = 2;  // renamed from Rogue 
+  NECROMANCER  = 3; 
+  PALADIN      = 4; 
+} 
+
+enum Region {
+  NORTH        = 0;
+  SOUTH        = 1;
+  EAST         = 2;
+  WEST         = 3;
+  CENTRAL      = 4;
+  VOID         = 5;
+}
 
 message Vector3 {
+  float x = 1; 
+  float y = 2; 
+  float z = 3; 
+  float w = 4; 
+} 
+
+message AABB {
+  float min_x = 1; 
+  float min_y = 2; 
+  float max_x = 3; 
+  float max_y = 4; 
+} 
+
+message Transform {
+  Vector3 position = 1; 
+  AABB    bounds   = 2; 
+} 
+
+message Velocity {
+  float x = 1; 
+  float y = 2; 
+  float z = 3; 
+} 
+
+message Stats {
+  int32 strength     = 1;
+  int32 agility      = 2;
+  int32 intelligence = 3;
+  int32 endurance    = 4;
+  reserved 5; // luck removed in V6
+  int32 charisma     = 6;
+  float resistance   = 7;
+}
+
+message Coordinates {
+  float x = 1;
+  float y = 2;
+}
+
+message KillDeath {
+  int32 kills  = 1;
+  int32 deaths = 2;
+}
+
+message Point3D {
   float x = 1;
   float y = 2;
   float z = 3;
-  float w = 4;
+}
+
+message LoadoutEntry {
+  string item     = 1;
+  int32  quantity = 2;
 }
 
 message Player {
-  double player_id = 1;
-  float level = 2;
-  repeated string inventory = 3;
-  Vector3 position = 4;
-  repeated string tags = 5;
-  bool is_nauseous = 6;
-}
+  double             player_id          = 1; 
+  float              level              = 2; 
+  Status             status             = 3; 
+  Class              class              = 4; 
+  repeated string    inventory          = 5; 
+  string             callsign           = 6;  // string(6) — no fixed-len in proto 
+  Vector3            position           = 7; 
+  repeated string    tags               = 8; 
+  Transform          transform          = 9; 
+  Velocity           velocity           = 10; 
+  string             status_code        = 11;  // string(8) — no fixed-len in proto 
+  bool               is_nauseous        = 12; 
+
+  Region             region             = 13;
+  Stats              stats              = 14;
+  repeated string    hotbar             = 15; // string(6) — no fixed-len array in proto
+  string             session_token      = 16; // string(16) — no fixed-len string in proto
+  Coordinates        coordinates        = 17;
+  KillDeath          kill_death         = 18;
+  repeated string    recent_zones       = 19; // string(8) — no fixed-len array in proto
+  repeated string    chat_history       = 20; // string(32) — no fixed-len array in proto
+  string             guild_tag          = 21; // string(4) — no fixed-len string in proto
+  Point3D            spawn_point        = 22;
+  repeated uint32    achievement_ids    = 23;
+  uint32             active_perks       = 24; // bitset Perks
+  uint32             account_flags      = 25; // bitset Flags
+  map<string, int32> quest_progress     = 26;
+  map<int32, string> quick_slots        = 27; // map(10) — no fixed-len limit in proto
+  map<string, float> skill_levels       = 28;
+  repeated LoadoutEntry loadout         = 29; // loadout(4) — no fixed-len array in proto
+  map<string, int64> leaderboard_scores = 30;
+  repeated uint32    party_members      = 31; // u32(4) — no fixed-len array in proto
+  Point3D            last_position      = 32;
+} 

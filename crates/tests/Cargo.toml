@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pojoc-runtime = { path = "../runtime" }
+pojoc = { path = "../runtime" }
 prost = "0.14.3"
 capnp = "0.25.5"
 flatbuffers = "25.12.19"
@@ -14,6 +14,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [build-dependencies]
+pojoc-codegen = {path = "../codegen"}
+pojoc-schema = { path = "../schema" }
 prost-build = "0.14.3"
 capnpc = "0.25.3"
 
@@ -27,6 +29,10 @@ harness = false
 
 [[bench]]
 name = "decode"
+harness = false
+
+[[bench]]
+name = "stress"
 harness = false
 
 [[bench]]

@@ -1,6 +1,6 @@
-﻿mod common;
-use pojoc_schema::ast::*;
+mod common;
 use common::*;
+use pojoc_schema::ast::*;
 
 const SAMPLE_SCHEMA: &str = r#"
 schema Player {
@@ -28,7 +28,7 @@ schema Player {
   }
 
   version 3 {
-    type Vector3 extends Vector3 {
+    type Vector3 extends Vector3@2 {
       + w: float = 1.0
     }
 
@@ -64,31 +64,44 @@ fn parses_typedef_vector3() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v2 = &ast.versions[1];
 
-    let typedefs: Vec<_> = v2.blocks.iter().filter_map(|b| {
-        if let VersionBlockAst::TypeDef(t) = b { Some(t) } else { None }
-    }).collect();
+    let typedefs: Vec<_> = v2
+        .blocks
+        .iter()
+        .filter_map(|b| {
+            if let VersionBlockAst::TypeDef(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     assert_eq!(typedefs.len(), 1);
     assert_eq!(typedefs[0].name, "Vector3");
     assert!(typedefs[0].extends.is_none());
 
     match &typedefs[0].body {
-        TypeBody::Fields(fields) => assert_eq!(fields.len(), 3),
+        TypeBody::Fields(fields) => assert_eq!(fields.fields.len(), 3),
         TypeBody::Diff(_) => panic!("expected Fields body"),
     }
 }
+
 #[test]
 fn parses_diff_operations() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v2 = &ast.versions[1];
 
-    let diff = v2.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::Diff(d) = b {
-            Some(d)
-        } else {
-            None
-        }
-    }).unwrap();
+    let diff = v2
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::Diff(d) = b {
+                Some(d)
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
     assert_eq!(diff.len(), 2);
 
@@ -113,21 +126,28 @@ fn parses_rename_operation() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v3 = &ast.versions[2];
 
-    let diff = v3.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::Diff(d) = b {
-            Some(d)
-        } else {
-            None
-        }
-    }).unwrap();
+    let diff = v3
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::Diff(d) = b {
+                Some(d)
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
-    let rename = diff.iter().find_map(|op| {
-        if let DiffAst::Rename { from, to } = op {
-            Some((from, to))
-        } else {
-            None
-        }
-    }).unwrap();
+    let rename = diff
+        .iter()
+        .find_map(|op| {
+            if let DiffAst::Rename { from, to } = op {
+                Some((from, to))
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
     assert_eq!(rename.0, "id");
     assert_eq!(rename.1, "player_id");
@@ -139,13 +159,17 @@ fn parses_array_types() {
 
     let v1 = &ast.versions[0];
 
-    let fields = v1.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::Fields(f) = b {
-            Some(f)
-        } else {
-            None
-        }
-    }).expect("no fields block");
+    let fields = v1
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::Fields(f) = b {
+                Some(f)
+            } else {
+                None
+            }
+        })
+        .expect("no fields block");
 
     let inventory = fields
         .fields
@@ -240,9 +264,8 @@ schema Player {
     assert!(parse_schema(input).is_err());
 }
 
-
 #[test]
-fn rejects_confusing_diff() {
+fn rejects_nonsensical_diff() {
     let input = r#"
 schema Player {
   version 1 {
@@ -252,9 +275,9 @@ schema Player {
   }
   version 2 {
     diff {
-      + wowies: string
-      - wowies
-      ~ wowies: int
+      + field: string
+      - field
+      ~ field: int
     }
   }
 }
@@ -268,12 +291,26 @@ fn parses_extends_on_type() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v3 = &ast.versions[2];
 
-    let typedef = v3.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::TypeDef(t) = b { Some(t) } else { None }
-    }).expect("no typedef in v3");
+    let typedef = v3
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::TypeDef(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .expect("no typedef in v3");
 
     assert_eq!(typedef.name, "Vector3");
-    assert_eq!(typedef.extends.as_deref(), Some("Vector3"));
+
+    let ext = typedef
+        .extends
+        .as_ref()
+        .expect("expected explicit version extension");
+    assert_eq!(ext.name, "Vector3");
+    assert_eq!(ext.version, 2);
 }
 
 #[test]
@@ -281,9 +318,17 @@ fn extended_type_body_is_diff() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v3 = &ast.versions[2];
 
-    let typedef = v3.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::TypeDef(t) = b { Some(t) } else { None }
-    }).unwrap();
+    let typedef = v3
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::TypeDef(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
     match &typedef.body {
         TypeBody::Diff(ops) => {
@@ -305,9 +350,17 @@ fn non_extended_type_body_is_fields() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v2 = &ast.versions[1];
 
-    let typedef = v2.blocks.iter().find_map(|b| {
-        if let VersionBlockAst::TypeDef(t) = b { Some(t) } else { None }
-    }).unwrap();
+    let typedef = v2
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let VersionBlockAst::TypeDef(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
     assert!(typedef.extends.is_none());
     assert!(matches!(typedef.body, TypeBody::Fields(_)));
@@ -315,6 +368,27 @@ fn non_extended_type_body_is_fields() {
 
 #[test]
 fn rejects_extends_with_unknown_parent() {
+    let input = r#"
+schema Player {
+  version 1 {
+    fields { id: string }
+  }
+  version 2 {
+    type Vector3 extends Phantom@1 {
+      + x: float
+    }
+    diff {
+      + position: Vector3
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_extends_with_no_version_tag() {
     let input = r#"
 schema Player {
   version 1 {
@@ -330,9 +404,8 @@ schema Player {
   }
 }
 "#;
-    // parse succeeds, analyzer should fail
-    let ast = parse_schema(input).unwrap();
-    assert!(analyze_schema(&ast).is_err());
+
+    assert!(parse_schema(input).is_err());
 }
 
 #[test]
@@ -340,24 +413,31 @@ fn extended_type_preserves_field_ids() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let schema = analyze_schema(&ast).unwrap();
 
-    let v2_vec3 = schema.types.types.iter()
+    let v2_vec3 = schema
+        .types
+        .types
+        .iter()
         .find(|(id, _)| id.name == "Vector3" && id.version == 2)
         .map(|(_, t)| t)
         .expect("Vector3 v2 not found");
 
-    let v3_vec3 = schema.types.types.iter()
+    let v3_vec3 = schema
+        .types
+        .types
+        .iter()
         .find(|(id, _)| id.name == "Vector3" && id.version == 3)
         .map(|(_, t)| t)
         .expect("Vector3 v3 not found");
 
-    // x, y, z should have matching IDs across versions
     for name in ["x", "y", "z"] {
         let id_v2 = v2_vec3.fields.iter().find(|f| f.name == name).map(|f| f.id);
         let id_v3 = v3_vec3.fields.iter().find(|f| f.name == name).map(|f| f.id);
-        assert_eq!(id_v2, id_v3, "field '{name}' has different ID across Vector3 versions");
+        assert_eq!(
+            id_v2, id_v3,
+            "field '{name}' has different ID across Vector3 versions"
+        );
     }
 
-    // w is new — should not exist in v2
     assert!(v2_vec3.fields.iter().all(|f| f.name != "w"));
     assert!(v3_vec3.fields.iter().any(|f| f.name == "w"));
 }
@@ -379,7 +459,7 @@ schema Player {
     }
   }
   version 3 {
-    type Vec3 extends Vec3 {
+    type Vec3 extends Vec3@2 {
       ~ x -> pos_x
     }
     diff {
@@ -391,19 +471,39 @@ schema Player {
     let ast = parse_schema(input).unwrap();
     let schema = analyze_schema(&ast).unwrap();
 
-    let v2_vec3 = schema.types.types.iter()
+    let v2_vec3 = schema
+        .types
+        .types
+        .iter()
         .find(|(id, _)| id.name == "Vec3" && id.version == 2)
-        .map(|(_, t)| t).unwrap();
+        .map(|(_, t)| t)
+        .unwrap();
 
-    let v3_vec3 = schema.types.types.iter()
+    let v3_vec3 = schema
+        .types
+        .types
+        .iter()
         .find(|(id, _)| id.name == "Vec3" && id.version == 3)
-        .map(|(_, t)| t).unwrap();
+        .map(|(_, t)| t)
+        .unwrap();
 
-    let x_id = v2_vec3.fields.iter().find(|f| f.name == "x").map(|f| f.id).unwrap();
-    let pos_x_id = v3_vec3.fields.iter().find(|f| f.name == "pos_x").map(|f| f.id).unwrap();
+    let x_id = v2_vec3
+        .fields
+        .iter()
+        .find(|f| f.name == "x")
+        .map(|f| f.id)
+        .unwrap();
+    let pos_x_id = v3_vec3
+        .fields
+        .iter()
+        .find(|f| f.name == "pos_x")
+        .map(|f| f.id)
+        .unwrap();
 
-    // renamed field should keep its ID
-    assert_eq!(x_id, pos_x_id, "renamed field 'x -> pos_x' should retain its FieldId");
+    assert_eq!(
+        x_id, pos_x_id,
+        "renamed field 'x -> pos_x' should retain its FieldId"
+    );
 }
 
 #[test]
@@ -420,7 +520,7 @@ schema Player {
     diff {}
   }
   version 3 {
-    type Vec3 extends Vec3 {
+    type Vec3 extends Vec3@2 {
       x: float
       y: float
     }
@@ -428,9 +528,26 @@ schema Player {
   }
 }
 "#;
-    // parse may succeed (fields look like valid tokens),
-    // but analyzer must reject it
     if let Ok(ast) = parse_schema(input) {
         assert!(analyze_schema(&ast).is_err());
     }
+}
+
+#[test]
+fn rejects_extends_future_version() {
+    let input = r#"
+schema Player {
+  version 1 {
+    fields { id: string }
+  }
+  version 2 {
+    type Vec3 extends Vec3@4 {
+      + x: float
+    }
+    diff {}
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
 }

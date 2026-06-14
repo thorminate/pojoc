@@ -1,0 +1,209 @@
+﻿schema Edge {
+
+  version 1 {
+    enum NumericBounds {
+      MinU8,
+      MaxU8,
+      MinI64,
+      MaxI64,
+    }
+
+    type NestedLeaf {
+      leaf_val: string = "leaf"
+      leaf_numeric: i32 = 42
+    }
+
+    type MiddleLayer {
+      leaf: NestedLeaf
+      leaf_arr: [NestedLeaf] = []
+      leaf_opt: NestedLeaf?
+    }
+
+    fields {
+      // Primitive & Boundary Numerical Extremes
+      u8_max: u8 = 255
+      u8_min: u8 = 0
+      i64_max: i64 = 9223372036854775807
+      i64_min: i64 = -9223372036854775808
+      varint32_max: varint32 = 2147483647
+      varint64_min: varint64 = -9223372036854775808
+
+      // Special IEEE 754 Floating-Point Const Injections
+      f32_nan: f32 = 0.0           // Overwritten during tests to NaN
+      f32_inf: f32 = 3.40282347e38 // Positive infinity or near boundary
+      f64_neg_inf: f64 = -1.7976931348623157e+308
+
+      // Empty collections, Fixed-Size types, and Strings
+      empty_str: string = ""
+      spaces_str: string = "     "
+      fixed_str_min: string(1) = "A"
+
+      // Array Combinations (Empty, Empty-Fixed, Multi-dimensional Tuple Arrays)
+      empty_arr: [string] = []
+      fixed_arr_empty: [i32](0) = []
+      fixed_arr_populated: [u8](4) = [0, 0, 0, 0]
+      tuple_array: [(f32, bool)] = []
+
+      // --- Delta array stress: variable-length, every eligible element type ---
+      delta_positions: [i32](delta) = []           // empty: tests len==0 guard
+      delta_i64_seq: [i64](delta) = []             // empty i64, also exercises zigzag-signed first elem
+      delta_u64_seq: [u64](delta) = [0, 18446744073709551615, 0] // wraparound stress: u64::MAX round trip via wrapping_sub
+      delta_u16_seq: [u16](delta) = [100, 105, 110, 90]   // includes a negative delta (110 -> 90)
+      delta_i8_seq: [i8](delta) = [-128, -1, 0, 127]      // full i8 range, max positive delta magnitude
+      delta_single: [u32](delta) = [42]                   // single element: no delta loop iterations at all
+
+      // --- Delta array stress: fixed-length, no length prefix ---
+      delta_fixed_u8: [u8](delta, 4) = [10, 12, 11, 20]   // mixed +/- deltas
+      delta_fixed_empty: [i32](delta, 0) = []             // N=0: skip/read/write must all be no-ops
+
+      // Legacy plain array — will be migrated to delta encoding in v2 (wire-breaking type update)
+      legacy_positions: [i32] = []
+
+      // Deep Structured Objects
+      root_struct: MiddleLayer
+
+      // Constant Primitive definitions
+      pi_const: const f64 = 3.141592653589793
+      flag_const: const bool = true
+
+      // Native Enumerations
+      bounds_enum: NumericBounds = NumericBounds::MinU8
+    }
+  }
+
+  version 2 {
+    enum NumericBounds extends NumericBounds@1 {
+      + ExtraVariant
+      ~ MinU8 -> ResetZero
+    }
+
+    type MiddleLayer extends MiddleLayer@1 {
+      + weight: f32 = 1.0
+      + secondary_leaf: NestedLeaf?
+    }
+
+    // Version 2 Focus: Severe Type Morphing (Scalar to Scalar, Scalar to Struct, Deletions)
+    diff {
+      - u8_min                               // Pure deletion
+      ~ u8_max -> u8_to_i64: i64             // Massive integer widening cast
+      ~ i64_max -> i64_to_f32: f32           // Lossy float conversion transform
+      ~ bounds_enum: NumericBounds           // Enum extension check
+      ~ empty_str -> nullified_str: string?  // Morph scalar into optional string
+      ~ fixed_str_min: string(8)             // Change size constraint of a fixed string (1 -> 8)
+      + newly_added_optional: u64?           // First bitpacked optionals allocation
+      ~ root_struct: MiddleLayer             // Structural field updating through inheritance
+
+      // --- Delta array stress: wire-breaking type update (plain array -> delta array) ---
+      ~ legacy_positions: [i32](delta)       // old encoders wrote raw i32s, new decoders expect deltas
+
+      // --- Delta array stress: new fixed delta array introduced mid-lineage ---
+      + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 0] // includes a zero-delta run and a large jump
+    }
+  }
+
+  version 3 {
+    type EmptyStruct {
+      // Intentionally empty struct block to stress code-gen parser/size hints
+    }
+
+    // --- Delta array stress: delta arrays nested inside struct types and collections ---
+    type SensorFrame {
+      readings: [i32](delta) = []                 // delta array as a struct field (PassThrough mapping target)
+      sample_ids: [u64](delta, 8) = [0, 0, 0, 0, 0, 0, 0, 0] // fixed delta array, all-zero deltas
+    }
+
+    // Version 3 Focus: Map Layout Injections & Severe Collections Remapping
+    diff {
+      + basic_map: map<string, string> = {}
+      + fixed_map_empty: map<i32, f32>(0) = {}
+      + fixed_map_populated: map<string, i64>(4) = {}
+      + nested_map: map<string, [map<i32, bool>]> = {}
+      + void_container: EmptyStruct
+
+      // Non-sensical type conversions through diff morphing
+      ~ fixed_arr_populated -> array_to_map: map<i32, u8> // Destructures sequential array indices into KV map entries
+      ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)] // Structural tuple widening and type shifting
+
+      // --- Delta array stress: array of structs each containing delta arrays ---
+      + sensor_log: [SensorFrame] = []
+
+      // --- Delta array stress: delta array as a map value type, inside a fixed map ---
+      + delta_value_map: map<string, [i64](delta)>(2) = {}
+    }
+  }
+
+  version 4 {
+    bitset SystemPrivileges {
+      Read,
+      Write,
+      Execute,
+      Admin,
+    }
+
+    bitset HardwareFlags {
+      IsCpuBound,
+      IsGpuBound,
+      HasVulkan,
+    }
+
+    // Version 4 Focus: High density Optional Bitpacking, Optionals to Non-Optionals, Bitsets
+    diff {
+      + opt_u8: u8?
+      + opt_i16: i16?
+      + opt_u32: u32?
+      + opt_i64: i64?
+      + opt_f32: f32?
+      + opt_f64: f64?
+      + opt_bool: bool?
+      + opt_fixed_str: string(4)?
+      + opt_bitset: SystemPrivileges?
+
+      // Turn previously optional fields back into required types or swap defaults
+      ~ newly_added_optional: u64
+
+      // Bitset Attachments
+      + privileges: SystemPrivileges = 0
+      + hw_flags: HardwareFlags = HardwareFlags(IsCpuBound: true, HasVulkan: true)
+
+      // --- Delta array stress: optional delta array (bitpacked header + delta codec interplay) ---
+      + opt_delta_arr: [i32](delta)?
+    }
+  }
+
+  version 5 {
+    bitset SystemPrivileges extends SystemPrivileges@4 {
+      + NetworkAccess
+      - Admin                      // Destructive Bitset alteration
+      + Root
+    }
+
+    type DeepComplexWrapper {
+      matrix: [[(map<string, i32?>, string(8)?)](4)]
+
+      // --- Delta array stress: delta array alongside the existing matrix monstrosity ---
+      frame_deltas: [i64](delta) = []
+    }
+
+    // Version 5 Focus: Maximum complexity structural loops, compound rename-casts, and final truncation
+    diff {
+      // Radical Rename + Type Casting (Transform) in a single rule block
+      ~ privileges -> system_perms: SystemPrivileges
+      ~ hw_flags -> legacy_hw_flags: u32 // Collapse custom semantic bitset down to raw raw u32 bits
+
+      // Ultimate Code-gen Stress Block
+      + ultimate_boss_structure: DeepComplexWrapper
+
+      // Truncating sizes on existing structural components
+      ~ fixed_str_padded: string(2)      // Shrinking length constraints from 12 down to 2 characters
+      ~ fixed_map_populated: map<string, i64>(2) // Shifting fixed map sizes down from 4 elements to 2
+
+      // --- Delta array stress: resize a fixed delta array (4 -> 8), and transform variable -> fixed delta ---
+      ~ delta_fixed_u8: [u8](delta, 8)                    // wire-breaking: N changes, old/new decoders disagree on length
+      ~ delta_u32_seq -> u32_delta_seq: [u32](delta, 16)  // rename + grow fixed delta array 6 -> 16
+
+      // Clean sweeping deletion check
+      - void_container
+      - flattened_tuple_array
+    }
+  }
+}

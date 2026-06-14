@@ -5,5 +5,11 @@ members = [
     "crates/cli",
     "crates/codegen",
     "crates/runtime",
-    "crates/schema",
+    "crates/schema", "crates/core",
 ]
+
+[workspace.dependencies]
+heck = "0.5.0"
+compact_str = { version =  "0.9.1" }
+smallvec = { version = "1.15.1", features = ["serde", "union"] }
+serde = { version = "1.0.228", features = ["derive"] }

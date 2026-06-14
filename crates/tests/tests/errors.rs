@@ -1,10 +1,9 @@
-﻿use pojoc_tests::pojoc_player::*;
-use pojoc_runtime::*;
+use pojoc_tests::pojoc_edge::{runtime::*, *};
 
 #[test]
 fn test_truncated_buffer() {
     let mut buf = Vec::new();
-    encode(&mut buf, &Player::default());
+    encode(&mut buf, &Edge::default());
     buf.truncate(buf.len() / 2);
     assert!(decode(&buf).is_err());
 }

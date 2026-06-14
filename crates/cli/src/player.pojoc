@@ -1,49 +1,55 @@
 ﻿schema Player {
 
   version 1 {
+    enum Status {
+      Alive,
+      Dead,
+      Dying,
+    }
+
     fields {
-      id: float = 0.0
+      id: u32 = 0
       name: string = "Player"
-      level: int = 0
-      inventory: [string] = []
+      level: i32 = 0
+      status: Status = Status::Alive
+      inventory: [string](5) = []
     }
   }
 
   version 2 {
     type Vector3 {
-      x: float
-      y: float
-      z: float
+      x: f32
+      y: f32
+      z: f32
+      w: f32
+    }
+
+    enum Status extends Status@1 {
+      ~ Dying -> Downed
+      + Disqualified
     }
 
     diff {
       + position: Vector3
-      ~ level: float
+      ~ status: Status // update status to the new enum
+      ~ level: f32
     }
   }
- //comments work too!
-  version 3 {
-    type Vector3 extends Vector3 {
-      + w: float = 1.0
-    }
 
+  version 3 {
     diff {
       ~ id -> player_id: f64
-      ~ position: Vector3
       - name
       + tags: [string] = []
+      + bounds: (f32, f32, f32, f32) = (0.0, 0.0, 0.0, 0.0) // xmin, ymin, xmax, ymax
     }
   }
 
   version 4 {
     diff {
+      + velocity: (f32, f32, f32) = (0.0, 0.0, 0.0)  // dx, dy, dz
+      + status_code: string(8) = "00000000"
       + is_nauseous: bool = false
-    }
-  }
-
-  version 5 {
-    diff {
-      + is_dead: boolean = false
     }
   }
 }

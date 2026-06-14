@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 pojoc-schema = { path = "../schema" }
+pojoc-core = { path = "../core" }
+heck = { workspace = true }

@@ -1,0 +1,178 @@
+﻿schema Player {
+
+  version 1 {
+    enum Status {
+      Alive,
+      Dead,
+      Dying,
+    }
+
+    enum Class {
+      Warrior,
+      Mage,
+      Rogue,
+    }
+
+    enum Region {
+      North,
+      South,
+      East,
+      West,
+    }
+
+    type Stats {
+      strength: i32
+      agility: i32
+      intelligence: i32
+      endurance: i32
+    }
+
+    fields {
+      id: u32 = 0
+      name: string = "Player"
+      level: i32 = 0
+      status: Status = Status::Alive
+      class: Class = Class::Warrior
+      region: Region = Region::North
+      inventory: [string] = []
+      callsign: string = "none"
+      stats: Stats
+      hotbar: [string](6) = []
+      session_token: string(16) = "0000000000000000"
+      coordinates: (f32, f32) = (0.0, 0.0)
+      max_hp: const f32 = 100.0
+    }
+  }
+
+  version 2 {
+    type Vector3 {
+      x: f32
+      y: f32
+      z: f32
+      w: f32
+    }
+
+    enum Status extends Status@1 {
+      ~ Dying -> Downed
+      + Disqualified
+    }
+
+    enum Class extends Class@1 {
+      + Necromancer
+      + Paladin
+      ~ Rogue -> Assassin
+    }
+
+    type Stats extends Stats@1 {
+      + luck: i32 = 0
+      + charisma: i32 = 0
+    }
+
+    diff {
+      + position: Vector3
+      ~ status: Status
+      ~ class: Class
+      ~ level: f32
+      ~ stats: Stats
+      + kill_death: (i32, i32) = (0, 0)
+    }
+  }
+
+  version 3 {
+    type AABB {
+      min_x: f32
+      min_y: f32
+      max_x: f32
+      max_y: f32
+    }
+
+    type Transform {
+      position: Vector3
+      bounds: AABB
+    }
+
+    enum Region extends Region@1 {
+      + Central
+      + Void
+    }
+
+    diff {
+      ~ id -> player_id: f64
+      - name
+      + tags: [string] = []
+      + transform: Transform
+      ~ callsign: string
+      ~ region: Region
+      + recent_zones: [string](8) = []
+      + chat_history: [string](32) = []
+    }
+  }
+
+  version 4 {
+    enum Status extends Status@2 {
+      + Spectating
+    }
+
+    diff {
+      + velocity: (f32, f32, f32) = (0.0, 0.0, 0.0)
+      + status_code: string(8) = "00000000"
+      + is_nauseous: bool = false
+      ~ status: Status
+      + guild_tag: string(4) = "NONE"
+      + spawn_point: (f32, f32, f32) = (0.0, 0.0, 0.0)
+      + achievement_ids: [u32] = []
+    }
+  }
+
+  version 5 {
+    bitset Perks {
+      DoubleJump,
+      IronClad,
+      Thievery,
+    }
+
+    bitset Flags {
+      IsBanned,
+      IsMuted,
+      IsVerified,
+      IsPremium,
+    }
+
+    diff {
+      + active_perks: Perks = 0
+      + account_flags: Flags = 0
+      + quest_progress: map<string, i32> = {}
+      + quick_slots: map<i32, string>(8) = {}
+      + skill_levels: map<string, f32> = {}
+      + loadout: [(string, i32)](4) = []
+    }
+  }
+
+  version 6 {
+    bitset Perks extends Perks@5 {
+      + Telekinesis
+      - IronClad
+    }
+
+    bitset Flags extends Flags@5 {
+      + IsStreamer
+      + IsDeveloper
+      - IsMuted
+    }
+
+    type Stats extends Stats@2 {
+      + resistance: f32 = 0.0
+      - luck
+    }
+
+    diff {
+      ~ active_perks: Perks
+      ~ account_flags: Flags
+      ~ stats: Stats
+      + leaderboard_scores: map<string, i64> = {}
+      ~ quick_slots: map<i32, string>(10)
+      + party_members: [u32](4) = []
+      + last_position: (f32, f32, f32) = (0.0, 0.0, 0.0)
+    }
+  }
+}

@@ -1,20 +1,21 @@
-﻿pub mod proto_player {
-    include!(concat!(env!("OUT_DIR"), "/player.rs"));
+pub mod proto_player {
+    include!(concat!(env!("OUT_DIR"), "/proto_player.rs"));
 }
 
 pub mod player_capnp {
     include!(concat!(env!("OUT_DIR"), "/schemas/player_capnp.rs"));
 }
 
-pub mod generated{
-    pub mod flatbuf;
-    pub mod pojoc;   
-    pub mod pojoc_edge;  
+pub mod flatbuf {
+    include!(concat!(env!("OUT_DIR"), "/flatbuf.rs"));
 }
 
-#[allow(unused_imports)]
-pub use generated::flatbuf::player_fb as fb_player;
+pub mod pojoc_player {
+    include!(concat!(env!("OUT_DIR"), "/pojoc_player.rs"));
+}
 
-pub use generated::pojoc as pojoc_player;
+pub mod pojoc_edge {
+    include!(concat!(env!("OUT_DIR"), "/pojoc_edge.rs"));
+}
 
-pub use generated::pojoc_edge as pojoc_edge;
+pub use flatbuf::fb_player;
