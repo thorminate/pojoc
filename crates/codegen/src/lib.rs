@@ -27,14 +27,17 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     emit_dispatcher(schema, &mut w);
     w.blank();
     encode::emit_size_hint(schema, &mut w);
-    encode::emit_encode_function(schema, &mut w);
+    encode::emit_encode_helpers(schema, &mut w);
+    encode::emit_encode_vn_functions(schema, &mut w);
 
     w.finish()
 }
 
 fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let name = &schema.name_hint;
+    let latest = schema.lineage.latest_version;
 
+    // ── decode dispatcher ─────────────────────────────────────────────────────
     w.line(&format!("pub fn decode(buf: &[u8]) -> Result<{name}> {{"));
     w.indent();
     w.line("let mut pos = 0;");
@@ -47,29 +50,67 @@ fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let v = vl.version;
         w.line(&format!("{v} => decode_v{v}(payload, &mut pos),"));
     }
-    w.line(&"v => Err(Error::UnsupportedVersion(v)),".to_string());
+    w.line("v => Err(Error::UnsupportedVersion(v)),");
     w.dedent();
     w.line("}");
     w.dedent();
     w.line("}");
     w.blank();
 
-    w.line(&format!(
-        "pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"
-    ));
+    // ── encode (current version) ───────────────────────────────────────────────
+    w.line(&format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"));
     w.indent();
     w.line("buf.reserve(size_hint(value));");
-    w.line(&format!(
-        "let len_pos = write_envelope_header(buf, {version});",
-        version = &schema.lineage.latest_version
-    ));
+    w.line(&format!("let len_pos = write_envelope_header(buf, {latest});"));
     w.line("let payload_start = buf.len();");
-    w.line("encode_payload(buf, value);");
+    w.line(&format!("encode_v{latest}(buf, value);"));   // ← was encode_payload
     w.line("let payload_len = buf.len() - payload_start;");
     w.line("patch_envelope_length(buf, len_pos, payload_len);");
     w.dedent();
     w.line("}");
+    w.blank();
+
+    // ── encode_for_version ────────────────────────────────────────────────────
+    // Produces a message envelope understood by a peer speaking the given version.
+    // Returns Err(UnsupportedVersion) if the target version is unknown.
+    w.line(&format!(
+        "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}, version: u64) -> Result<()> {{"
+    ));
+    w.indent();
+    w.line("buf.reserve(size_hint(value));");
+    w.line("let len_pos = write_envelope_header(buf, version);");
+    w.line("let payload_start = buf.len();");
+    w.line("match version {");
+    w.indent();
+    for vl in &schema.lineage.versions {
+        let v = vl.version;
+        w.line(&format!("{v} => encode_v{v}(buf, value),"));
+    }
+    w.line("v => return Err(Error::UnsupportedVersion(v)),");
+    w.dedent();
+    w.line("}");
+    w.line("let payload_len = buf.len() - payload_start;");
+    w.line("patch_envelope_length(buf, len_pos, payload_len);");
+    w.line("Ok(())");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    // ── supported_versions ────────────────────────────────────────────────────
+    // Convenience for capability negotiation — lets a server advertise which
+    // schema versions it can encode to without the caller hard-coding the list.
+    w.line("pub fn supported_versions() -> &'static [u64] {");
+    w.indent();
+    let versions: Vec<String> = schema.lineage.versions
+        .iter()
+        .map(|vl| vl.version.to_string())
+        .collect();
+    w.line(&format!("&[{}]", versions.join(", ")));
+    w.dedent();
+    w.line("}");
 }
+
+// ── emit_default and get_latest_versions unchanged ───────────────────────────
 
 fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
     match default {

@@ -389,7 +389,7 @@ fn scalar_info(name: &str) -> TypeInfo {
             skip_stmt: "skip_string(buf, pos)?;".into(),
             read_fn: "read_pojoc_string".into(),
             write_fn: "write_pojoc_string".into(),
-            default_expr: "PojocString::new()".into(),
+            default_expr: "PojocString::default()".into(),
             size_fn: None
         },
         other => {

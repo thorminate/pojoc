@@ -218,16 +218,19 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
             let expr = emit_read_expr(&fl.source_ty);
             w.line(&format!("let {target_name} = {expr};"));
         }
-        FieldMapping::Cast {
-            target_name,
-            from,
-            to,
-        } => {
+        FieldMapping::Cast { target_name, from, to } => {
             let rhs = match emit_cast_value(schema, from, to) {
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
-            w.line(&format!("let {target_name} = {rhs};"));
-        },
+            let comment = if matches!(to, ResolvedTypeRef::Optional(_))
+                && !matches!(from, ResolvedTypeRef::Optional(_))
+            {
+                " // promoted: mandatory in this wire version"
+            } else {
+                ""
+            };
+            w.line(&format!("let {target_name} = {rhs};{comment}"));
+        }
     }
 }
 
@@ -446,11 +449,23 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
         (FixedMap(fk, fv, from_n), FixedMap(_, _, to_n)) => {
             let ke = emit_read_expr(fk);
             let ve = emit_read_expr(fv);
-            CastExpr::Block(format!(
-                "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
-                 for _ in 0..{from_n} {{ let __k = {ke}; let __v = {ve}; __m.push((__k, __v)); }} \
-                 __m }}"
-            ))
+            if from_n <= to_n {
+                CastExpr::Block(format!(
+                    "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
+             for _ in 0..{from_n} {{ let __k = {ke}; let __v = {ve}; __m.push((__k, __v)); }} \
+             __m }}"
+                ))
+            } else {
+                // Read all from_n wire entries but only keep the first to_n
+                CastExpr::Block(format!(
+                    "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
+             for __i in 0..{from_n} {{ \
+               let __k = {ke}; let __v = {ve}; \
+               if __i < {to_n} {{ __m.push((__k, __v)); }} \
+             }} \
+             __m }}"
+                ))
+            }
         }
 
         (FixedArray(elem, n), Map(_, v_ty)) => {
@@ -474,21 +489,6 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
             CastExpr::Inline(expr)
         }
 
-        (Scalar(f), Optional(to_inner)) if is_primitive(&f.name) => {
-            match &**to_inner {
-                Scalar(t) if is_primitive(&t.name) => {
-                    let fi = type_info(from);
-                    if f.name == t.name {
-                        CastExpr::Inline(format!("Some({}(buf, pos)?)", fi.read_fn))
-                    } else {
-                        let ti = type_info(to_inner);
-                        CastExpr::Inline(format!("Some({}(buf, pos)? as {})", fi.read_fn, ti.rust_type))
-                    }
-                }
-                _ => CastExpr::Inline(format!("Some({})", emit_read_expr(from))),
-            }
-        }
-
         (FixedDeltaArray(from_elem, from_n), FixedDeltaArray(_, to_n)) => {
             let elem_rust = type_info(from_elem).rust_type;
             let elem_default = type_info(from_elem).default_expr;
@@ -499,6 +499,13 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
                  for __i in 0..{copy_n} {{ __dst[__i] = __src[__i]; }} \
                  __dst }}"
             ))
+        }
+
+        (from_ty, Optional(to_inner)) if !matches!(from_ty, Optional(_)) => {
+            let inner_expr = match emit_cast_value(schema, from_ty, to_inner) {
+                CastExpr::Inline(e) | CastExpr::Block(e) => e,
+            };
+            CastExpr::Inline(format!("Some({inner_expr})"))
         }
 
         _ => CastExpr::Inline(emit_read_expr(from)),
@@ -525,30 +532,69 @@ fn emit_struct_cast_body(
     let to_type = schema.types.types.get(to).expect("struct cast target not found");
 
     let to_by_id: HashMap<FieldId, &FieldIR> = to_type.fields.iter().map(|f| (f.id, f)).collect();
-    let from_ids: HashSet<FieldId> = from_type.fields.iter().map(|f| f.id).collect();
     let to_ids: HashSet<FieldId> = to_type.fields.iter().map(|f| f.id).collect();
 
+    // Must mirror what the encoder wrote: a bitmap header before all field data.
+    let optional_count = from_type.fields.iter()
+        .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
+        .count();
+    emit_optional_header_read(optional_count, w);
+
+    let mut optional_counter = 0;
     for src in &from_type.fields {
-        let expr = emit_read_expr(&src.ty);
-        if to_ids.contains(&src.id) {
-            let dst_name = &to_by_id[&src.id].name;
-            w.line(&format!("let {dst_name} = {expr};"));
-        } else {
-            w.line(&format!("let _ = {expr};"));
+        let is_target_bound = to_ids.contains(&src.id);
+
+        match &src.ty {
+            ResolvedTypeRef::Optional(inner) => {
+                let byte_idx = optional_counter / 8;
+                let bit_idx = optional_counter % 8;
+                optional_counter += 1;
+
+                if is_target_bound {
+                    let dst_name = &to_by_id[&src.id].name;
+                    let expr = emit_read_expr(inner);
+                    w.line(&format!(
+                        "let {dst_name} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 \
+                         {{ Some({expr}) }} else {{ None }};"
+                    ));
+                } else {
+                    // Field dropped in target type — skip bytes if present.
+                    w.line(&format!("if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"));
+                    w.indent();
+                    w.line(&emit_skip_stmt(inner));
+                    w.dedent();
+                    w.line("}");
+                }
+            }
+            _ => {
+                let binding_prefix = if is_target_bound {
+                    let dst_name = &to_by_id[&src.id].name;
+                    format!("let {dst_name} = ")
+                } else {
+                    "let _ = ".to_string()
+                };
+                let expr = emit_read_expr(&src.ty);
+                w.line(&format!("{binding_prefix}{expr};"));
+            }
         }
     }
 
     for dst in &to_type.fields {
-        if !from_ids.contains(&dst.id) {
-            let default = get_field_default_expr(dst.default.as_ref(), &dst.ty, schema);
-            w.line(&format!("let {} = {default};", dst.name));
+        if !from_type.fields.iter().any(|f| f.id == dst.id) {
+            let dst_name = &dst.name;
+            let default_str = if let Some(ref explicit_default) = dst.default {
+                emit_default(explicit_default, schema)
+            } else {
+                type_info(&dst.ty).default_expr
+            };
+            w.line(&format!("let {dst_name} = {default_str};"));
         }
     }
 
     w.line(&format!("{} {{", to.name));
     w.indent();
-    for f in &to_type.fields {
-        w.line(&format!("{},", f.name));
+    for dst in &to_type.fields {
+        w.line(&format!("{},", dst.name));
     }
     w.dedent();
     w.line("}");

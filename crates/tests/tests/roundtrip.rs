@@ -113,6 +113,89 @@ fn test_roundtrip_with_populated_values() {
 }
 
 #[test]
+fn test_encode_for_version_roundtrips_all_supported() {
+    // Verifies that encode_for_version produces decodable output for every version
+    // the schema advertises. Each version's bytes must decode without error, since
+    // the decoder understands all supported versions.
+    let original = Edge::default();
+
+    for &version in supported_versions() {
+        let mut buf = Vec::new();
+        encode_for_version(&mut buf, &original, version)
+            .unwrap_or_else(|e| panic!("encode_for_version failed for version {version}: {e:?}"));
+
+        decode(&buf).unwrap_or_else(|e| {
+            panic!("decode failed for version {version} output: {e:?}")
+        });
+    }
+}
+
+#[test]
+fn test_encode_for_version_latest_matches_encode() {
+    // The latest version produced by encode_for_version must be byte-identical
+    // to encode(), since both go through encode_v{latest} now.
+    let mut original = Edge::default();
+    original.u8_to_i64 = 42;
+    original.spaces_str = "hello".into();
+    original.bounds_enum = NumericBounds::MaxU8;
+    original.system_perms = SystemPrivileges::READ | SystemPrivileges::EXECUTE;
+
+    let latest = *supported_versions().last().expect("no supported versions");
+
+    let mut buf_encode = Vec::new();
+    encode(&mut buf_encode, &original);
+
+    let mut buf_for_version = Vec::new();
+    encode_for_version(&mut buf_for_version, &original, latest)
+        .expect("encode_for_version failed for latest version");
+
+    assert_eq!(
+        buf_encode, buf_for_version,
+        "encode() and encode_for_version(latest) produced different bytes"
+    );
+}
+
+#[test]
+fn test_encode_for_version_unsupported_returns_err() {
+    // A version not in the schema's lineage must return UnsupportedVersion,
+    // not panic or silently produce garbage bytes.
+    let original = Edge::default();
+    let mut buf = Vec::new();
+
+    let bad_version = u64::MAX;
+    let result = encode_for_version(&mut buf, &original, bad_version);
+    assert!(
+        result.is_err(),
+        "encode_for_version should return Err for unknown version {bad_version}"
+    );
+}
+
+#[test]
+fn test_encode_for_version_populated_roundtrips_all_supported() {
+    // Same as the default-values version test but with a populated struct,
+    // exercising cast/clamp paths in older vN encoders.
+    let mut original = Edge::default();
+    original.u8_to_i64 = 100;
+    original.i64_to_f32 = -987.65;
+    original.bounds_enum = NumericBounds::ExtraVariant;
+    original.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS;
+    original.nullified_str = Some("VersionTest".into());
+    original.empty_arr.push(pojstr!("v"));
+    original.root_struct.leaf.leaf_val = "leaf".into();
+    original.root_struct.leaf.leaf_numeric = 1;
+
+    for &version in supported_versions() {
+        let mut buf = Vec::new();
+        encode_for_version(&mut buf, &original, version)
+            .unwrap_or_else(|e| panic!("encode_for_version failed for version {version}: {e:?}"));
+
+        decode(&buf).unwrap_or_else(|e| {
+            panic!("decode failed for version {version} output: {e:?}")
+        });
+    }
+}
+
+#[test]
 fn test_hardware_flags_defaults_and_operators() {
     // HardwareFlags internal value default is 0x05 (IS_CPU_BOUND | HAS_VULKAN)
     let mut flags = HardwareFlags::default();
@@ -165,10 +248,13 @@ fn test_system_privileges_bitmask_operations() {
 
 #[test]
 fn test_numeric_bounds_enum_conversions() {
-    assert_eq!(NumericBounds::default(), NumericBounds::ResetZero);
-    assert_eq!(NumericBounds::try_from(0), Ok(NumericBounds::ResetZero));
-    assert_eq!(NumericBounds::try_from(2), Ok(NumericBounds::MinI64));
-    assert_eq!(NumericBounds::try_from(4), Ok(NumericBounds::ExtraVariant));
+    assert_eq!(NumericBounds::default(), NumericBounds::Unknown);
+    assert_eq!(NumericBounds::try_from(0), Ok(NumericBounds::Unknown));
+    assert_eq!(NumericBounds::try_from(1), Ok(NumericBounds::ResetZero));
+    assert_eq!(NumericBounds::try_from(2), Ok(NumericBounds::MaxU8));
+    assert_eq!(NumericBounds::try_from(3), Ok(NumericBounds::MinI64));
+    assert_eq!(NumericBounds::try_from(4), Ok(NumericBounds::MaxI64));
+    assert_eq!(NumericBounds::try_from(5), Ok(NumericBounds::ExtraVariant));
     assert_eq!(NumericBounds::try_from(99), Err(99), "Invalid variant should return error variant index");
 }
 

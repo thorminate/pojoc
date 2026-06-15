@@ -71,15 +71,24 @@ impl<'a> SchemaAnalyzer<'a> {
                 if let VersionBlockAst::EnumDef(ed) = block {
                     let resolved = match ed {
                         EnumDefAst::Definition { variants, .. } => {
-                            let variants = variants
-                                .iter()
-                                .enumerate()
-                                .map(|(i, name)| EnumVariant {
+                            let mut resolved = vec![EnumVariant {
+                                name: "Unknown".into(),
+                                wire_value: 0,
+                            }];
+                            for (i, name) in variants.iter().enumerate() {
+                                if name == "Unknown" {
+                                    return Err(AnalysisError::ReservedVariantName {
+                                        name: "Unknown".into(),
+                                        type_name: ed.name().to_string(),
+                                        version: version.version,
+                                    });
+                                }
+                                resolved.push(EnumVariant {
                                     name: name.clone(),
-                                    wire_value: i as u32,
-                                })
-                                .collect();
-                            ResolvedEnum { variants }
+                                    wire_value: (i + 1) as u32,
+                                });
+                            }
+                            ResolvedEnum { variants: resolved }
                         }
 
                         EnumDefAst::Extension { name, base, ops } => {
