@@ -13,6 +13,7 @@ pub struct VersionAst {
 #[derive(Debug)]
 pub enum VersionBlockAst {
     EnumDef(EnumDefAst),
+    UnionDef(UnionDefAst),
     TypeDef(TypeDefAst),
     Fields(FieldsAst),
     Diff(Vec<DiffAst>),
@@ -95,6 +96,42 @@ impl BitsetDefAst {
 }
 
 #[derive(Debug, Clone)]
+pub struct UnionVariantAst {
+    pub name: String,
+    pub payload_ty: String,
+}
+
+#[derive(Debug)]
+pub enum UnionVariantOpAst {
+    Add {
+        name: String,
+        payload_ty: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum UnionDefAst {
+    Definition {
+        name: String,
+        variants: Vec<UnionVariantAst>,
+    },
+    Extension {
+        name: String,
+        base: ExtendsAst,
+        ops: Vec<UnionVariantOpAst>,
+    },
+}
+
+impl UnionDefAst {
+    pub fn name(&self) -> &str {
+        match self {
+            UnionDefAst::Definition { name, .. } => name,
+            UnionDefAst::Extension { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ConstFieldAst {
     pub name: String,
     pub ty: TypeAst,
@@ -112,6 +149,7 @@ pub struct FieldAst {
     pub name: String,
     pub ty: TypeAst,
     pub default: Option<DefaultValueAst>,
+    pub lazy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -154,9 +192,6 @@ pub enum DiffAst {
     Add {
         field: FieldAst,
     },
-    AddConst {
-        field: ConstFieldAst,
-    },
     Remove {
         name: String,
     },
@@ -167,10 +202,19 @@ pub enum DiffAst {
     UpdateType {
         name: String,
         ty: TypeAst,
+        lazy: bool
     },
     Transform {
         from: String,
         to: String,
         ty: Option<TypeAst>,
+        lazy: bool
     },
+
+    // const ops
+    AddConst {
+        field: ConstFieldAst,
+    },
+    UpdateConst { name: String, ty: TypeAst, value: DefaultValueAst },
+    TransformConst { from: String, to: String, ty: TypeAst, value: DefaultValueAst },
 }

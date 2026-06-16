@@ -1,14 +1,14 @@
-// encode.rs
 use heck::ToSnakeCase;
 use super::writer::CodeWriter;
 use pojoc_core::types::*;
 use pojoc_schema::ir::lineage::*;
-use pojoc_schema::ir::types::*;
+use pojoc_schema::ir::ir_types::*;
 use crate::get_latest_versions;
 
 pub fn emit_encode_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_bitset_writers(schema, w);
     emit_type_writers(schema, w);
+    emit_union_writers(schema, w);
 }
 
 pub fn emit_encode_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
@@ -20,13 +20,14 @@ pub fn emit_encode_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 pub fn emit_size_hint(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_type_size_hints(schema, w);
+    emit_union_size_hints(schema, w);
 
     let name = &schema.name_hint;
     let ordered = lineage_ordered_fields(schema);
 
     w.line(&format!("pub fn size_hint(value: &{name}) -> usize {{"));
     w.indent();
-    w.line("let mut size = 5usize; // envelope: 1 version varint + 4 byte length");
+    w.line("let mut size = 5usize;");
     emit_optional_header_size(&ordered, w);
     emit_fields_size_loop(&ordered, w, schema);
     w.line("size");
@@ -64,6 +65,45 @@ fn deref_if_copy(ty: &ResolvedTypeRef, var: &str) -> String {
     }
 }
 
+fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let (_, resolved) = latest[name];
+        w.line("#[allow(dead_code)]");
+        w.line(&format!("fn write_{}(buf: &mut Vec<u8>, value: &{name}) {{", name.to_snake_case()));
+        w.indent();
+        w.line("match value {");
+        w.indent();
+        for variant in &resolved.variants {
+            let write_payload = format!("write_{}", variant.payload.name.to_snake_case());
+            w.line(&format!("{name}::{}(__payload) => {{", variant.name));
+            w.indent();
+            w.line(&format!("write_varint64(buf, {});", variant.discriminant));
+            w.line("let mut __tmp = Vec::new();");
+            w.line(&format!("{write_payload}(&mut __tmp, __payload);"));
+            w.line("write_varint32(buf, __tmp.len() as u32);");
+            w.line("buf.extend_from_slice(&__tmp);");
+            w.dedent();
+            w.line("}");
+        }
+        w.line(&format!("{name}::Unknown {{ discriminant, data }} => {{"));
+        w.indent();
+        w.line("write_varint64(buf, *discriminant);");
+        w.line("write_varint32(buf, data.len() as u32);");
+        w.line("buf.extend_from_slice(data);");
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+        w.blank();
+    }
+}
+
 fn emit_bitset_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let latest = get_latest_versions(&schema.bitsets.bitsets, |id| id.name.clone(), |id| id.version);
     let mut names: Vec<&String> = latest.keys().collect();
@@ -93,7 +133,7 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line(&format!("fn write_{}({buf}: &mut Vec<u8>, {val}: &{name}) {{", name.to_snake_case()));
         w.indent();
         emit_optional_header_write(&resolved.fields, w);
-        emit_fields_write_loop(&resolved.fields, w);
+        emit_fields_write_loop(schema, &resolved.fields, w);
         w.dedent();
         w.line("}");
         w.blank();
@@ -116,8 +156,25 @@ fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
     w.line("write_fixed_bytes(buf, &__header);");
 }
 
-fn emit_fields_write_loop(fields: &[FieldIR], w: &mut CodeWriter) {
+fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut CodeWriter) {
     for field in fields {
+        if field.lazy {
+            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
+            if is_optional {
+                w.line(&format!("buf.extend_from_slice(value.{}.raw_bytes());", field.name));
+            } else {
+                w.line(&format!("if !value.{}.raw_bytes().is_empty() {{", field.name));
+                w.indent();
+                w.line(&format!("buf.extend_from_slice(value.{}.raw_bytes());", field.name));
+                w.dedent();
+                w.line("} else {");
+                w.indent();
+                emit_vn_default_write(&field.ty, schema, w);
+                w.dedent();
+                w.line("}");
+            }
+            continue;
+        }
         let accessor = format!("value.{}", field.name);
         match &field.ty {
             ResolvedTypeRef::Optional(inner) => {
@@ -162,12 +219,15 @@ fn emit_write_expr(
             }
         }
 
+        ResolvedTypeRef::Union(id) => {
+            w.line(&format!("write_{}(buf, &{accessor});", id.name.to_snake_case()));
+        }
+
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!("write_{}(buf, &{accessor});", id.name.to_snake_case()));
         }
 
         ResolvedTypeRef::Scalar(_) => {
-            // Non-primitive struct type — delegate to its write_X function.
             w.line(&format!("{}(buf, &{accessor});", info.write_fn));
         }
 
@@ -266,7 +326,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
     if header_bytes > 0 {
         w.line(&format!("let mut __header = [0u8; {header_bytes}];"));
         for (idx, fl) in opt_fields.iter().enumerate() {
-            emit_vn_optional_header_bit(fl, idx / 8, idx % 8, w);
+            emit_vn_optional_header_bit(schema, fl, idx / 8, idx % 8, w);
         }
         w.line("write_fixed_bytes(buf, &__header);");
     }
@@ -283,23 +343,33 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
     w.line("}");
 }
 
-fn emit_vn_optional_header_bit(fl: &FieldLineage, byte_idx: usize, bit_idx: usize, w: &mut CodeWriter) {
+fn emit_vn_optional_header_bit(schema: &ResolvedSchema, fl: &FieldLineage, byte_idx: usize, bit_idx: usize, w: &mut CodeWriter) {
     match &fl.mapping {
         FieldMapping::Discard => {}
         FieldMapping::PassThrough { target_name } => {
-            w.line(&format!(
-                "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
-            ));
-        }
-        FieldMapping::Cast { target_name, to, .. } => {
-            if matches!(to, ResolvedTypeRef::Optional(_)) {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
                 w.line(&format!(
-                    "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    "if !value.{target_name}.raw_bytes().is_empty() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
             } else {
                 w.line(&format!(
-                    "__header[{byte_idx}] |= 1 << {bit_idx}; // promoted to mandatory"
+                    "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
+            }
+        }
+        FieldMapping::Cast { target_name, to, .. } => {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if !target_is_lazy {
+                if matches!(to, ResolvedTypeRef::Optional(_)) {
+                    w.line(&format!(
+                        "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    ));
+                } else {
+                    w.line(&format!(
+                        "__header[{byte_idx}] |= 1 << {bit_idx};"
+                    ));
+                }
             }
         }
     }
@@ -314,30 +384,42 @@ fn emit_vn_optional_body(
     match &fl.mapping {
         FieldMapping::Discard => {}
         FieldMapping::PassThrough { target_name } => {
-            w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
-            w.indent();
-            emit_write_expr(inner_src, &deref_if_copy(inner_src, "__val"), Some(schema), w);
-            w.dedent();
-            w.line("}");
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                w.line(&format!("if !value.{target_name}.raw_bytes().is_empty() {{"));
+                w.indent();
+                w.line(&format!("buf.extend_from_slice(value.{target_name}.raw_bytes());"));
+                w.dedent();
+                w.line("}");
+            } else {
+                w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                w.indent();
+                emit_write_expr(inner_src, &deref_if_copy(inner_src, "__val"), Some(schema), w);
+                w.dedent();
+                w.line("}");
+            }
         }
         FieldMapping::Cast { target_name, from, to } => {
-            match (from, to) {
-                (ResolvedTypeRef::Optional(f_inner), ResolvedTypeRef::Optional(t_inner)) => {
-                    w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
-                    w.indent();
-                    emit_vn_cast_value(schema, f_inner, t_inner, &deref_if_copy(t_inner, "__val"), w);
-                    w.dedent();
-                    w.line("}");
-                }
-                (ResolvedTypeRef::Optional(f_inner), t_inner) => {
-                    emit_vn_cast_value(schema, f_inner, t_inner, &format!("value.{target_name}"), w);
-                }
-                _ => {
-                    w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
-                    w.indent();
-                    emit_write_expr(inner_src, &deref_if_copy(inner_src, "__val"), Some(schema), w);
-                    w.dedent();
-                    w.line("}");
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if !target_is_lazy {
+                match (from, to) {
+                    (ResolvedTypeRef::Optional(f_inner), ResolvedTypeRef::Optional(t_inner)) => {
+                        w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                        w.indent();
+                        emit_vn_cast_value(schema, f_inner, t_inner, &deref_if_copy(t_inner, "__val"), w);
+                        w.dedent();
+                        w.line("}");
+                    }
+                    (ResolvedTypeRef::Optional(f_inner), t_inner) => {
+                        emit_vn_cast_value(schema, f_inner, t_inner, &format!("value.{target_name}"), w);
+                    }
+                    _ => {
+                        w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                        w.indent();
+                        emit_write_expr(inner_src, &deref_if_copy(inner_src, "__val"), Some(schema), w);
+                        w.dedent();
+                        w.line("}");
+                    }
                 }
             }
         }
@@ -350,15 +432,34 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
             emit_vn_default_write(&fl.source_ty, schema, w);
         }
         FieldMapping::PassThrough { target_name } => {
-            emit_write_expr(
-                &fl.source_ty,
-                &format!("value.{target_name}"),
-                Some(schema),
-                w,
-            );
+            let target_field = schema.versions.last().unwrap().fields.iter()
+                .find(|f| f.name == *target_name).unwrap();
+            if target_field.lazy {
+                let is_optional = matches!(fl.source_ty, ResolvedTypeRef::Optional(_));
+                if is_optional {
+                    w.line(&format!("buf.extend_from_slice(value.{target_name}.raw_bytes());"));
+                } else {
+                    w.line(&format!("if !value.{target_name}.raw_bytes().is_empty() {{"));
+                    w.indent();
+                    w.line(&format!("buf.extend_from_slice(value.{target_name}.raw_bytes());"));
+                    w.dedent();
+                    w.line("} else {");
+                    w.indent();
+                    emit_vn_default_write(&fl.source_ty, schema, w);
+                    w.dedent();
+                    w.line("}");
+                }
+            } else {
+                emit_write_expr(&fl.source_ty, &format!("value.{target_name}"), Some(schema), w);
+            }
         }
         FieldMapping::Cast { target_name, from, to } => {
-            emit_vn_cast_value(schema, from, to, &format!("value.{target_name}"), w);
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                emit_vn_default_write(from, schema, w);
+            } else {
+                emit_vn_cast_value(schema, from, to, &format!("value.{target_name}"), w);
+            }
         }
     }
 }
@@ -536,7 +637,6 @@ fn emit_vn_cast_value(
         }
 
         (DeltaArray(_), Array(_)) => {
-            // vN used delta encoding.
             w.line(&format!("write_delta_array(buf, {accessor}.as_slice());"));
         }
 
@@ -634,7 +734,11 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line("}");
         }
         ResolvedTypeRef::Enum(_) => {
-            w.line("write_varint64(buf, 0u64); // Unknown");
+            w.line("write_varint64(buf, 0u64);");
+        }
+        ResolvedTypeRef::Union(_) => {
+            w.line("write_varint64(buf, 0u64);");
+            w.line("write_varint32(buf, 0u32);");
         }
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!(
@@ -643,10 +747,10 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             ));
         }
         ResolvedTypeRef::Array(_) => {
-            w.line("write_array_len(buf, 0); // empty");
+            w.line("write_array_len(buf, 0);");
         }
         ResolvedTypeRef::DeltaArray(_) => {
-            w.line("write_varint32(buf, 0u32); // empty delta array");
+            w.line("write_varint32(buf, 0u32);");
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
             w.line(&format!("for _ in 0..{n} {{"));
@@ -667,7 +771,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line(&format!("write_fixed_bytes::<{n}>(buf, &[0u8; {n}]);"));
         }
         ResolvedTypeRef::Map(_, _) => {
-            w.line("write_array_len(buf, 0); // empty map");
+            w.line("write_array_len(buf, 0);");
         }
         ResolvedTypeRef::FixedMap(k, v, n) => {
             w.line(&format!("for _ in 0..{n} {{"));
@@ -713,15 +817,57 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let (_, resolved) = latest[name];
+        w.line("#[allow(dead_code)]");
+        w.line(&format!("fn size_hint_{}(value: &{name}) -> usize {{", name.to_snake_case()));
+        w.indent();
+        w.line("match value {");
+        w.indent();
+        for variant in &resolved.variants {
+            let payload_size_fn = format!("size_hint_{}", variant.payload.name.to_snake_case());
+            w.line(&format!(
+                "{name}::{}(__p) => {{ let __plen = {payload_size_fn}(__p); varint_size({}) + varint_size(__plen) + __plen }}",
+                variant.name, variant.discriminant
+            ));
+        }
+        w.line(&format!(
+            "{name}::Unknown {{ discriminant, data }} => varint_size(*discriminant as usize) + varint_size(data.len()) + data.len(),"
+        ));
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+        w.blank();
+    }
+}
+
 fn emit_optional_header_size(fields: &[FieldIR], w: &mut CodeWriter) {
     let n = fields.iter().filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_))).count();
     if n > 0 {
-        w.line(&format!("size += {}; // bitpacked optionals header", (n + 7) / 8));
+        w.line(&format!("size += {};", (n + 7) / 8));
     }
 }
 
 fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &ResolvedSchema) {
     for field in fields {
+        if field.lazy {
+            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
+            if is_optional {
+                w.line(&format!("size += value.{}.raw_bytes().len();", field.name));
+            } else {
+                w.line(&format!(
+                    "size += if value.{name}.raw_bytes().is_empty() {{ 16 }} else {{ value.{name}.raw_bytes().len() }};",
+                    name = field.name
+                ));
+            }
+            continue;
+        }
         let accessor = format!("value.{}", field.name);
         match &field.ty {
             ResolvedTypeRef::Optional(inner) => {
@@ -744,6 +890,9 @@ fn emit_size_expr(ty: &ResolvedTypeRef, accessor: &str, w: &mut CodeWriter, sche
         }
         ResolvedTypeRef::Enum(_) => {
             w.line(&format!("size += varint_size({accessor} as usize);"));
+        }
+        ResolvedTypeRef::Union(_) => {
+            w.line(&format!("size += {};", info.size_expr(accessor)));
         }
         ResolvedTypeRef::Bitset(id, _) => {
             let computed_len = schema.bitsets.bitsets.get(id)

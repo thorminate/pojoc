@@ -1,4 +1,4 @@
-use super::types::FieldId;
+use super::ir_types::FieldId;
 
 #[derive(Debug)]
 pub struct IdGen {

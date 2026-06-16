@@ -113,7 +113,7 @@ fn parses_diff_operations() {
     }
 
     match &diff[1] {
-        DiffAst::UpdateType { name, ty } => {
+        DiffAst::UpdateType { name, ty, .. } => {
             assert_eq!(name, "level");
             assert!(matches!(ty, TypeAst::Named(t) if t == "float"));
         }

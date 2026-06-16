@@ -1,7 +1,7 @@
 use super::id_gen::*;
 use super::lineage::SchemaLineage;
 use super::resolver::*;
-use super::types::*;
+use super::ir_types::*;
 use crate::ast::*;
 use crate::error::AnalysisError;
 use pojoc_core::types::*;
@@ -12,6 +12,7 @@ pub struct SchemaAnalyzer<'a> {
     resolver: Resolver<'a>,
     type_registry: TypeRegistry,
     enum_registry: EnumRegistry,
+    union_registry: UnionRegistry,
     bitset_registry: BitsetRegistry,
     version_states: Vec<ResolvedVersion>,
     current: Option<VersionContext>,
@@ -25,6 +26,7 @@ impl<'a> SchemaAnalyzer<'a> {
             ast,
             type_registry: TypeRegistry::default(),
             enum_registry: EnumRegistry::default(),
+            union_registry: UnionRegistry::default(),
             bitset_registry: BitsetRegistry::default(),
             version_states: Vec::new(),
             id_gen: IdGen::new(),
@@ -36,6 +38,7 @@ impl<'a> SchemaAnalyzer<'a> {
         self.collect_enums()?;
         self.collect_types()?;
         self.collect_bitsets()?;
+        self.collect_unions()?;
         for version in &self.ast.versions {
             self.process_version(version)?;
         }
@@ -159,6 +162,100 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
+    fn collect_unions(&mut self) -> Result<(), AnalysisError> {
+        for version in &self.ast.versions {
+            for block in &version.blocks {
+                if let VersionBlockAst::UnionDef(ud) = block {
+                    let resolved = match ud {
+                        UnionDefAst::Definition { name: _, variants } => {
+                            ResolvedUnion {
+                                variants: self.resolve_union_variants(variants, version.version)?,
+                            }
+                        }
+
+                        UnionDefAst::Extension { name, base, ops } => {
+                            if base.version >= version.version {
+                                return Err(AnalysisError::UnknownParentType {
+                                    child: name.clone(),
+                                    parent: format!("{}@{}", base.name, base.version),
+                                    version: version.version,
+                                });
+                            }
+
+                            let parent = self
+                                .union_registry
+                                .unions
+                                .get(&TypeId { name: base.name.clone(), version: base.version })
+                                .ok_or_else(|| AnalysisError::UnknownParentType {
+                                    child: name.clone(),
+                                    parent: format!("{}@{}", base.name, base.version),
+                                    version: version.version,
+                                })?;
+
+                            let mut variants = parent.variants.clone();
+
+                            for op in ops {
+                                match op {
+                                    UnionVariantOpAst::Add { name: vname, payload_ty } => {
+                                        if variants.iter().any(|v| &v.name == vname) {
+                                            return Err(AnalysisError::FieldAlreadyExists(
+                                                version.version,
+                                                vname.clone(),
+                                            ));
+                                        }
+
+                                        let payload_id = self.resolver.resolve_type(payload_ty, version.version)
+                                            .ok_or_else(|| AnalysisError::UnknownType {
+                                                name: payload_ty.clone(),
+                                                version: version.version,
+                                            })?;
+
+                                        let discriminant = variants.iter().map(|v| v.discriminant).max().map_or(0, |m| m + 1);
+
+                                        variants.push(UnionVariant {
+                                            name: vname.clone(),
+                                            payload: payload_id,
+                                            discriminant,
+                                        });
+                                    }
+                                }
+                            }
+
+                            ResolvedUnion { variants }
+                        }
+                    };
+
+                    let id = TypeId { name: ud.name().to_string(), version: version.version };
+                    self.union_registry.unions.insert(id, resolved);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_union_variants(
+        &self,
+        variants: &[UnionVariantAst],
+        version: i128,
+    ) -> Result<Vec<UnionVariant>, AnalysisError> {
+        variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let payload = self.resolver.resolve_type(&v.payload_ty, version)
+                    .ok_or_else(|| AnalysisError::UnknownType {
+                        name: v.payload_ty.clone(),
+                        version,
+                    })?;
+                Ok(UnionVariant {
+                    name: v.name.clone(),
+                    payload,
+                    discriminant: i as u64,
+                })
+            })
+            .collect()
+    }
+
     fn collect_bitsets(&mut self) -> Result<(), AnalysisError> {
         for version in &self.ast.versions {
             for block in &version.blocks {
@@ -265,6 +362,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     name: f.name.clone(),
                     ty,
                     default,
+                    lazy: f.lazy,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -317,8 +415,18 @@ impl<'a> SchemaAnalyzer<'a> {
                 DiffAst::Add { field } => {
                     let ty = self.resolve(&field.ty, version)?;
 
+                    if field.lazy && !matches!(ty, ResolvedTypeRef::Optional(_)) {
+                        return Err(AnalysisError::LazyDiffFieldMustBeOptional {
+                            field: field.name.clone(),
+                            version,
+                        });
+                    }
+
                     let default = match &ty {
                         ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+                            Some(DefaultValue::Struct)
+                        }
+                        ResolvedTypeRef::Union(_) => {
                             Some(DefaultValue::Struct)
                         }
                         ResolvedTypeRef::Optional(_) if field.default.is_none() => {
@@ -346,6 +454,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         name: field.name.clone(),
                         ty,
                         default,
+                        lazy: field.lazy,
                     });
                 }
 
@@ -391,11 +500,12 @@ impl<'a> SchemaAnalyzer<'a> {
                     }
                 }
 
-                DiffAst::UpdateType { name, ty } => {
+                DiffAst::UpdateType { name, ty, lazy } => {
                     if let Some(f) = fields.iter_mut().find(|f| f.name == *name) {
                         let new_ty = self.resolve(ty, version)?;
                         check_type_update(&f.ty, &new_ty, version)?;
                         f.ty = new_ty;
+                        f.lazy = *lazy;
                     } else if consts.iter().any(|c| c.name == *name) {
                     } else {
                         return Err(AnalysisError::FieldNotFound {
@@ -407,17 +517,55 @@ impl<'a> SchemaAnalyzer<'a> {
                     }
                 }
 
-                DiffAst::Transform { from, to, ty } => {
+                DiffAst::Transform { from, to, ty, lazy } => {
                     if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
                         if let Some(ty) = ty {
                             f.ty = self.resolve(ty, version).expect("type must be resolved");
                         }
+                        f.lazy = *lazy;
                     } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
                         c.name = to.clone();
                     } else {
                         return Err(AnalysisError::FieldNotFound {
                             op: "transform",
+                            field: from.clone(),
+                            type_name: td.name.clone(),
+                            version,
+                        });
+                    }
+                }
+
+                DiffAst::UpdateConst { name, ty, value } => {
+                    if let Some(c) = consts.iter_mut().find(|c| c.name == *name) {
+                        let updated = resolve_const(
+                            &ConstFieldAst { name: name.clone(), ty: ty.clone(), value: value.clone() },
+                            version,
+                        )?;
+                        c.rust_type = updated.rust_type;
+                        c.value = updated.value;
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "update const",
+                            field: name.clone(),
+                            type_name: td.name.clone(),
+                            version,
+                        });
+                    }
+                }
+
+                DiffAst::TransformConst { from, to, ty, value } => {
+                    if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
+                        let updated = resolve_const(
+                            &ConstFieldAst { name: to.clone(), ty: ty.clone(), value: value.clone() },
+                            version,
+                        )?;
+                        c.name = updated.name;
+                        c.rust_type = updated.rust_type;
+                        c.value = updated.value;
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "transform const",
                             field: from.clone(),
                             type_name: td.name.clone(),
                             version,
@@ -458,6 +606,11 @@ impl<'a> SchemaAnalyzer<'a> {
                     continue;
                 }
 
+                VersionBlockAst::UnionDef(_) => {
+                    // handled in collect_unions()
+                    continue;
+                }
+
                 VersionBlockAst::BitsetDef(_) => {
                     // handled in collect_bitsets()
                     continue;
@@ -493,6 +646,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 name: field.name.clone(),
                 ty,
                 default,
+                lazy: field.lazy,
             });
         }
         for cf in &f.const_fields {
@@ -519,8 +673,18 @@ impl<'a> SchemaAnalyzer<'a> {
 
                     let ty = self.resolve(&field.ty, version)?;
 
+                    if field.lazy && !matches!(ty, ResolvedTypeRef::Optional(_)) {
+                        return Err(AnalysisError::LazyDiffFieldMustBeOptional {
+                            field: field.name.clone(),
+                            version,
+                        });
+                    }
+
                     let default = match &ty {
                         ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+                            Some(DefaultValue::Struct)
+                        }
+                        ResolvedTypeRef::Union(_) => {
                             Some(DefaultValue::Struct)
                         }
                         ResolvedTypeRef::Optional(_) if field.default.is_none() => {
@@ -548,6 +712,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         name: field.name.clone(),
                         ty,
                         default,
+                        lazy: field.lazy,
                     });
                 }
 
@@ -576,22 +741,60 @@ impl<'a> SchemaAnalyzer<'a> {
                     }
                 }
 
-                DiffAst::UpdateType { name, ty } => {
+                DiffAst::UpdateType { name, ty, lazy } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *name) {
                         let new_ty = self.resolve(ty, version)?;
                         check_type_update(&f.ty, &new_ty, version)?;
                         f.ty = new_ty;
+                        f.lazy = *lazy;
                     }
                 }
 
-                DiffAst::Transform { from, to, ty } => {
+                DiffAst::Transform { from, to, ty, lazy } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
                         if let Some(ty) = ty {
                             f.ty = self.resolve(ty, version).expect("type must be resolved");
                         }
+                        f.lazy = *lazy;
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
                         c.name = to.clone();
+                    }
+                }
+
+                DiffAst::UpdateConst { name, ty, value } => {
+                    if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *name) {
+                        let updated = resolve_const(
+                            &ConstFieldAst { name: name.clone(), ty: ty.clone(), value: value.clone() },
+                            version,
+                        )?;
+                        c.rust_type = updated.rust_type;
+                        c.value = updated.value;
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "update const",
+                            field: name.clone(),
+                            type_name: "<root>".to_string(),
+                            version,
+                        });
+                    }
+                }
+                DiffAst::TransformConst { from, to, ty, value } => {
+                    if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
+                        let updated = resolve_const(
+                            &ConstFieldAst { name: to.clone(), ty: ty.clone(), value: value.clone() },
+                            version,
+                        )?;
+                        c.name = updated.name;
+                        c.rust_type = updated.rust_type;
+                        c.value = updated.value;
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "transform const",
+                            field: from.clone(),
+                            type_name: "<root>".to_string(),
+                            version,
+                        });
                     }
                 }
             }
@@ -622,6 +825,10 @@ impl<'a> SchemaAnalyzer<'a> {
 
                 if let Some((id, _)) = self.enum_registry.latest_before(name, version + 1) {
                     return Ok(ResolvedTypeRef::Enum(id.clone()));
+                }
+
+                if let Some((id, _)) = self.union_registry.latest_before(name, version + 1) {
+                    return Ok(ResolvedTypeRef::Union(id.clone()));
                 }
 
                 if let Some(type_id) = self.resolver.resolve_type(name, version) {
@@ -759,6 +966,7 @@ impl<'a> SchemaAnalyzer<'a> {
             name_hint: self.ast.name.clone(),
             versions: self.version_states,
             types: self.type_registry,
+            unions: self.union_registry,
             enums: self.enum_registry,
             bitsets: self.bitset_registry,
             lineage,

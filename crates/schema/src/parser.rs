@@ -112,6 +112,7 @@ impl Parser {
 
         let mut seen_sections: HashSet<&'static str> = HashSet::new(); // fields / diff only
         let mut seen_type_names: HashSet<String> = HashSet::new();
+        let mut seen_union_names: HashSet<String> = HashSet::new();
         let mut seen_enum_names: HashSet<String> = HashSet::new();
         let mut seen_bitset_names: HashSet<String> = HashSet::new();
         let mut blocks = Vec::new();
@@ -153,6 +154,14 @@ impl Parser {
                         ), self.current_line()));
                     }
                 }
+                VersionBlockAst::UnionDef(ud) => {
+                    if !seen_union_names.insert(ud.name().to_string()) {
+                        return Err(ParseError::InvalidSyntax(format!(
+                            "version {} has duplicate union `{}`",
+                            version, ud.name()
+                        ), self.current_line()));
+                    }
+                }
                 VersionBlockAst::BitsetDef(bd) => {
                     if !seen_bitset_names.insert(bd.name().to_string()) {
                         return Err(ParseError::InvalidSyntax(format!(
@@ -174,17 +183,14 @@ impl Parser {
     fn parse_version_block(&mut self) -> Result<VersionBlockAst, ParseError> {
         match self.peek().clone() {
             Token::Keyword(Keyword::Enum) => Ok(VersionBlockAst::EnumDef(self.parse_enum_def()?)),
+            Token::Keyword(Keyword::Union) => Ok(VersionBlockAst::UnionDef(self.parse_union_def()?)),
             Token::Keyword(Keyword::Type) => Ok(VersionBlockAst::TypeDef(self.parse_type_def()?)),
-            Token::Keyword(Keyword::Bitset) => {
-                Ok(VersionBlockAst::BitsetDef(self.parse_bitset_def()?))
-            }
-            Token::Keyword(Keyword::Fields) => {
-                Ok(VersionBlockAst::Fields(self.parse_fields_block()?))
-            }
+            Token::Keyword(Keyword::Bitset) => Ok(VersionBlockAst::BitsetDef(self.parse_bitset_def()?)),
+            Token::Keyword(Keyword::Fields) => Ok(VersionBlockAst::Fields(self.parse_fields_block()?)),
             Token::Keyword(Keyword::Diff) => Ok(VersionBlockAst::Diff(self.parse_diff_block()?)),
             got => Err(ParseError::UnexpectedToken {
                 got,
-                expected: "enum / type / fields / diff",
+                expected: "enum / union / type / fields / diff",
                 line: self.current_line(),
             }),
         }
@@ -433,6 +439,100 @@ impl Parser {
         Ok(ops)
     }
 
+    fn parse_union_def(&mut self) -> Result<UnionDefAst, ParseError> {
+        self.expect_keyword(Keyword::Union)?;
+        let name = self.expect_ident()?;
+
+        if matches!(self.peek(), Token::Keyword(Keyword::Extends)) {
+            self.advance();
+            let base_name = self.expect_ident()?;
+            self.expect(Token::At, "'@'")?;
+            let base_version = self.expect_number()?;
+            let base = ExtendsAst { name: base_name, version: base_version };
+
+            self.expect(Token::LBrace, "'{'")?;
+            let ops = self.parse_union_ops()?;
+            self.expect(Token::RBrace, "'}'")?;
+
+            return Ok(UnionDefAst::Extension { name, base, ops });
+        }
+
+        self.expect(Token::LBrace, "'{'")?;
+        let mut variants = Vec::new();
+        let mut seen = HashSet::new();
+
+        while matches!(self.peek(), Token::Identifier(_)) {
+            let variant_name = self.expect_ident()?;
+            if !seen.insert(variant_name.clone()) {
+                return Err(ParseError::InvalidSyntax(format!(
+                    "duplicate union variant `{}`", variant_name
+                ), self.current_line()));
+            }
+
+            self.expect(Token::Colon, "':'")?;
+            let payload_ty = self.expect_ident()?;
+
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            }
+
+            variants.push(UnionVariantAst { name: variant_name, payload_ty });
+        }
+
+        self.expect(Token::RBrace, "'}'")?;
+
+        if variants.is_empty() {
+            return Err(ParseError::InvalidSyntax(format!(
+                "union `{}` must have at least one variant", name
+            ), self.current_line()));
+        }
+
+        Ok(UnionDefAst::Definition { name, variants })
+    }
+
+    fn parse_union_ops(&mut self) -> Result<Vec<UnionVariantOpAst>, ParseError> {
+        let mut ops = Vec::new();
+        let mut seen = HashSet::new();
+
+        while !matches!(self.peek(), Token::RBrace | Token::Eof) {
+            match self.peek().clone() {
+                Token::Plus => {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    self.expect(Token::Colon, "':'")?;
+                    let payload_ty = self.expect_ident()?;
+
+                    if matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                    }
+
+                    if !seen.insert(name.clone()) {
+                        return Err(ParseError::InvalidSyntax(format!(
+                            "variant `{}` appears more than once in union ops", name
+                        ), self.current_line()));
+                    }
+
+                    ops.push(UnionVariantOpAst::Add { name, payload_ty });
+                }
+                Token::Minus => {
+                    return Err(ParseError::InvalidSyntax(
+                        "union variants cannot be removed".to_string(),
+                        self.current_line()
+                    ));
+                }
+                got => {
+                    return Err(ParseError::UnexpectedToken {
+                        got,
+                        expected: "+ (add) in union extension",
+                        line: self.current_line()
+                    })
+                }
+            }
+        }
+
+        Ok(ops)
+    }
+
     fn parse_fields_block(&mut self) -> Result<FieldsAst, ParseError> {
         self.expect_keyword(Keyword::Fields)?;
         self.expect(Token::LBrace, "'{'")?;
@@ -455,15 +555,27 @@ impl Parser {
                 ), self.current_line()));
             }
 
+            // parse_field_list — replace the existing const/else block
             self.expect(Token::Colon, "':'")?;
 
-            if matches!(self.peek(), Token::Keyword(Keyword::Const)) {
-                self.advance(); // consume 'const'
+            let is_const = matches!(self.peek(), Token::Keyword(Keyword::Const));
+            let is_lazy  = matches!(self.peek(), Token::Keyword(Keyword::Lazy));
+
+            if is_const && is_lazy {
+                return Err(ParseError::InvalidSyntax(
+                    "a field cannot be both `const` and `lazy`".to_string(),
+                    self.current_line(),
+                ));
+            }
+
+            if is_const {
+                self.advance();
                 let ty = self.parse_type()?;
                 self.expect(Token::Equals, "'='")?;
                 let value = self.parse_default()?;
                 const_fields.push(ConstFieldAst { name, ty, value });
             } else {
+                let lazy = if is_lazy { self.advance(); true } else { false };
                 let ty = self.parse_type()?;
                 let default = if matches!(self.peek(), Token::Equals) {
                     self.advance();
@@ -471,7 +583,7 @@ impl Parser {
                 } else {
                     None
                 };
-                fields.push(FieldAst { name, ty, default });
+                fields.push(FieldAst { name, ty, default, lazy });
             }
         }
 
@@ -687,15 +799,24 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(Token::Colon, "':'")?;
 
-        if matches!(self.peek(), Token::Keyword(Keyword::Const)) {
-            self.advance(); // consume 'const'
+        let is_const = matches!(self.peek(), Token::Keyword(Keyword::Const));
+        let is_lazy  = matches!(self.peek(), Token::Keyword(Keyword::Lazy));
+
+        if is_const && is_lazy {
+            return Err(ParseError::InvalidSyntax(
+                "a field cannot be both `const` and `lazy`".to_string(),
+                self.current_line(),
+            ));
+        }
+
+        if is_const {
+            self.advance();
             let ty = self.parse_type()?;
             self.expect(Token::Equals, "'='")?;
             let value = self.parse_default()?;
-            Ok(DiffAst::AddConst {
-                field: ConstFieldAst { name, ty, value },
-            })
+            Ok(DiffAst::AddConst { field: ConstFieldAst { name, ty, value } })
         } else {
+            let lazy = if is_lazy { self.advance(); true } else { false };
             let ty = self.parse_type()?;
             let default = if matches!(self.peek(), Token::Equals) {
                 self.advance();
@@ -703,9 +824,7 @@ impl Parser {
             } else {
                 None
             };
-            Ok(DiffAst::Add {
-                field: FieldAst { name, ty, default },
-            })
+            Ok(DiffAst::Add { field: FieldAst { name, ty, default, lazy } })
         }
     }
 
@@ -726,34 +845,42 @@ impl Parser {
 
         let mut rename_to: Option<String> = None;
         let mut ty: Option<TypeAst> = None;
+        let mut lazy = false;
 
-        // optional rename
         if matches!(self.peek(), Token::Arrow) {
-            self.advance(); // consume '->'
+            self.advance();
             rename_to = Some(self.expect_ident()?);
         }
 
-        // optional type
         if matches!(self.peek(), Token::Colon) {
-            self.advance(); // consume ':'
+            self.advance();
+
+            if matches!(self.peek(), Token::Keyword(Keyword::Const)) {
+                self.advance();
+                let ty = self.parse_type()?;
+                self.expect(Token::Equals, "'='")?;
+                let value = self.parse_default()?;
+                return Ok(match rename_to {
+                    Some(to) => DiffAst::TransformConst { from, to, ty, value },
+                    None     => DiffAst::UpdateConst { name: from, ty, value },
+                });
+            }
+
+            if matches!(self.peek(), Token::Keyword(Keyword::Lazy)) {
+                self.advance();
+                lazy = true;
+            }
             ty = Some(self.parse_type()?);
         }
 
         match (rename_to, ty) {
-            (Some(to), Some(ty)) => Ok(DiffAst::Transform {
-                from,
-                to,
-                ty: Some(ty),
-            }),
-
-            (Some(to), None) => Ok(DiffAst::Rename { from, to }),
-
-            (None, Some(ty)) => Ok(DiffAst::UpdateType { name: from, ty }),
-
+            (Some(to), Some(ty)) => Ok(DiffAst::Transform { from, to, ty: Some(ty), lazy }),
+            (Some(to), None)     => Ok(DiffAst::Rename { from, to }),
+            (None, Some(ty))     => Ok(DiffAst::UpdateType { name: from, ty, lazy }),
             (None, None) => Err(ParseError::UnexpectedToken {
                 got: self.peek().clone(),
                 expected: "->, : or combination",
-                line: self.current_line()
+                line: self.current_line(),
             }),
         }
     }

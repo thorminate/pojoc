@@ -19,6 +19,24 @@
       leaf_opt: NestedLeaf?
     }
 
+    // Tagged-union payload types — simple, stable shapes so the union
+    // machinery itself (discriminant + length prefix, Unknown fallback)
+    // is what's under test, not the payload structs.
+    type MovePayload {
+      dx: i32 = 0
+      dy: i32 = 0
+    }
+
+    type AttackPayload {
+      target_id: u32 = 0
+      damage: f32 = 0.0
+    }
+
+    union Payload {
+      Move: MovePayload,
+      Attack: AttackPayload,
+    }
+
     fields {
       // Primitive & Boundary Numerical Extremes
       u8_max: u8 = 255
@@ -29,8 +47,8 @@
       varint64_min: varint64 = -9223372036854775808
 
       // Special IEEE 754 Floating-Point Const Injections
-      f32_nan: f32 = 0.0           // Overwritten during tests to NaN
-      f32_inf: f32 = 3.40282347e38 // Positive infinity or near boundary
+      f32_nan: f32 = 0.0
+      f32_inf: f32 = 3.40282347e38
       f64_neg_inf: f64 = -1.7976931348623157e+308
 
       // Empty collections, Fixed-Size types, and Strings
@@ -38,29 +56,31 @@
       spaces_str: string = "     "
       fixed_str_min: string(1) = "A"
 
-      // Array Combinations (Empty, Empty-Fixed, Multi-dimensional Tuple Arrays)
+      // Array Combinations
       empty_arr: [string] = []
       fixed_arr_empty: [i32](0) = []
       fixed_arr_populated: [u8](4) = [0, 0, 0, 0]
       tuple_array: [(f32, bool)] = []
 
-      // --- Delta array stress: variable-length, every eligible element type ---
-      delta_positions: [i32](delta) = []           // empty: tests len==0 guard
-      delta_i64_seq: [i64](delta) = []             // empty i64, also exercises zigzag-signed first elem
-      delta_u64_seq: [u64](delta) = [0, 18446744073709551615, 0] // wraparound stress: u64::MAX round trip via wrapping_sub
-      delta_u16_seq: [u16](delta) = [100, 105, 110, 90]   // includes a negative delta (110 -> 90)
-      delta_i8_seq: [i8](delta) = [-128, -1, 0, 127]      // full i8 range, max positive delta magnitude
-      delta_single: [u32](delta) = [42]                   // single element: no delta loop iterations at all
+      // Delta arrays
+      delta_positions: [i32](delta) = []
+      delta_i64_seq: [i64](delta) = []
+      delta_u64_seq: [u64](delta) = [0, 18446744073709551615, 0]
+      delta_u16_seq: [u16](delta) = [100, 105, 110, 90]
+      delta_i8_seq: [i8](delta) = [-128, -1, 0, 127]
+      delta_single: [u32](delta) = [42]
 
-      // --- Delta array stress: fixed-length, no length prefix ---
-      delta_fixed_u8: [u8](delta, 4) = [10, 12, 11, 20]   // mixed +/- deltas
-      delta_fixed_empty: [i32](delta, 0) = []             // N=0: skip/read/write must all be no-ops
+      delta_fixed_u8: [u8](delta, 4) = [10, 12, 11, 20]
+      delta_fixed_empty: [i32](delta, 0) = []
 
-      // Legacy plain array — will be migrated to delta encoding in v2 (wire-breaking type update)
       legacy_positions: [i32] = []
 
       // Deep Structured Objects
       root_struct: MiddleLayer
+
+      // Lazy fields present from v1 — skipped on hot path, decoded on demand
+      lazy_blob: lazy [u8] = []                    // raw byte payload, often unused
+      lazy_leaf: lazy NestedLeaf                   // heavy nested struct, skip if not needed
 
       // Constant Primitive definitions
       pi_const: const f64 = 3.141592653589793
@@ -68,6 +88,11 @@
 
       // Native Enumerations
       bounds_enum: NumericBounds = NumericBounds::MinU8
+
+      // Tagged unions — scalar, array, and optional union-typed fields
+      action: Payload
+      action_log: [Payload] = []
+      pending_action: Payload?
     }
   }
 
@@ -82,37 +107,66 @@
       + secondary_leaf: NestedLeaf?
     }
 
-    // Version 2 Focus: Severe Type Morphing (Scalar to Scalar, Scalar to Struct, Deletions)
+    type HealPayload {
+      target_id: u32 = 0
+      amount: f32 = 0.0
+      overheal: bool = false
+    }
+
+    // Add-only union evolution — same shape as the enum/bitset extension
+    // mechanism, just for tagged variants instead of plain discriminants.
+    union Payload extends Payload@1 {
+      + Heal: HealPayload
+    }
+
     diff {
-      - u8_min                               // Pure deletion
-      ~ u8_max -> u8_to_i64: i64             // Massive integer widening cast
-      ~ i64_max -> i64_to_f32: f32           // Lossy float conversion transform
-      ~ bounds_enum: NumericBounds           // Enum extension check
-      ~ empty_str -> nullified_str: string?  // Morph scalar into optional string
-      ~ fixed_str_min: string(8)             // Change size constraint of a fixed string (1 -> 8)
-      + newly_added_optional: u64?           // First bitpacked optionals allocation
-      ~ root_struct: MiddleLayer             // Structural field updating through inheritance
+      - u8_min
+      ~ u8_max -> u8_to_i64: i64
+      ~ i64_max -> i64_to_f32: f32
+      ~ bounds_enum: NumericBounds
+      ~ empty_str -> nullified_str: string?
+      ~ fixed_str_min: string(8)
+      + newly_added_optional: u64?
+      ~ root_struct: MiddleLayer
+      ~ legacy_positions: [i32](delta)
+      + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 0]
 
-      // --- Delta array stress: wire-breaking type update (plain array -> delta array) ---
-      ~ legacy_positions: [i32](delta)       // old encoders wrote raw i32s, new decoders expect deltas
+      // Re-resolve to Payload@2 (now Heal-aware). The generated reader/writer
+      // is name-keyed and identical regardless of which TypeId the field
+      // carries, but this still walks the FieldMapping::Cast branch in
+      // lineage/decode/encode for a union type — worth confirming it's a
+      // clean no-op rather than a silent miscompile.
+      ~ action: Payload
 
-      // --- Delta array stress: new fixed delta array introduced mid-lineage ---
-      + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 0] // includes a zero-delta run and a large jump
+      // Lazy field added via diff — must be optional so v1 messages default to None
+      + lazy_delta_log: lazy [i64](delta)?         // per-message event log, expensive to decode
     }
   }
 
   version 3 {
     type EmptyStruct {
-      // Intentionally empty struct block to stress code-gen parser/size hints
     }
 
-    // --- Delta array stress: delta arrays nested inside struct types and collections ---
     type SensorFrame {
-      readings: [i32](delta) = []                 // delta array as a struct field (PassThrough mapping target)
-      sample_ids: [u64](delta, 8) = [0, 0, 0, 0, 0, 0, 0, 0] // fixed delta array, all-zero deltas
+      readings: [i32](delta) = []
+      sample_ids: [u64](delta, 8) = [0, 0, 0, 0, 0, 0, 0, 0]
     }
 
-    // Version 3 Focus: Map Layout Injections & Severe Collections Remapping
+    // A second, independent union coexisting with Payload — exercises the
+    // codegen paths that iterate "all unions in the schema" rather than
+    // assuming there's exactly one.
+    type PingPayload {
+    }
+
+    type PongPayload {
+      latency_ms: u32 = 0
+    }
+
+    union ControlSignal {
+      Ping: PingPayload,
+      Pong: PongPayload,
+    }
+
     diff {
       + basic_map: map<string, string> = {}
       + fixed_map_empty: map<i32, f32>(0) = {}
@@ -120,15 +174,23 @@
       + nested_map: map<string, [map<i32, bool>]> = {}
       + void_container: EmptyStruct
 
-      // Non-sensical type conversions through diff morphing
-      ~ fixed_arr_populated -> array_to_map: map<i32, u8> // Destructures sequential array indices into KV map entries
-      ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)] // Structural tuple widening and type shifting
+      ~ fixed_arr_populated -> array_to_map: map<i32, u8>
+      ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)]
 
-      // --- Delta array stress: array of structs each containing delta arrays ---
       + sensor_log: [SensorFrame] = []
-
-      // --- Delta array stress: delta array as a map value type, inside a fixed map ---
       + delta_value_map: map<string, [i64](delta)>(2) = {}
+
+      // Bare union field added via diff — relies on the Union auto-default
+      // carve-out (Default::default() -> Unknown variant), same free pass
+      // non-primitive structs already get.
+      + control: ControlSignal
+
+      // Map with a union value type — generic Map codegen dispatches into
+      // the same per-union read/write/size_hint functions as any other field.
+      + control_map: map<string, Payload> = {}
+
+      // Optional lazy map payload — callers that don't need to inspect it skip for free
+      + lazy_sensor_dump: lazy map<string, [i32](delta)>?
     }
   }
 
@@ -146,7 +208,14 @@
       HasVulkan,
     }
 
-    // Version 4 Focus: High density Optional Bitpacking, Optionals to Non-Optionals, Bitsets
+    type DisconnectPayload {
+      reason_code: u16 = 0
+    }
+
+    union ControlSignal extends ControlSignal@3 {
+      + Disconnect: DisconnectPayload
+    }
+
     diff {
       + opt_u8: u8?
       + opt_i16: i16?
@@ -158,52 +227,79 @@
       + opt_fixed_str: string(4)?
       + opt_bitset: SystemPrivileges?
 
-      // Turn previously optional fields back into required types or swap defaults
       ~ newly_added_optional: u64
 
-      // Bitset Attachments
       + privileges: SystemPrivileges = 0
       + hw_flags: HardwareFlags = HardwareFlags(IsCpuBound: true, HasVulkan: true)
 
-      // --- Delta array stress: optional delta array (bitpacked header + delta codec interplay) ---
       + opt_delta_arr: [i32](delta)?
+
+      // Re-resolve to ControlSignal@4 (now Disconnect-aware) — same Cast
+      // exercise as `~ action: Payload` above, this time on the second union.
+      ~ control: ControlSignal
+      + control_log: [ControlSignal] = []
+
+      // Lazy optional union field added via diff — must be Optional, same
+      // rule as any other lazy diff addition (LazyDiffFieldMustBeOptional).
+      + lazy_pending_signal: lazy ControlSignal?
+
+      // Lazy sensor log upgrade — v4 makes it non-optional now that all peers support v2+
+      // Still lazy: most consumers only care about count, not contents
+      ~ lazy_sensor_dump: lazy map<string, [i32](delta)>
     }
   }
 
   version 5 {
     bitset SystemPrivileges extends SystemPrivileges@4 {
       + NetworkAccess
-      - Admin                      // Destructive Bitset alteration
+      - Admin
       + Root
     }
 
     type DeepComplexWrapper {
       matrix: [[(map<string, i32?>, string(8)?)](4)]
-
-      // --- Delta array stress: delta array alongside the existing matrix monstrosity ---
       frame_deltas: [i64](delta) = []
     }
 
-    // Version 5 Focus: Maximum complexity structural loops, compound rename-casts, and final truncation
-    diff {
-      // Radical Rename + Type Casting (Transform) in a single rule block
-      ~ privileges -> system_perms: SystemPrivileges
-      ~ hw_flags -> legacy_hw_flags: u32 // Collapse custom semantic bitset down to raw raw u32 bits
+    type DespawnPayload {
+      entity_id: u32 = 0
+    }
 
-      // Ultimate Code-gen Stress Block
+    // Extends from the latest existing Payload *definition* (@2) — v3/v4
+    // never redefined Payload, only referenced it, so @2 is still correct.
+    union Payload extends Payload@2 {
+      + Despawn: DespawnPayload
+    }
+
+    diff {
+      ~ privileges -> system_perms: SystemPrivileges
+      ~ hw_flags -> legacy_hw_flags: u32
+
       + ultimate_boss_structure: DeepComplexWrapper
 
-      // Truncating sizes on existing structural components
-      ~ fixed_str_padded: string(2)      // Shrinking length constraints from 12 down to 2 characters
-      ~ fixed_map_populated: map<string, i64>(2) // Shifting fixed map sizes down from 4 elements to 2
+      ~ fixed_str_padded: string(2)
+      ~ fixed_map_populated: map<string, i64>(2)
 
-      // --- Delta array stress: resize a fixed delta array (4 -> 8), and transform variable -> fixed delta ---
-      ~ delta_fixed_u8: [u8](delta, 8)                    // wire-breaking: N changes, old/new decoders disagree on length
-      ~ delta_u32_seq -> u32_delta_seq: [u32](delta, 16)  // rename + grow fixed delta array 6 -> 16
+      ~ delta_fixed_u8: [u8](delta, 8)
+      ~ delta_u32_seq -> u32_delta_seq: [u32](delta, 16)
 
-      // Clean sweeping deletion check
       - void_container
       - flattened_tuple_array
+
+      // Rename + retype an optional union field — Transform path, no default
+      // logic involved at all (just name + type re-resolution).
+      ~ pending_action -> deferred_action: Payload?
+
+      // New field added fresh at v5 automatically picks up the most current
+      // Payload (Move/Attack/Heal/Despawn) with no manual re-pin needed —
+      // unlike `action`, which only sees new variants when explicitly diffed.
+      + final_action: Payload
+
+      // Lazy blob widened to include a tuple header — old lazy_blob bytes still valid on wire
+      ~ lazy_blob -> lazy_annotated_blob: lazy [(u64, [u8])]
+
+      // New in v5: bulk audit trail, expected to be large, almost never fully decoded
+      + lazy_audit_log: lazy [string]?
     }
   }
 }

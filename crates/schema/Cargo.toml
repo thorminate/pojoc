@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 pojoc-core = {path = "../core"}
 compact_str = { workspace = true }
+thiserror = { workspace = true }

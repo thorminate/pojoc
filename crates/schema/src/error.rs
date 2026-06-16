@@ -1,102 +1,87 @@
 use crate::lexer::Token;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ParseError {
+    #[error("Unexpected token `{got}`, expected {expected}, at line {line}")]
     UnexpectedToken {
         got: Token,
         expected: &'static str,
         line: usize,
     },
+    #[error("Unexpected EOF")]
     UnexpectedEof,
+    #[error("Invalid syntax at line {1}: `{0}`")]
     InvalidSyntax(String, usize),
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            ParseError::UnexpectedToken { got, expected, line } => write!(
-                f,
-                "Unexpected token `{}`, expected {}, at line {}",
-                got, expected, *line
-            ),
-            ParseError::UnexpectedEof => write!(f, "Unexpected EOF"),
-            ParseError::InvalidSyntax(s, line) => write!(f, "Invalid syntax at line {line}: `{s}`"),
-        }
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum LexError {
+    #[error("Unexpected character `{0}`, pos {1}")]
     UnexpectedChar(char, usize),
 }
 
-impl std::fmt::Display for LexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            LexError::UnexpectedChar(c, pos) => {
-                write!(f, "Unexpected character `{}`, pos {}", c, pos)
-            }
-        }
-    }
-}
-
-impl std::error::Error for LexError {}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum AnalysisError {
-    UnknownType {
-        name: String,
-        version: i128,
-    },
+    #[error("unknown type '{name}' referenced in version {version}")]
+    UnknownType { name: String, version: i128 },
+
+    #[error("type '{child}' in version {version} extends unknown type '{parent}'")]
     UnknownParentType {
         child: String,
         parent: String,
         version: i128,
     },
-    ExtendsWithFullDefinition {
-        name: String,
-        version: i128,
-    },
+
+    #[error("type '{name}' in version {version} uses 'extends' but body must be a diff")]
+    ExtendsWithFullDefinition { name: String, version: i128 },
+
+    #[error("diff op '{op}' references unknown field '{field}' in type '{type_name}' version {version}")]
     FieldNotFound {
         op: &'static str,
         field: String,
         type_name: String,
         version: i128,
     },
-    MissingDefault {
-        field: String,
-        version: i128,
-    },
+
+    #[error("field '{field}' in version {version} doesn't have a default value")]
+    MissingDefault { field: String, version: i128 },
+
+    #[error("version {0}: diff adds field `{1}` but it already exists")]
     FieldAlreadyExists(i128, String),
+
+    #[error("field '{field}' in version {version} has a fixed string of {expected} bytes but default value is {got} bytes")]
     FixedStringDefaultLengthMismatch {
         field: String,
         expected: usize,
         got: usize,
         version: i128,
     },
+
+    #[error("version {version}: {kind} fixed size {n} is too large, consider not using a fixed size.")]
     FixedSizeTooLarge {
         kind: &'static str,
         n: usize,
         version: i128,
     },
+
+    #[error("version {version}: type mismatch: expected {expected}, got {got}")]
     TypeMismatch {
         expected: String,
         got: String,
         version: i128,
     },
-    VarintsCannotBeConst {
-        version: i128
-    },
-    InvalidVFloat {
-        reason: String,
-        version: i128,
-    },
-    VFloatRangeTooLarge {
-        span: f64,
-        version: i128,
-    },
+
+    #[error("version {version}: varints cannot be used in const fields")]
+    VarintsCannotBeConst { version: i128 },
+
+    #[error("version {version}: invalid vfloat: {reason}")]
+    InvalidVFloat { reason: String, version: i128 },
+
+    #[error("version {version}: vfloat range is too large: {span}")]
+    VFloatRangeTooLarge { span: f64, version: i128 },
+
+    #[error("field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max})")]
     VFloatDefaultOutOfRange {
         field: String,
         value: f64,
@@ -104,87 +89,30 @@ pub enum AnalysisError {
         max: f64,
         version: i128,
     },
-    InvalidDeltaElementType {
-        type_desc: String,
+
+    #[error("version {version}: `(delta)` can only be applied to integer array elements (u8/u16/u32/u64/i8/i16/i32/i64), not `{type_desc}`")]
+    InvalidDeltaElementType { type_desc: String, version: i128 },
+
+    #[error("version {version}: reserved variant name `{name}` cannot be used in type `{type_name}`")]
+    ReservedVariantName {
+        name: String,
+        type_name: String,
         version: i128,
     },
-    ReservedVariantName { name: String, type_name: String, version: i128 },
+
+    #[error("version {version}: lazy field '{field}' added via diff must be optional (`lazy T?`) so older messages can default to None")]
+    LazyDiffFieldMustBeOptional { field: String, version: i128 },
+
+    #[error("schema must have at least one version")]
     NoVersions,
 }
 
-impl std::fmt::Display for AnalysisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            AnalysisError::UnknownType { name, version } =>
-                write!(f, "unknown type '{}' referenced in version {}", name, version),
-            AnalysisError::UnknownParentType { child, parent, version } =>
-                write!(f, "type '{}' in version {} extends unknown type '{}'", child, version, parent),
-            AnalysisError::ExtendsWithFullDefinition { name, version } =>
-                write!(f, "type '{}' in version {} uses 'extends' but body must be a diff", name, version),
-            AnalysisError::FieldNotFound { op, field, type_name, version } =>
-                write!(f, "diff op '{op}' references unknown field '{field}' in type '{type_name}' version {version}"),
-            AnalysisError::MissingDefault { field, version } =>
-                write!(f, "field '{field}' in version {version} doesn't have a default value"),
-            AnalysisError::FieldAlreadyExists(v, s) =>
-                write!(f, "version {v}: diff adds field `{s}` but it already exists"),
-            AnalysisError::FixedStringDefaultLengthMismatch { field, expected, got, version } =>
-                write!(f, "field '{field}' in version {version} has a fixed string of {expected} bytes \
-                but default value is {got} bytes"),
-            AnalysisError::FixedSizeTooLarge { kind, n, version } =>
-                write!(f, "version {version}: {kind} fixed size {n} is too large, consider not using a fixed size."),
-            AnalysisError::TypeMismatch { expected, got, version } =>
-                write!(f, "version {version}: type mismatch: expected {expected}, got {got}"),
-            AnalysisError::VarintsCannotBeConst { version } =>
-                write!(f, "version {version}: varints cannot be used in const fields"),
-            AnalysisError::InvalidVFloat { reason, version } =>
-                write!(f, "version {version}: invalid vfloat: {reason}"),
-            AnalysisError::VFloatRangeTooLarge { span, version } =>
-                write!(f, "version {version}: vfloat range is too large: {span}"),
-            AnalysisError::VFloatDefaultOutOfRange { field, value, min, max, version } =>
-                write!(f, "field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max})"),
-            AnalysisError::InvalidDeltaElementType { type_desc, version } => 
-                write!(f, "version {version}: `(delta)` can only be applied to integer array elements (u8/u16/u32/u64/i8/i16/i32/i64), not `{type_desc}`"),
-            AnalysisError::ReservedVariantName { name, type_name, version } =>
-            write!(f, "version {version}: reserved variant name `{name}` cannot be used in type `{type_name}`"),
-            AnalysisError::NoVersions =>
-                write!(f, "schema must have at least one version"),
-        }
-    }
-}
-
-impl std::error::Error for AnalysisError {}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum SchemaError {
-    Lex(LexError),
-    Parse(ParseError),
-    Analysis(AnalysisError),
-}
-
-impl From<LexError> for SchemaError {
-    fn from(e: LexError) -> Self {
-        SchemaError::Lex(e)
-    }
-}
-
-impl From<ParseError> for SchemaError {
-    fn from(e: ParseError) -> Self {
-        SchemaError::Parse(e)
-    }
-}
-
-impl From<AnalysisError> for SchemaError {
-    fn from(e: AnalysisError) -> Self {
-        SchemaError::Analysis(e)
-    }
-}
-
-impl std::fmt::Display for SchemaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            SchemaError::Lex(e) => write!(f, "{e}"),
-            SchemaError::Parse(e) => write!(f, "{e}"),
-            SchemaError::Analysis(e) => write!(f, "{e}"),
-        }
-    }
+    #[error(transparent)]
+    Lex(#[from] LexError),
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Analysis(#[from] AnalysisError),
 }

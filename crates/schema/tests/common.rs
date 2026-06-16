@@ -1,7 +1,7 @@
 use pojoc_schema::ast::*;
 use pojoc_schema::error::*;
 use pojoc_schema::ir::analyzer::*;
-use pojoc_schema::ir::types::*;
+use pojoc_schema::ir::ir_types::*;
 use pojoc_schema::lexer::*;
 use pojoc_schema::parser::*;
 

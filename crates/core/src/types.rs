@@ -44,6 +44,7 @@ pub enum ResolvedTypeRef {
     Scalar(TypeId),
     Enum(TypeId),
     Bitset(TypeId, u8),
+    Union(TypeId),
     Array(Box<ResolvedTypeRef>),
     FixedArray(Box<ResolvedTypeRef>, usize),
     DeltaArray(Box<ResolvedTypeRef>),
@@ -67,6 +68,7 @@ impl ResolvedTypeRef {
         match self {
             ResolvedTypeRef::Scalar(id) => Option::from(id),
             ResolvedTypeRef::Enum(id) => Some(id),
+            ResolvedTypeRef::Union(id) => Some(id),
             ResolvedTypeRef::Bitset(id, _) => Some(id),
             ResolvedTypeRef::Array(id) => id.type_id(),
             ResolvedTypeRef::FixedArray(inner, _) => inner.type_id(),
@@ -160,6 +162,19 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             default_expr: format!("{}::default()", id.name),
             size_fn: None
         },
+        
+        ResolvedTypeRef::Union(id) => {
+            let lower = id.name.to_snake_case();
+            TypeInfo {
+                wire_size: WireSize::Variable,
+                rust_type: id.name.clone(),
+                skip_stmt: format!("skip_{lower}(buf, pos)?;"),
+                read_fn: format!("read_{lower}"),
+                write_fn: format!("write_{lower}"),
+                default_expr: format!("{}::default()", id.name),
+                size_fn: None,
+            }
+        }
 
         ResolvedTypeRef::Bitset(id, width) => {
             let lower = id.name.to_snake_case();

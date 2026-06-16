@@ -1,4 +1,4 @@
-use super::types::*;
+use super::ir_types::*;
 use pojoc_core::types::*;
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub struct FieldLineage {
     pub source_name: String,
     pub source_ty: ResolvedTypeRef,
     pub mapping: FieldMapping,
+    pub lazy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ pub struct MissingField {
     pub target_name: String,
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
+    pub lazy: bool,
 }
 
 #[derive(Debug)]
@@ -111,6 +113,7 @@ fn build_version_lineage(ver: &ResolvedVersion, latest: &ResolvedVersion) -> Ver
                 source_name: src.name.clone(),
                 source_ty: src.ty.clone(),
                 mapping,
+                lazy: src.lazy,
             }
         })
         .collect();
@@ -124,6 +127,7 @@ fn build_version_lineage(ver: &ResolvedVersion, latest: &ResolvedVersion) -> Ver
             target_name: f.name.clone(),
             ty: f.ty.clone(),
             default: f.default.clone(),
+            lazy: f.lazy,
         })
         .collect();
 

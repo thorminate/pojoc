@@ -1,11 +1,11 @@
 use super::writer::CodeWriter;
 use pojoc_core::types::{type_info, ResolvedTypeRef};
-use pojoc_schema::ir::types::*;
-use std::collections::HashMap;
+use pojoc_schema::ir::ir_types::*;
+use std::collections::{HashMap, HashSet};
 use crate::get_latest_versions;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 
-pub fn emit_structs(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
     let mut latest: HashMap<String, (i128, &ResolvedType)> = HashMap::new();
     for (type_id, resolved) in &schema.types.types {
         let entry = latest.entry(type_id.name.clone()).or_insert((0, resolved));
@@ -19,12 +19,12 @@ pub fn emit_structs(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
     for name in names {
         let (_, resolved) = latest[name];
-        emit_named_struct(name, &resolved.fields, &resolved.const_fields, w);
+        emit_named_struct(name, &resolved.fields, &resolved.const_fields, infected, w);
         w.blank();
     }
 
     let latest_version = schema.versions.last().expect("no versions");
-    emit_named_struct(&schema.name_hint, &latest_version.fields, &latest_version.const_fields, w);
+    emit_named_struct(&schema.name_hint, &latest_version.fields, &latest_version.const_fields, infected, w);
     w.blank();
 }
 
@@ -83,6 +83,64 @@ fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
         ));
     }
     w.line("other => Err(other),");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+}
+
+pub fn emit_unions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let (_, resolved) = latest[name];
+        emit_union(name, resolved, w);
+        w.blank();
+    }
+}
+
+fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
+    w.line("#[derive(Debug, Clone, Serialize, Deserialize)]");
+    w.line(&format!("pub enum {name} {{"));
+    w.indent();
+    for variant in &resolved.variants {
+        w.line(&format!("{}({}),", variant.name, variant.payload.name));
+    }
+    w.line("Unknown { discriminant: u64, data: Vec<u8> },");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line(&format!("impl Default for {name} {{"));
+    w.indent();
+    w.line("fn default() -> Self {");
+    w.indent();
+    if let Some(first) = resolved.variants.first() {
+        w.line(&format!("{name}::{}(Default::default())", first.name));
+    } else {
+        w.line(&format!("{name}::Unknown {{ discriminant: 0, data: Vec::new() }}"));
+    }
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line(&format!("impl {name} {{"));
+    w.indent();
+    w.line("#[allow(dead_code)]");
+    w.line("pub fn discriminant(&self) -> u64 {");
+    w.indent();
+    w.line("match self {");
+    w.indent();
+    for variant in &resolved.variants {
+        w.line(&format!("{name}::{}(_) => {},", variant.name, variant.discriminant));
+    }
+    w.line(&format!("{name}::Unknown {{ discriminant, .. }} => *discriminant,"));
     w.dedent();
     w.line("}");
     w.dedent();
@@ -309,39 +367,61 @@ fn find_bitset_default<'a>(name: &str, schema: &'a ResolvedSchema) -> Option<&'a
     None
 }
 
-fn emit_named_struct(name: &str, fields: &[FieldIR], consts: &[ResolvedConst], w: &mut CodeWriter) {
-    // Check if any field requires a specific capacity setup
-    let needs_custom_default = fields.iter().any(|field| {
-        matches!(field.ty, ResolvedTypeRef::FixedMap(_, _, _))
-    });
+fn emit_named_struct(
+    name: &str,
+    fields: &[FieldIR],
+    consts: &[ResolvedConst],
+    infected: &HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let needs_lifetime = infected.contains(name);
+    let struct_lt     = if needs_lifetime { "<'buf>" } else { "" };
+    let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
-    if needs_custom_default {
+    let has_fixed_map = fields.iter().any(|f| matches!(f.ty, ResolvedTypeRef::FixedMap(_, _, _)));
+
+    if needs_lifetime {
+        w.line("#[derive(Debug, Clone)]");
+    } else if has_fixed_map {
         w.line("#[derive(Debug, Clone, Serialize, Deserialize)]");
     } else {
         w.line("#[derive(Debug, Clone, Default, Serialize, Deserialize)]");
     }
 
-    w.line(&format!("pub struct {name} {{"));
+    w.line(&format!("pub struct {name}{struct_lt} {{"));
     w.indent();
     for field in fields {
-        let ty = type_info(&field.ty).rust_type;
+        let ty = if field.lazy {
+            let inner = type_info(&field.ty).rust_type;
+            format!("LazyView<'buf, {inner}>")
+        } else if let ResolvedTypeRef::Scalar(id) = &field.ty {
+            if infected.contains(&id.name) {
+                format!("{}<'buf>", id.name)
+            } else {
+                type_info(&field.ty).rust_type
+            }
+        } else {
+            type_info(&field.ty).rust_type
+        };
         w.line(&format!("pub {}: {ty},", field.name));
     }
     w.dedent();
     w.line("}");
 
-    // Emit custom Default implementation if needed
-    if needs_custom_default {
+    // Manual Default — needed for both infected structs (LazyView) and FixedMap structs
+    if needs_lifetime || has_fixed_map {
         w.blank();
-        w.line(&format!("impl Default for {name} {{"));
+        w.line(&format!("impl{impl_lt_param} Default for {name}{struct_lt} {{"));
         w.indent();
         w.line("fn default() -> Self {");
         w.indent();
         w.line("Self {");
         w.indent();
         for field in fields {
-            if let ResolvedTypeRef::FixedMap(_, _, n) = &field.ty {
-                // Pre-populate FixedMap matching the schema array rules in decode.rs
+            if field.lazy {
+                let none_fn = format!("{}_none", field.name);
+                w.line(&format!("{}: LazyView::new(&[], {none_fn}),", field.name));
+            } else if let ResolvedTypeRef::FixedMap(_, _, n) = &field.ty {
                 w.line(&format!(
                     "{}: {{ let mut __m = PojocFixedMap::with_capacity({n}); for _ in 0..{n} {{ __m.push((Default::default(), Default::default())); }} __m }},",
                     field.name
@@ -355,12 +435,12 @@ fn emit_named_struct(name: &str, fields: &[FieldIR], consts: &[ResolvedConst], w
         w.dedent();
         w.line("}");
         w.dedent();
-        w.line("}")
+        w.line("}");
     }
 
     if !consts.is_empty() {
         w.blank();
-        w.line(&format!("impl {name} {{"));
+        w.line(&format!("impl{impl_lt_param} {name}{struct_lt} {{"));
         w.indent();
         for c in consts {
             let const_name = c.name.to_shouty_snake_case();
@@ -369,6 +449,10 @@ fn emit_named_struct(name: &str, fields: &[FieldIR], consts: &[ResolvedConst], w
         }
         w.dedent();
         w.line("}");
+    }
+
+    if needs_lifetime {
+        emit_lazy_struct_serde(name, fields, w);
     }
 }
 
@@ -380,4 +464,84 @@ fn render_const_value(value: &DefaultValue) -> String {
         DefaultValue::Str(s)   => format!("\"{s}\""),
         _ => unreachable!("const fields only hold primitive values"),
     }
+}
+
+fn emit_lazy_struct_serde(name: &str, fields: &[FieldIR], w: &mut CodeWriter) {
+    w.blank();
+
+    // Serialize
+    w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
+    w.indent();
+    w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
+    w.indent();
+    w.line("use serde::ser::SerializeStruct;");
+    w.line(&format!("let mut __s = serializer.serialize_struct(\"{name}\", {})?;", fields.len()));
+    for f in fields {
+        if f.lazy {
+            w.line(&format!(
+                "__s.serialize_field(\"{n}\", SerdeBytes::new(self.{n}.raw_bytes()))?;",
+                n = f.name
+            ));
+        } else {
+            w.line(&format!("__s.serialize_field(\"{n}\", &self.{n})?;", n = f.name));
+        }
+    }
+    w.line("__s.end()");
+    w.dedent(); w.line("}");
+    w.dedent(); w.line("}");
+    w.blank();
+
+    // Deserialize
+    let field_list = fields.iter().map(|f| format!("\"{}\"", f.name)).collect::<Vec<_>>().join(", ");
+
+    w.line(&format!("impl<'de: 'buf, 'buf> Deserialize<'de> for {name}<'buf> {{"));
+    w.indent();
+    w.line("fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {");
+    w.indent();
+    w.line("struct __Visitor<'buf>(std::marker::PhantomData<&'buf ()>);");
+    w.line("impl<'de: 'buf, 'buf> serde::de::Visitor<'de> for __Visitor<'buf> {");
+    w.indent();
+    w.line(&format!("type Value = {name}<'buf>;"));
+    w.line("fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {");
+    w.indent();
+    w.line(&format!("write!(f, \"struct {name}\")"));
+    w.dedent(); w.line("}");
+    w.blank();
+    w.line("fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {");
+    w.indent();
+    for (idx, f) in fields.iter().enumerate() {
+        if f.lazy {
+            w.line(&format!(
+                "let __{n}_b: &'de SerdeBytes = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length({idx}, &\"{name}\"))?;",
+                n = f.name
+            ));
+            w.line(&format!("let __{n}: &'de [u8] = &__{n}_b[..];", n = f.name));
+        } else {
+            w.line(&format!(
+                "let {n} = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length({idx}, &\"{name}\"))?;",
+                n = f.name
+            ));
+        }
+    }
+    w.line(&format!("Ok({name} {{"));
+    w.indent();
+    for f in fields {
+        if f.lazy {
+            w.line(&format!(
+                "{n}: if __{n}.is_empty() {{ LazyView::new(__{n}, {n}_none) }} else {{ LazyView::new(__{n}, {n}_some) }},",
+                n = f.name
+            ));
+        } else {
+            w.line(&format!("{n},", n = f.name));
+        }
+    }
+    w.dedent(); w.line("})");
+    w.dedent(); w.line("}");
+    w.dedent(); w.line("}");
+    w.blank();
+    w.line(&format!(
+        "deserializer.deserialize_struct(\"{name}\", &[{field_list}], __Visitor(std::marker::PhantomData))"
+    ));
+    w.dedent(); w.line("}");
+    w.dedent(); w.line("}");
 }

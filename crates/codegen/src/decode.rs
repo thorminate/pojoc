@@ -2,17 +2,20 @@ use super::writer::CodeWriter;
 use crate::{emit_default, get_latest_versions};
 use pojoc_core::types::*;
 use pojoc_schema::ir::lineage::*;
-use pojoc_schema::ir::types::*;
+use pojoc_schema::ir::ir_types::*;
 use std::collections::{HashMap, HashSet};
 use heck::ToSnakeCase;
 
-pub fn emit_decode_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_decode_functions(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
     emit_type_readers(schema, w);
     emit_type_skippers(schema, w);
     emit_bitset_readers(schema, w);
+    emit_union_readers(schema, infected, w);
+    emit_union_skippers(schema, w);
+    emit_lazy_helpers(schema, w);
 
     for vl in &schema.lineage.versions {
-        emit_decode_fn(schema, vl, w);
+        emit_decode_fn(schema, vl, infected, w);
         w.blank();
     }
 }
@@ -34,7 +37,7 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let fn_name = format!("read_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> Result<{name}> {{"
+            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<{name}> {{"
         ));
         w.indent();
 
@@ -92,7 +95,7 @@ fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let fn_name = format!("skip_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> Result<()> {{"
+            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<()> {{"
         ));
         w.indent();
 
@@ -125,6 +128,80 @@ fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let (_, resolved) = latest[name];
+
+        for variant in &resolved.variants {
+            assert!(
+                !infected.contains(&variant.payload.name),
+                "union `{name}` variant `{}` has a lazy-infected payload type `{}` — \
+                 lazy fields inside union payloads aren't supported yet",
+                variant.name, variant.payload.name
+            );
+        }
+
+        let fn_name = format!("read_{}", name.to_snake_case());
+        w.line("#[allow(dead_code)]");
+        w.line(&format!("fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{name}> {{"));
+        w.indent();
+        w.line("let __discriminant = read_varint64(buf, pos)?;");
+        w.line("let __len = read_varint32(buf, pos)? as usize;");
+        w.line("let __payload_start = *pos;");
+        w.line("let __payload_end = __payload_start.checked_add(__len).ok_or(Error::InvalidLength)?;");
+        w.line("if __payload_end > buf.len() { return Err(Error::InvalidLength); }");
+        w.line("let __result = match __discriminant {");
+        w.indent();
+        for variant in &resolved.variants {
+            let read_payload = format!("read_{}", variant.payload.name.to_snake_case());
+            w.line(&format!(
+                "{} => {name}::{}({read_payload}(buf, pos)?),",
+                variant.discriminant, variant.name
+            ));
+        }
+        w.line("other => {");
+        w.indent();
+        w.line("let data = buf[__payload_start..__payload_end].to_vec();");
+        w.line("*pos = __payload_end;");
+        w.line(&format!("{name}::Unknown {{ discriminant: other, data }}"));
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("};");
+        w.line("if *pos != __payload_end { return Err(Error::InvalidLength); }");
+        w.line("Ok(__result)");
+        w.dedent();
+        w.line("}");
+        w.blank();
+    }
+}
+
+fn emit_union_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let fn_name = format!("skip_{}", name.to_snake_case());
+        w.line("#[allow(dead_code)]");
+        w.line(&format!("fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<()> {{"));
+        w.indent();
+        w.line("let _ = read_varint64(buf, pos)?;");
+        w.line("let __len = read_varint32(buf, pos)? as usize;");
+        w.line("let __end = pos.checked_add(__len).ok_or(Error::InvalidLength)?;");
+        w.line("if __end > buf.len() { return Err(Error::InvalidLength); }");
+        w.line("*pos = __end;");
+        w.line("Ok(())");
+        w.dedent();
+        w.line("}");
+        w.blank();
+    }
+}
+
 fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let latest = get_latest_versions(
         &schema.bitsets.bitsets,
@@ -142,7 +219,7 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let fn_name = format!("read_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(buf: &[u8], pos: &mut usize) -> Result<{name}> {{"
+            "fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{name}> {{"
         ));
         w.indent();
         w.line(&format!(
@@ -159,13 +236,17 @@ fn emit_skip_stmt(ty: &ResolvedTypeRef) -> String {
     type_info(ty).skip_stmt
 }
 
-fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, infected: &HashSet<String>, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let v = vl.version;
+    let needs_lifetime = infected.contains(name.as_str());
+    let lifetime = if needs_lifetime { "<'buf>" } else { "" };
+    let buf_ty   = if needs_lifetime { "&'buf [u8]" } else { "&[u8]" };
 
     w.line(&format!(
-        "pub fn decode_v{v}(buf: &[u8], pos: &mut usize) -> Result<{name}> {{"
+        "pub fn decode_v{v}{lifetime}(buf: {buf_ty}, pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
     ));
+
     w.indent();
 
     let optional_count = vl.fields.iter().filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_))).count();
@@ -180,7 +261,6 @@ fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWrit
 
             w.line(&format!("let __present = (__header[{byte_idx}] & (1 << {bit_idx})) != 0;"));
 
-            // Extracted code call
             emit_field_mapping_arm(schema, fl, inner, "__present", w);
         } else {
             emit_field_read(schema, fl, w);
@@ -190,8 +270,16 @@ fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWrit
     if !vl.missing.is_empty() {
         w.blank();
         for mf in &vl.missing {
-            let default = get_field_default_expr(mf.default.as_ref(), &mf.ty, schema);
-            w.line(&format!("let {} = {default};", mf.target_name));
+            if mf.lazy {
+                let none_fn = format!("{}_none", mf.target_name);
+                w.line(&format!(
+                    "let {} = LazyView::new(&buf[*pos..*pos], {none_fn});",
+                    mf.target_name
+                ));
+            } else {
+                let default = get_field_default_expr(mf.default.as_ref(), &mf.ty, schema);
+                w.line(&format!("let {} = {default};", mf.target_name));
+            }
         }
     }
 
@@ -215,10 +303,25 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
             w.line(&emit_skip_stmt(&fl.source_ty));
         }
         FieldMapping::PassThrough { target_name } => {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                let some_fn = format!("{target_name}_some");
+                w.line(&format!("let __{target_name}_start = *pos;"));
+                w.line(&emit_skip_stmt(&fl.source_ty));
+                w.line(&format!("let {target_name} = LazyView::new(&buf[__{target_name}_start..*pos], {some_fn});"));
+                return;
+            }
             let expr = emit_read_expr(&fl.source_ty);
             w.line(&format!("let {target_name} = {expr};"));
         }
         FieldMapping::Cast { target_name, from, to } => {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                w.line(&emit_skip_stmt(from));
+                let none_fn = format!("{target_name}_none");
+                w.line(&format!("let {target_name} = LazyView::new(&buf[*pos..*pos], {none_fn});"));
+                return;
+            }
             let rhs = match emit_cast_value(schema, from, to) {
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
@@ -241,6 +344,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         ResolvedTypeRef::Enum(id) => {
             format!("{{ let __raw = read_varint64(buf, pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}", id.name)
         }
+        ResolvedTypeRef::Union(_) => format!("{}(buf, pos)?", info.read_fn),
         ResolvedTypeRef::Bitset(id, _) => {
             format!("read_{}(buf, pos)?", id.name.to_snake_case())
         }
@@ -293,7 +397,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         }
         ResolvedTypeRef::Optional(inner) => {
             let inner_expr = emit_read_expr(inner);
-            format!("{{ if read_u8(buf, pos)? != 0 {{ Some({inner_expr}) }} else {{ None }} }}")
+            format!("if read_u8(buf, pos)? != 0 {{ Some({inner_expr}) }} else {{ None }}")
         }
     }
 }
@@ -323,12 +427,42 @@ fn emit_field_mapping_arm(
             w.line("}");
         }
         FieldMapping::PassThrough { target_name } => {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                let some_fn = format!("{target_name}_some");
+                let none_fn = format!("{target_name}_none");
+                w.line(&format!("let __{target_name}_start = *pos;"));
+                w.line(&format!("if {__present} {{"));
+                w.indent();
+                w.line(&emit_skip_stmt(inner));
+                w.dedent();
+                w.line("}");
+                w.line(&format!(
+                    "let {target_name} = if {__present} {{ \
+                     LazyView::new(&buf[__{target_name}_start..*pos], {some_fn}) \
+                     }} else {{ \
+                     LazyView::new(&buf[*pos..*pos], {none_fn}) \
+                     }};"
+                ));
+                return;
+            }
             let inner_expr = emit_read_expr(inner);
             w.line(&format!(
                 "let {target_name} = if {__present} {{ Some({inner_expr}) }} else {{ None }};"
             ));
         }
         FieldMapping::Cast { target_name, from: _, to } => {
+            let target_is_lazy = schema.versions.last().unwrap().fields.iter().find(|f| f.name == *target_name).unwrap().lazy;
+            if target_is_lazy {
+                w.line(&format!("if {__present} {{"));
+                w.indent();
+                w.line(&emit_skip_stmt(inner));
+                w.dedent();
+                w.line("}");
+                let none_fn = format!("{target_name}_none");
+                w.line(&format!("let {target_name} = LazyView::new(&buf[*pos..*pos], {none_fn});"));
+                return;
+            }
             let (target_inner, optional_out) = match to {
                 ResolvedTypeRef::Optional(t) => (&**t, true),
                 t => (t, false),
@@ -456,7 +590,6 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
              __m }}"
                 ))
             } else {
-                // Read all from_n wire entries but only keep the first to_n
                 CastExpr::Block(format!(
                     "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
              for __i in 0..{from_n} {{ \
@@ -534,7 +667,6 @@ fn emit_struct_cast_body(
     let to_by_id: HashMap<FieldId, &FieldIR> = to_type.fields.iter().map(|f| (f.id, f)).collect();
     let to_ids: HashSet<FieldId> = to_type.fields.iter().map(|f| f.id).collect();
 
-    // Must mirror what the encoder wrote: a bitmap header before all field data.
     let optional_count = from_type.fields.iter()
         .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
         .count();
@@ -558,7 +690,6 @@ fn emit_struct_cast_body(
                          {{ Some({expr}) }} else {{ None }};"
                     ));
                 } else {
-                    // Field dropped in target type — skip bytes if present.
                     w.line(&format!("if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"));
                     w.indent();
                     w.line(&emit_skip_stmt(inner));
@@ -598,4 +729,51 @@ fn emit_struct_cast_body(
     }
     w.dedent();
     w.line("}");
+}
+
+fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let mut emitted: HashSet<String> = HashSet::new();
+    let latest = schema.versions.last().unwrap();
+
+    for fl in &latest.fields {
+        if !fl.lazy { continue; }
+        let target_name = &fl.name;
+        let ty = &fl.ty;
+        let is_optional = matches!(ty, ResolvedTypeRef::Optional(_));
+        let rust_ty = type_info(ty).rust_type;
+
+        let some_name = format!("{target_name}_some");
+        if emitted.insert(some_name.clone()) {
+            w.line("#[allow(dead_code)]");
+            w.line(&format!("fn {some_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{rust_ty}> {{"));
+            w.indent();
+            if is_optional {
+                let inner = match ty { ResolvedTypeRef::Optional(i) => &**i, _ => unreachable!() };
+                let body = emit_read_expr(inner);
+                w.line(&format!("Ok(Some({body}))"));
+            } else {
+                let body = emit_read_expr(ty);
+                w.line(&format!("Ok({body})"));
+            }
+            w.dedent();
+            w.line("}");
+            w.blank();
+        }
+
+        let none_name = format!("{target_name}_none");
+        if emitted.insert(none_name.clone()) {
+            w.line("#[allow(dead_code)]");
+            w.line(&format!("fn {none_name}(_buf: &[u8], _pos: &mut usize) -> PojocResult<{rust_ty}> {{"));
+            w.indent();
+            if is_optional {
+                w.line("Ok(None)");
+            } else {
+                let default = type_info(ty).default_expr;
+                w.line(&format!("Ok({default})"));
+            }
+            w.dedent();
+            w.line("}");
+            w.blank();
+        }
+    }
 }

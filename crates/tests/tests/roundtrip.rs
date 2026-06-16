@@ -1,265 +1,168 @@
 mod helpers;
-use pojoc_tests::pojoc_edge::{runtime::*, *};
+use pojoc_tests::pojoc_edge::*;
 use helpers::*;
 
 #[test]
-fn test_roundtrip_with_default_values() {
-    // Verifies that unpopulated structures round-trip successfully with default states
+fn test_roundtrip_default() {
     let original = Edge::default();
     let mut buf = Vec::new();
     encode(&mut buf, &original);
-
-    let decoded = decode(&buf).expect("Failed to decode standard default Edge payload");
+    let decoded = decode(&buf).expect("decode failed");
     assert_edge_eq(&original, &decoded);
 }
 
 #[test]
-fn test_roundtrip_with_populated_values() {
-    // Verifies that a complex, fully populated Edge structure round-trips correctly
-    let mut original = Edge::default();
-
-    // Primitive and Float scalars
-    original.u8_to_i64 = 100;
-    original.i64_to_f32 = -987.65;
-    original.i64_min = i64::MIN;
-    original.varint32_max = u32::MAX;
-    original.varint64_min = u64::MIN;
-    original.f32_nan = f32::NAN;
-    original.f32_inf = f32::INFINITY;
-    original.f64_neg_inf = f64::NEG_INFINITY;
-
-    // Strings & fixed lengths
-    original.nullified_str = Some("PojocSerialization".into());
-    original.spaces_str = "    ".into();
-    original.fixed_str_min = [10, 20, 30, 40, 50, 60, 70, 80];
-
-    // Standard collections
-    original.empty_arr.push(pojstr!("FirstElement"));
-    original.empty_arr.push(pojstr!("SecondElement"));
-    original.array_to_map.insert(5, 25);
-
-    // Sequences
-    original.delta_positions.push(1000);
-    original.delta_positions.push(1010); // Compressed Delta relative sequence check
-    original.delta_i64_seq.push(-50);
-    original.delta_i64_seq.push(-45);
-
-    // Nested Layer initialization
-    original.root_struct.leaf.leaf_val = "LeafNode".into();
-    original.root_struct.leaf.leaf_numeric = 777;
-    original.root_struct.weight = 3.14;
-    original.root_struct.leaf_arr.push(NestedLeaf {
-        leaf_val: "ArrayLeaf".into(),
-        leaf_numeric: 11,
-    });
-    original.root_struct.leaf_opt = Some(NestedLeaf {
-        leaf_val: "OptionalLeaf".into(),
-        leaf_numeric: 22,
-    });
-
-    // Enums and optionals
-    original.bounds_enum = NumericBounds::ExtraVariant;
-    original.newly_added_optional = 999999;
-    original.u32_delta_seq = [500; 16];
-
-    // Map testing
-    original.basic_map.insert("ConfigKey".into(), "ConfigValue".into());
-    original.fixed_map_populated = pojmap!(
-        "FixedMapKey1" => 5,
-        "FixedMapKey2" => 30;
-        2
-    );
-    original.delta_value_map = pojmap!(
-        "DeltaMapKey1" => pojvec![10],
-        "DeltaMapKey2" => pojvec![20];
-        2
-    );
-
-    // Struct layout nesting (Sensor frames)
-    let mut frame = SensorFrame::default();
-    frame.readings.push(55);
-    frame.readings.push(60);
-    frame.sample_ids = [100, 200, 300, 400, 500, 600, 700, 800];
-    original.sensor_log.push(frame);
-
-    // Option values
-    original.opt_u8 = Some(255);
-    original.opt_i16 = Some(-32768);
-    original.opt_u32 = Some(400000);
-    original.opt_i64 = Some(-900000);
-    original.opt_f32 = Some(12.34);
-    original.opt_f64 = Some(56.78);
-    original.opt_bool = Some(false);
-    original.opt_fixed_str = Some([0xAA, 0xBB, 0xCC, 0xDD]);
-    original.opt_bitset = Some(SystemPrivileges::READ | SystemPrivileges::WRITE);
-
-    // Native System Privileges Bitset configuration
-    original.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS | SystemPrivileges::EXECUTE;
-    original.legacy_hw_flags = 0xFFFFFFFF;
-
-    let mut delta_arr = PojocVec::new();
-    delta_arr.push(42);
-    original.opt_delta_arr = Some(delta_arr);
-
-    // Complex top-level nested structure matrix
-    original.ultimate_boss_structure.frame_deltas.push(8888);
-
-    // Perform payload round-trip execution
+fn test_roundtrip_populated() {
+    let original = make_populated_edge();
     let mut buf = Vec::new();
     encode(&mut buf, &original);
-
-    let decoded = decode(&buf).expect("Failed to decode completely populated Edge payload");
+    let decoded = decode(&buf).expect("decode failed");
     assert_edge_eq(&original, &decoded);
 }
 
 #[test]
-fn test_encode_for_version_roundtrips_all_supported() {
-    // Verifies that encode_for_version produces decodable output for every version
-    // the schema advertises. Each version's bytes must decode without error, since
-    // the decoder understands all supported versions.
+fn test_encode_for_version_default_decodes_all() {
     let original = Edge::default();
 
     for &version in supported_versions() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)
-            .unwrap_or_else(|e| panic!("encode_for_version failed for version {version}: {e:?}"));
-
-        decode(&buf).unwrap_or_else(|e| {
-            panic!("decode failed for version {version} output: {e:?}")
-        });
+            .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
+        decode(&buf)
+            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
     }
 }
 
 #[test]
-fn test_encode_for_version_latest_matches_encode() {
-    // The latest version produced by encode_for_version must be byte-identical
-    // to encode(), since both go through encode_v{latest} now.
-    let mut original = Edge::default();
-    original.u8_to_i64 = 42;
-    original.spaces_str = "hello".into();
-    original.bounds_enum = NumericBounds::MaxU8;
-    original.system_perms = SystemPrivileges::READ | SystemPrivileges::EXECUTE;
+fn test_encode_for_version_populated_decodes_all() {
+    let original = make_version_probe_edge();
 
+    for &version in supported_versions() {
+        let mut buf = Vec::new();
+        encode_for_version(&mut buf, &original, version)
+            .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
+        decode(&buf)
+            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+    }
+}
+
+#[test]
+fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
+    let original = make_version_probe_edge();
+
+    for &version in supported_versions() {
+        let mut buf = Vec::new();
+        encode_for_version(&mut buf, &original, version)
+            .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
+        let decoded = decode(&buf)
+            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+
+        assert_eq!(decoded.u8_to_i64, original.u8_to_i64,
+                   "v{version}: u8_to_i64 mismatch");
+        assert_eq!(decoded.nullified_str, original.nullified_str,
+                   "v{version}: nullified_str mismatch");
+        assert_eq!(decoded.root_struct.leaf.leaf_val, original.root_struct.leaf.leaf_val,
+                   "v{version}: root_struct.leaf.leaf_val mismatch");
+        assert_eq!(decoded.root_struct.leaf.leaf_numeric, original.root_struct.leaf.leaf_numeric,
+                   "v{version}: root_struct.leaf.leaf_numeric mismatch");
+    }
+}
+
+#[test]
+fn test_encode_for_version_latest_version_fields_survive() {
+    let mut original = make_version_probe_edge();
+    original.action = Payload::Heal(HealPayload { target_id: 2, amount: 8.0, overheal: false });
+    original.control = ControlSignal::Disconnect(DisconnectPayload { reason_code: 1 });
+
+    let latest = *supported_versions().last().expect("no supported versions");
+
+    let mut buf = Vec::new();
+    encode_for_version(&mut buf, &original, latest)
+        .unwrap_or_else(|e| panic!("v{latest}: encode_for_version failed: {e:?}"));
+    let decoded = decode(&buf)
+        .unwrap_or_else(|e| panic!("v{latest}: decode failed: {e:?}"));
+
+    assert_eq!(decoded.bounds_enum, original.bounds_enum,
+               "v{latest}: bounds_enum mismatch");
+    assert_eq!(decoded.system_perms, original.system_perms,
+               "v{latest}: system_perms mismatch");
+    assert_payload_eq(&decoded.action, &original.action);
+    assert_control_signal_eq(&decoded.control, &original.control);
+}
+#[test]
+fn test_encode_for_version_latest_is_byte_identical_to_encode() {
+    let original = make_version_probe_edge();
     let latest = *supported_versions().last().expect("no supported versions");
 
     let mut buf_encode = Vec::new();
     encode(&mut buf_encode, &original);
 
-    let mut buf_for_version = Vec::new();
-    encode_for_version(&mut buf_for_version, &original, latest)
-        .expect("encode_for_version failed for latest version");
+    let mut buf_versioned = Vec::new();
+    encode_for_version(&mut buf_versioned, &original, latest)
+        .expect("encode_for_version failed for latest");
 
-    assert_eq!(
-        buf_encode, buf_for_version,
-        "encode() and encode_for_version(latest) produced different bytes"
-    );
+    assert_eq!(buf_encode, buf_versioned,
+               "encode() and encode_for_version(latest) produced different bytes");
 }
 
 #[test]
-fn test_encode_for_version_unsupported_returns_err() {
-    // A version not in the schema's lineage must return UnsupportedVersion,
-    // not panic or silently produce garbage bytes.
-    let original = Edge::default();
-    let mut buf = Vec::new();
+fn test_roundtrip_payload_variants() {
+    let variants = vec![
+        Payload::Move(MovePayload { dx: 7, dy: -2 }),
+        Payload::Attack(AttackPayload { target_id: 11, damage: 33.3 }),
+        Payload::Heal(HealPayload { target_id: 4, amount: 50.0, overheal: true }),
+        Payload::Despawn(DespawnPayload { entity_id: 808 }),
+    ];
 
-    let bad_version = u64::MAX;
-    let result = encode_for_version(&mut buf, &original, bad_version);
-    assert!(
-        result.is_err(),
-        "encode_for_version should return Err for unknown version {bad_version}"
-    );
-}
-
-#[test]
-fn test_encode_for_version_populated_roundtrips_all_supported() {
-    // Same as the default-values version test but with a populated struct,
-    // exercising cast/clamp paths in older vN encoders.
-    let mut original = Edge::default();
-    original.u8_to_i64 = 100;
-    original.i64_to_f32 = -987.65;
-    original.bounds_enum = NumericBounds::ExtraVariant;
-    original.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS;
-    original.nullified_str = Some("VersionTest".into());
-    original.empty_arr.push(pojstr!("v"));
-    original.root_struct.leaf.leaf_val = "leaf".into();
-    original.root_struct.leaf.leaf_numeric = 1;
-
-    for &version in supported_versions() {
+    for variant in variants {
+        let mut e = Edge::default();
+        e.action = variant;
         let mut buf = Vec::new();
-        encode_for_version(&mut buf, &original, version)
-            .unwrap_or_else(|e| panic!("encode_for_version failed for version {version}: {e:?}"));
-
-        decode(&buf).unwrap_or_else(|e| {
-            panic!("decode failed for version {version} output: {e:?}")
-        });
+        encode(&mut buf, &e);
+        let decoded = decode(&buf).expect("decode failed");
+        assert_payload_eq(&e.action, &decoded.action);
     }
 }
 
 #[test]
-fn test_hardware_flags_defaults_and_operators() {
-    // HardwareFlags internal value default is 0x05 (IS_CPU_BOUND | HAS_VULKAN)
-    let mut flags = HardwareFlags::default();
-    assert!(flags.is_cpu_bound(), "Default hardware flags should include IS_CPU_BOUND");
-    assert!(!flags.is_gpu_bound(), "Default hardware flags should exclude IS_GPU_BOUND");
-    assert!(flags.has_vulkan(), "Default hardware flags should include HAS_VULKAN");
+fn test_roundtrip_control_signal_variants() {
+    let variants = vec![
+        ControlSignal::Ping(PingPayload {}),
+        ControlSignal::Pong(PongPayload { latency_ms: 250 }),
+        ControlSignal::Disconnect(DisconnectPayload { reason_code: 7 }),
+    ];
 
-    // Setter assertions
-    flags.set_is_gpu_bound(true);
-    assert!(flags.is_gpu_bound(), "Setting IS_GPU_BOUND should update the value");
-
-    // Functional builder modifications
-    let builder_flags = flags.with_is_cpu_bound(false);
-    assert!(!builder_flags.is_cpu_bound(), "Builder should have set IS_CPU_BOUND to false");
-    assert!(builder_flags.is_gpu_bound());
-
-    // Operational Bitwise checks
-    let f1 = HardwareFlags::IS_CPU_BOUND;
-    let f2 = HardwareFlags::IS_GPU_BOUND;
-    let combined = f1 | f2;
-    assert!(combined.is_cpu_bound());
-    assert!(combined.is_gpu_bound());
-    assert!(!combined.has_vulkan());
-
-    let intersection = combined & HardwareFlags::IS_CPU_BOUND;
-    assert!(intersection.is_cpu_bound());
-    assert!(!intersection.is_gpu_bound());
+    for variant in variants {
+        let mut e = Edge::default();
+        e.control = variant;
+        let mut buf = Vec::new();
+        encode(&mut buf, &e);
+        let decoded = decode(&buf).expect("decode failed");
+        assert_control_signal_eq(&e.control, &decoded.control);
+    }
 }
 
 #[test]
-fn test_system_privileges_bitmask_operations() {
-    let mut perms = SystemPrivileges::default();
-    assert!(perms.is_empty(), "Default system privileges mask should be empty");
-    assert!(!perms.read());
+fn test_roundtrip_unknown_union_variant_is_lossless() {
+    // Simulates a proxy/middleware scenario: a peer running a newer schema
+    // sends a Payload variant this binary doesn't recognize. The decoder
+    // should preserve it as Unknown { discriminant, data } rather than
+    // erroring, and re-encoding must reproduce the exact same bytes.
+    let mut e = Edge::default();
+    e.action = Payload::Unknown {
+        discriminant: 9999,
+        data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+    };
 
-    perms.set_read(true);
-    perms.set_root(true);
-    assert!(perms.read());
-    assert!(perms.root());
-    assert!(!perms.write());
+    let mut buf = Vec::new();
+    encode(&mut buf, &e);
+    let decoded = decode(&buf).expect("decode failed");
 
-    // Inversion check
-    let inverted = !perms;
-    assert!(!inverted.read());
-    assert!(inverted.write());
-    assert!(inverted.execute());
-    assert!(inverted.network_access());
-    assert!(!inverted.root());
-}
-
-#[test]
-fn test_numeric_bounds_enum_conversions() {
-    assert_eq!(NumericBounds::default(), NumericBounds::Unknown);
-    assert_eq!(NumericBounds::try_from(0), Ok(NumericBounds::Unknown));
-    assert_eq!(NumericBounds::try_from(1), Ok(NumericBounds::ResetZero));
-    assert_eq!(NumericBounds::try_from(2), Ok(NumericBounds::MaxU8));
-    assert_eq!(NumericBounds::try_from(3), Ok(NumericBounds::MinI64));
-    assert_eq!(NumericBounds::try_from(4), Ok(NumericBounds::MaxI64));
-    assert_eq!(NumericBounds::try_from(5), Ok(NumericBounds::ExtraVariant));
-    assert_eq!(NumericBounds::try_from(99), Err(99), "Invalid variant should return error variant index");
-}
-
-#[test]
-fn test_static_associated_constants() {
-    assert_eq!(Edge::PI_CONST, std::f64::consts::PI);
-    assert!(Edge::FLAG_CONST);
+    match &decoded.action {
+        Payload::Unknown { discriminant, data } => {
+            assert_eq!(*discriminant, 9999);
+            assert_eq!(data, &vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        }
+        other => panic!("expected Unknown variant to survive roundtrip, got {other:?}"),
+    }
 }

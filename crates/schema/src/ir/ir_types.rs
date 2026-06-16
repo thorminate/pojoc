@@ -37,6 +37,7 @@ pub struct FieldIR {
     pub name: String,
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
+    pub lazy: bool
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +121,33 @@ pub struct BitsetRegistry {
     pub bitsets: HashMap<TypeId, ResolvedBitset>,
 }
 
+#[derive(Debug, Clone)]
+pub struct UnionVariant {
+    pub name: String,
+    pub payload: TypeId,
+    pub discriminant: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedUnion {
+    pub variants: Vec<UnionVariant>,
+}
+
+#[derive(Debug, Default)]
+pub struct UnionRegistry {
+    pub unions: HashMap<TypeId, ResolvedUnion>,
+}
+
+impl UnionRegistry {
+    pub fn latest_before(&self, name: &str, before_version: i128) -> Option<(&TypeId, &ResolvedUnion)> {
+        self.unions
+            .iter()
+            .filter(|(id, _)| id.name == name && id.version < before_version)
+            .max_by_key(|(id, _)| id.version)
+            .map(|(id, u)| (id, u))
+    }
+}
+
 #[derive(Debug)]
 pub struct ResolvedType {
     pub fields: Vec<FieldIR>,
@@ -146,6 +174,7 @@ pub struct ResolvedSchema {
     pub versions: Vec<ResolvedVersion>,
     pub types: TypeRegistry,
     pub enums: EnumRegistry,
+    pub unions: UnionRegistry,
     pub bitsets: BitsetRegistry,
     pub lineage: SchemaLineage,
 }

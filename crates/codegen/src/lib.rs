@@ -4,8 +4,9 @@ mod encode;
 mod structs;
 pub mod writer;
 
-use std::collections::HashMap;
-use pojoc_schema::ir::types::{DefaultValue, ResolvedSchema};
+use std::collections::{HashMap, HashSet};
+use pojoc_core::types::{is_primitive, ResolvedTypeRef};
+use pojoc_schema::ir::ir_types::{DefaultValue, ResolvedSchema};
 use writer::CodeWriter;
 
 pub fn generate(schema: &ResolvedSchema) -> String {
@@ -20,11 +21,14 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.line("use serde::{Serialize, Deserialize};");
     w.blank();
 
+    let infected = compute_lifetime_infected(schema);
+
     structs::emit_enums(schema, &mut w);
-    structs::emit_structs(schema, &mut w);
+    structs::emit_structs(schema, &infected, &mut w);
     structs::emit_bitsets(schema, &mut w);
-    decode::emit_decode_functions(schema, &mut w);
-    emit_dispatcher(schema, &mut w);
+    structs::emit_unions(schema, &mut w);
+    decode::emit_decode_functions(schema, &infected, &mut w);
+    emit_dispatcher(schema, &infected, &mut w);
     w.blank();
     encode::emit_size_hint(schema, &mut w);
     encode::emit_encode_helpers(schema, &mut w);
@@ -33,12 +37,17 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.finish()
 }
 
-fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
+fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let latest = schema.lineage.latest_version;
+    let needs_lifetime = infected.contains(name.as_str());
 
-    // ── decode dispatcher ─────────────────────────────────────────────────────
-    w.line(&format!("pub fn decode(buf: &[u8]) -> Result<{name}> {{"));
+    let decode_sig = if needs_lifetime {
+        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}<'_>> {{")
+    } else {
+        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}> {{")
+    };
+    w.line(&decode_sig);
     w.indent();
     w.line("let mut pos = 0;");
     w.line("let envelope = read_envelope(buf, &mut pos)?;");
@@ -57,7 +66,6 @@ fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
     w.line("}");
     w.blank();
 
-    // ── encode (current version) ───────────────────────────────────────────────
     w.line(&format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"));
     w.indent();
     w.line("buf.reserve(size_hint(value));");
@@ -70,11 +78,8 @@ fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
     w.line("}");
     w.blank();
 
-    // ── encode_for_version ────────────────────────────────────────────────────
-    // Produces a message envelope understood by a peer speaking the given version.
-    // Returns Err(UnsupportedVersion) if the target version is unknown.
     w.line(&format!(
-        "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}, version: u64) -> Result<()> {{"
+        "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}, version: u64) -> PojocResult<()> {{"
     ));
     w.indent();
     w.line("buf.reserve(size_hint(value));");
@@ -96,9 +101,6 @@ fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
     w.line("}");
     w.blank();
 
-    // ── supported_versions ────────────────────────────────────────────────────
-    // Convenience for capability negotiation — lets a server advertise which
-    // schema versions it can encode to without the caller hard-coding the list.
     w.line("pub fn supported_versions() -> &'static [u64] {");
     w.indent();
     let versions: Vec<String> = schema.lineage.versions
@@ -109,8 +111,6 @@ fn emit_dispatcher(schema: &ResolvedSchema, w: &mut CodeWriter) {
     w.dedent();
     w.line("}");
 }
-
-// ── emit_default and get_latest_versions unchanged ───────────────────────────
 
 fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
     match default {
@@ -230,4 +230,55 @@ where
         }
     }
     latest
+}
+
+fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
+    let latest = get_latest_versions(
+        &schema.types.types,
+        |id| id.name.clone(),
+        |id| id.version,
+    );
+
+    let mut infected: HashSet<String> = latest
+        .iter()
+        .filter(|(_, (_, resolved))| resolved.fields.iter().any(|f| f.lazy))
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if schema.versions.last().map(|v| v.fields.iter().any(|f| f.lazy)).unwrap_or(false) {
+        infected.insert(schema.name_hint.clone());
+    }
+
+    loop {
+        let mut changed = false;
+        for (name, (_, resolved)) in &latest {
+            if infected.contains(name) {
+                continue;
+            }
+            let newly_infected = resolved.fields.iter().any(|f| {
+                field_type_name(&f.ty)
+                    .map(|n| infected.contains(n))
+                    .unwrap_or(false)
+            });
+            if newly_infected {
+                infected.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    infected
+}
+
+fn field_type_name(ty: &ResolvedTypeRef) -> Option<&str> {
+    match ty {
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Some(&id.name),
+        ResolvedTypeRef::Array(inner)
+        | ResolvedTypeRef::FixedArray(inner, _)
+        | ResolvedTypeRef::Optional(inner) => field_type_name(inner),
+        _ => None,
+    }
 }
