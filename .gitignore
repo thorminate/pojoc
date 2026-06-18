@@ -1,1 +1,3 @@
 /target
+/vscode-plugin/node_modules/
+/vscode-plugin/out/

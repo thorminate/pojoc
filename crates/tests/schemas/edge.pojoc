@@ -1,4 +1,4 @@
-﻿schema Edge {
+schema Edge {
 
   version 1 {
     enum NumericBounds {
@@ -11,6 +11,7 @@
     type NestedLeaf {
       leaf_val: string = "leaf"
       leaf_numeric: i32 = 42
+      leaf_rotation: vfloat(min: 0, max: 360, step: 0.1) = 0.0
     }
 
     type MiddleLayer {
@@ -28,9 +29,10 @@
     }
 
     type AttackPayload {
-      target_id: u32 = 0
-      damage: f32 = 0.0
-    }
+       target_id: u32 = 0
+       damage: f32 = 0.0
+       knockback: vfloat(min: 0, max: 50, step: 0.1) = 0
+     }
 
     union Payload {
       Move: MovePayload,
@@ -93,6 +95,17 @@
       action: Payload
       action_log: [Payload] = []
       pending_action: Payload?
+
+      // Range-quantized floats — bit width derives from (max-min)/step
+      angle_deg: vfloat(min: 0, max: 360, step: 0.1) = 0.0
+      normalized: vfloat(min: -1.0, max: 1.0, step: 0.001) = 0.0
+
+      // Exact byte-boundary cases: 256 steps fits 8 bits, 257 spills to 9
+      vfloat_256_steps: vfloat(min: 0, max: 255, step: 1) = 0.0
+      vfloat_257_steps: vfloat(min: 0, max: 256, step: 1) = 0.0
+
+      vfloat_arr: [vfloat(min: 0, max: 360, step: 0.1)] = []
+      fixed_vfloat_arr: [vfloat(min: 0, max: 255, step: 1)](4) = [0.0, 0.0, 0.0, 0.0]
     }
   }
 
@@ -111,6 +124,7 @@
       target_id: u32 = 0
       amount: f32 = 0.0
       overheal: bool = false
+      splash_radius: vfloat(min: 0, max: 10, step: 0.1) = 0.0
     }
 
     // Add-only union evolution — same shape as the enum/bitset extension
@@ -140,6 +154,10 @@
 
       // Lazy field added via diff — must be optional so v1 messages default to None
       + lazy_delta_log: lazy [i64](delta)?         // per-message event log, expensive to decode
+
+      // Step narrowed 0.1 -> 0.05, same range — bit width grows, old wire data must still decode
+      ~ angle_deg -> angle_deg_v2: vfloat(min: 0, max: 360, step: 0.05)
+      + heal_radius: vfloat(min: 0, max: 25, step: 0.25) = 0.0
     }
   }
 
@@ -150,6 +168,7 @@
     type SensorFrame {
       readings: [i32](delta) = []
       sample_ids: [u64](delta, 8) = [0, 0, 0, 0, 0, 0, 0, 0]
+      calibration: vfloat(min: -10, max: 10, step: 0.01) = 0.0
     }
 
     // A second, independent union coexisting with Payload — exercises the
@@ -191,6 +210,8 @@
 
       // Optional lazy map payload — callers that don't need to inspect it skip for free
       + lazy_sensor_dump: lazy map<string, [i32](delta)>?
+
+      + vfloat_map: map<string, vfloat(min: 0, max: 1, step: 0.01)> = {}
     }
   }
 
@@ -246,6 +267,8 @@
       // Lazy sensor log upgrade — v4 makes it non-optional now that all peers support v2+
       // Still lazy: most consumers only care about count, not contents
       ~ lazy_sensor_dump: lazy map<string, [i32](delta)>
+
+      + opt_vfloat: vfloat(min: 0, max: 1, step: 0.001)?
     }
   }
 
@@ -259,6 +282,7 @@
     type DeepComplexWrapper {
       matrix: [[(map<string, i32?>, string(8)?)](4)]
       frame_deltas: [i64](delta) = []
+      scale: vfloat(min: 0.1, max: 10, step: 0.01) = 1.0
     }
 
     type DespawnPayload {
@@ -300,6 +324,8 @@
 
       // New in v5: bulk audit trail, expected to be large, almost never fully decoded
       + lazy_audit_log: lazy [string]?
+
+      ~ normalized -> normalized_v5: vfloat(min: -1.0, max: 1.0, step: 0.0001)
     }
   }
 }

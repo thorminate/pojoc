@@ -1,5 +1,6 @@
 use compact_str::CompactString;
 use crate::error::*;
+use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
@@ -47,24 +48,24 @@ pub enum Token {
     Identifier(CompactString),
     StringLiteral(CompactString),
     Keyword(Keyword),
-    Equals,       // =
-    LBrace,       // {
-    RBrace,       // }
-    LBracket,     // [
-    RBracket,     // ]
-    LParen,       // (
-    RParen,       // )
-    LAngle,       // <
-    RAngle,       // >
-    Colon,        // :
-    ColonColon,   // ::
-    Arrow,        // ->
-    Plus,         // +
-    Minus,        // -
-    Tilde,        // ~
-    Comma,        // ,
-    At,           // @
-    QuestionMark, // ?
+    Equals,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    LParen,
+    RParen,
+    LAngle,
+    RAngle,
+    Colon,
+    ColonColon,
+    Arrow,
+    Plus,
+    Minus,
+    Tilde,
+    Comma,
+    At,
+    QuestionMark,
     Eof,
 }
 
@@ -99,10 +100,22 @@ impl std::fmt::Display for Token {
     }
 }
 
+/// A `Token` plus its precise byte-offset `Span` and the 1-indexed source
+/// line it starts on. `line` is tracked by the lexer's existing newline
+/// counter as it scans — not derived from `span` — so `Display`-facing
+/// error messages don't need a `LineIndex` or the source text on hand.
+#[derive(Debug, Clone)]
+pub struct SpannedToken {
+    pub token: Token,
+    pub span: Span,
+    pub line: u32,
+}
+
 pub struct Lexer {
     input: Vec<char>,
-    pos: usize,
-    pub line: usize,
+    pos: usize,      // char index into `input`
+    byte_pos: usize, // byte offset into the original source string
+    pub line: u32,
 }
 
 impl Lexer {
@@ -110,6 +123,7 @@ impl Lexer {
         Lexer {
             input: input.chars().collect(),
             pos: 0,
+            byte_pos: 0,
             line: 1,
         }
     }
@@ -124,8 +138,9 @@ impl Lexer {
 
     fn advance(&mut self) -> Option<char> {
         let ch = self.input.get(self.pos).copied();
-        if ch.is_some() {
+        if let Some(c) = ch {
             self.pos += 1;
+            self.byte_pos += c.len_utf8(); // chars can be multi-byte in UTF-8
         }
         ch
     }
@@ -206,14 +221,12 @@ impl Lexer {
 
         if matches!(self.peek(), Some('e') | Some('E')) {
             is_float = true;
-            s.push(self.advance().unwrap()); // consume 'e' or 'E'
+            s.push(self.advance().unwrap());
 
-            // Check for optional sign directly following 'e'/'E'
             if matches!(self.peek(), Some('+') | Some('-')) {
                 s.push(self.advance().unwrap());
             }
 
-            // Consume the exponent digits
             while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
                 s.push(self.advance().unwrap());
             }
@@ -227,61 +240,52 @@ impl Lexer {
     }
 
     fn read_string_lit(&mut self) -> Result<Token, LexError> {
+        let start_byte = self.byte_pos;
+        let start_line = self.line;
         self.advance(); // consume opening "
         let mut s = CompactString::new("");
         loop {
             match self.advance() {
                 Some('"') => break,
                 Some(c) => s.push(c),
-                None => return Err(LexError::UnexpectedChar('"', self.line)),
+                None => {
+                    return Err(LexError::UnexpectedChar {
+                        ch: '"',
+                        span: Span::new(start_byte, self.byte_pos),
+                        line: start_line,
+                    })
+                }
             }
         }
         Ok(Token::StringLiteral(s))
     }
 
-    pub fn tokenize(&mut self) -> Result<Vec<(Token, usize)>, LexError> {
+    pub fn tokenize(&mut self) -> Result<Vec<SpannedToken>, LexError> {
         let mut tokens = Vec::new();
         loop {
             self.skip_whitespace_and_comments();
+            let start_byte = self.byte_pos;
+            let start_line = self.line;
+
             match self.peek() {
                 None => {
-                    tokens.push((Token::Eof, self.line));
+                    tokens.push(SpannedToken {
+                        token: Token::Eof,
+                        span: Span::new(start_byte, start_byte),
+                        line: start_line,
+                    });
                     break;
                 }
                 Some(c) => {
                     let tok = match c {
-                        '{' => {
-                            self.advance();
-                            Token::LBrace
-                        }
-                        '}' => {
-                            self.advance();
-                            Token::RBrace
-                        }
-                        '[' => {
-                            self.advance();
-                            Token::LBracket
-                        }
-                        ']' => {
-                            self.advance();
-                            Token::RBracket
-                        }
-                        '(' => {
-                            self.advance();
-                            Token::LParen
-                        }
-                        ')' => {
-                            self.advance();
-                            Token::RParen
-                        }
-                        '<' => {
-                            self.advance();
-                            Token::LAngle
-                        }
-                        '>' => {
-                            self.advance();
-                            Token::RAngle
-                        }
+                        '{' => { self.advance(); Token::LBrace }
+                        '}' => { self.advance(); Token::RBrace }
+                        '[' => { self.advance(); Token::LBracket }
+                        ']' => { self.advance(); Token::RBracket }
+                        '(' => { self.advance(); Token::LParen }
+                        ')' => { self.advance(); Token::RParen }
+                        '<' => { self.advance(); Token::LAngle }
+                        '>' => { self.advance(); Token::RAngle }
                         ':' => {
                             self.advance();
                             if self.peek() == Some(':') {
@@ -291,23 +295,11 @@ impl Lexer {
                                 Token::Colon
                             }
                         }
-                        '+' => {
-                            self.advance();
-                            Token::Plus
-                        }
-                        '~' => {
-                            self.advance();
-                            Token::Tilde
-                        }
-                        '=' => {
-                            self.advance();
-                            Token::Equals
-                        }
+                        '+' => { self.advance(); Token::Plus }
+                        '~' => { self.advance(); Token::Tilde }
+                        '=' => { self.advance(); Token::Equals }
                         '"' => self.read_string_lit()?,
-                        ',' => {
-                            self.advance();
-                            Token::Comma
-                        }
+                        ',' => { self.advance(); Token::Comma }
                         '-' => {
                             self.advance();
                             if self.peek() == Some('>') {
@@ -317,19 +309,24 @@ impl Lexer {
                                 Token::Minus
                             }
                         }
-                        '@' => {
-                            self.advance();
-                            Token::At
-                        }
-                        '?' => {
-                            self.advance();
-                            Token::QuestionMark
-                        }
+                        '@' => { self.advance(); Token::At }
+                        '?' => { self.advance(); Token::QuestionMark }
                         c if c.is_alphabetic() || c == '_' => self.read_ident_or_keyword(),
                         c if c.is_ascii_digit() => self.read_number(),
-                        c => return Err(LexError::UnexpectedChar(c, self.line)),
+                        c => {
+                            return Err(LexError::UnexpectedChar {
+                                ch: c,
+                                span: Span::new(start_byte, start_byte + c.len_utf8()),
+                                line: start_line,
+                            })
+                        }
                     };
-                    tokens.push((tok, self.line));
+
+                    tokens.push(SpannedToken {
+                        token: tok,
+                        span: Span::new(start_byte, self.byte_pos),
+                        line: start_line,
+                    });
                 }
             }
         }

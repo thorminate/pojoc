@@ -47,8 +47,8 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.root_struct.leaf.leaf_val = "LeafNode".into();
     e.root_struct.leaf.leaf_numeric = 777;
     e.root_struct.weight = 3.14;
-    e.root_struct.leaf_arr.push(NestedLeaf { leaf_val: "ArrayLeaf".into(), leaf_numeric: 11 });
-    e.root_struct.leaf_opt = Some(NestedLeaf { leaf_val: "OptionalLeaf".into(), leaf_numeric: 22 });
+    e.root_struct.leaf_arr.push(NestedLeaf { leaf_val: "ArrayLeaf".into(), leaf_numeric: 11, leaf_rotation: 0f32 });
+    e.root_struct.leaf_opt = Some(NestedLeaf { leaf_val: "OptionalLeaf".into(), leaf_numeric: 22, leaf_rotation: 180f32 });
 
     // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
@@ -92,17 +92,17 @@ pub fn make_populated_edge() -> Edge<'static> {
 
     // Tagged unions — scalar, array, optional, and map-value positions,
     // spread across the variants each union has accumulated over its history.
-    e.action = Payload::Attack(AttackPayload { target_id: 42, damage: 17.5 });
+    e.action = Payload::Attack(AttackPayload { target_id: 42, damage: 17.5, knockback: 2.6 });
     e.action_log.push(Payload::Move(MovePayload { dx: 3, dy: -3 }));
-    e.action_log.push(Payload::Heal(HealPayload { target_id: 7, amount: 25.0, overheal: true }));
+    e.action_log.push(Payload::Heal(HealPayload { target_id: 7, amount: 25.0, overheal: true, splash_radius: 5.2 }));
     e.action_log.push(Payload::Despawn(DespawnPayload { entity_id: 900 }));
-    e.deferred_action = Some(Payload::Heal(HealPayload { target_id: 1, amount: 10.0, overheal: false }));
+    e.deferred_action = Some(Payload::Heal(HealPayload { target_id: 1, amount: 10.0, overheal: false, splash_radius: 1.5 }));
     e.final_action = Payload::Despawn(DespawnPayload { entity_id: 12345 });
 
     e.control = ControlSignal::Pong(PongPayload { latency_ms: 42 });
     e.control_log.push(ControlSignal::Ping(PingPayload {}));
     e.control_log.push(ControlSignal::Disconnect(DisconnectPayload { reason_code: 4 }));
-    e.control_map.insert("primary".into(), Payload::Attack(AttackPayload { target_id: 5, damage: 99.9 }));
+    e.control_map.insert("primary".into(), Payload::Attack(AttackPayload { target_id: 5, damage: 99.9, knockback: 1.2 }));
 
     e
 }

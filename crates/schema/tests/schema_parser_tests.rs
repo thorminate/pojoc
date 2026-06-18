@@ -141,7 +141,7 @@ fn parses_rename_operation() {
     let rename = diff
         .iter()
         .find_map(|op| {
-            if let DiffAst::Rename { from, to } = op {
+            if let DiffAst::Rename { from, to, .. } = op {
                 Some((from, to))
             } else {
                 None
