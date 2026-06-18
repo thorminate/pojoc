@@ -18,6 +18,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/tests/benches" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/tests/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/tests/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/lsp/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

@@ -71,7 +71,7 @@ fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
 #[test]
 fn test_encode_for_version_latest_version_fields_survive() {
     let mut original = make_version_probe_edge();
-    original.action = Payload::Heal(HealPayload { target_id: 2, amount: 8.0, overheal: false });
+    original.action = Payload::Heal(HealPayload { target_id: 2, amount: 8.0, overheal: false, splash_radius: 3.0 });
     original.control = ControlSignal::Disconnect(DisconnectPayload { reason_code: 1 });
 
     let latest = *supported_versions().last().expect("no supported versions");
@@ -109,8 +109,8 @@ fn test_encode_for_version_latest_is_byte_identical_to_encode() {
 fn test_roundtrip_payload_variants() {
     let variants = vec![
         Payload::Move(MovePayload { dx: 7, dy: -2 }),
-        Payload::Attack(AttackPayload { target_id: 11, damage: 33.3 }),
-        Payload::Heal(HealPayload { target_id: 4, amount: 50.0, overheal: true }),
+        Payload::Attack(AttackPayload { target_id: 11, damage: 33.3, knockback: 0.5 }),
+        Payload::Heal(HealPayload { target_id: 4, amount: 50.0, overheal: true, splash_radius: 1.5 }),
         Payload::Despawn(DespawnPayload { entity_id: 808 }),
     ];
 

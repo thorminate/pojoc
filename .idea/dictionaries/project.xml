@@ -10,6 +10,7 @@
       <w>coords</w>
       <w>flatbuf</w>
       <w>flatbuffers</w>
+      <w>languageclient</w>
       <w>msgs</w>
       <w>partialeq</w>
       <w>partialord</w>
@@ -26,6 +27,7 @@
       <w>varint</w>
       <w>varints</w>
       <w>vfloat</w>
+      <w>vscode</w>
     </words>
   </dictionary>
 </component>

@@ -1,13 +1,19 @@
+use crate::span::Span;
+
 #[derive(Debug)]
 pub struct SchemaAst {
     pub name: String,
     pub versions: Vec<VersionAst>,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug)]
 pub struct VersionAst {
     pub version: i128,
     pub blocks: Vec<VersionBlockAst>,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug)]
@@ -20,10 +26,12 @@ pub enum VersionBlockAst {
     BitsetDef(BitsetDefAst),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExtendsAst {
     pub name: String,
     pub version: i128,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug)]
@@ -31,6 +39,8 @@ pub struct TypeDefAst {
     pub name: String,
     pub extends: Option<ExtendsAst>,
     pub body: TypeBody,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug)]
@@ -39,23 +49,18 @@ pub enum TypeBody {
     Diff(Vec<DiffAst>),
 }
 
-#[derive(Debug)]
-pub enum EnumVariantOpAst {
-    Add(String),
-    Rename { from: String, to: String },
+#[derive(Debug, Clone)]
+pub struct EnumVariantNode {
+    pub name: String,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug)]
 pub enum EnumDefAst {
-    Definition {
-        name: String,
-        variants: Vec<String>,
-    },
-    Extension {
-        name: String,
-        base: ExtendsAst, // reuse existing ExtendsAst
-        ops: Vec<EnumVariantOpAst>,
-    },
+    Definition { name: String, variants: Vec<EnumVariantNode>, span: Span, line: u32 },
+    Extension { name: String, base: ExtendsAst, ops: Vec<EnumVariantOpAst>, span: Span, line: u32 },
+
 }
 
 impl EnumDefAst {
@@ -67,23 +72,17 @@ impl EnumDefAst {
     }
 }
 
-#[derive(Debug)]
-pub enum BitsetOpAst {
-    Add(String),
-    Remove(String),
+#[derive(Debug, Clone)]
+pub enum EnumVariantOpAst {
+    Add { name: String, span: Span, line: u32 },
+    Rename { from: String, to: String, span: Span, line: u32 },
 }
 
 #[derive(Debug)]
 pub enum BitsetDefAst {
-    Definition {
-        name: String,
-        variants: Vec<String>,
-    },
-    Extension {
-        name: String,
-        base: ExtendsAst,
-        ops: Vec<BitsetOpAst>,
-    },
+    Definition { name: String, variants: Vec<String>, span: Span, line: u32 },
+    Extension { name: String, base: ExtendsAst, ops: Vec<BitsetOpAst>, span: Span, line: u32 },
+
 }
 
 impl BitsetDefAst {
@@ -95,31 +94,24 @@ impl BitsetDefAst {
     }
 }
 
+#[derive(Debug)]
+pub enum BitsetOpAst {
+    Add { name: String, span: Span, line: u32 },
+    Remove { name: String, span: Span, line: u32 },
+}
+
 #[derive(Debug, Clone)]
 pub struct UnionVariantAst {
     pub name: String,
     pub payload_ty: String,
+    pub span: Span,
+    pub line: u32,
 }
 
-#[derive(Debug)]
-pub enum UnionVariantOpAst {
-    Add {
-        name: String,
-        payload_ty: String,
-    },
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnionDefAst {
-    Definition {
-        name: String,
-        variants: Vec<UnionVariantAst>,
-    },
-    Extension {
-        name: String,
-        base: ExtendsAst,
-        ops: Vec<UnionVariantOpAst>,
-    },
+    Definition { name: String, variants: Vec<UnionVariantAst>, span: Span, line: u32 },
+    Extension { name: String, base: ExtendsAst, ops: Vec<UnionVariantOpAst>, span: Span, line: u32 },
 }
 
 impl UnionDefAst {
@@ -132,24 +124,33 @@ impl UnionDefAst {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConstFieldAst {
-    pub name: String,
-    pub ty: TypeAst,
-    pub value: DefaultValueAst,
+pub enum UnionVariantOpAst {
+    Add { name: String, payload_ty: String, span: Span, line: u32 },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldsAst {
     pub fields: Vec<FieldAst>,
     pub const_fields: Vec<ConstFieldAst>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldAst {
     pub name: String,
     pub ty: TypeAst,
     pub default: Option<DefaultValueAst>,
     pub lazy: bool,
+    pub span: Span,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstFieldAst {
+    pub name: String,
+    pub ty: TypeAst,
+    pub value: DefaultValueAst,
+    pub span: Span,
+    pub line: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -187,34 +188,14 @@ pub enum TypeAst {
     VFloat { min: f64, max: f64, step: f64 },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DiffAst {
-    Add {
-        field: FieldAst,
-    },
-    Remove {
-        name: String,
-    },
-    Rename {
-        from: String,
-        to: String,
-    },
-    UpdateType {
-        name: String,
-        ty: TypeAst,
-        lazy: bool
-    },
-    Transform {
-        from: String,
-        to: String,
-        ty: Option<TypeAst>,
-        lazy: bool
-    },
-
-    // const ops
-    AddConst {
-        field: ConstFieldAst,
-    },
-    UpdateConst { name: String, ty: TypeAst, value: DefaultValueAst },
-    TransformConst { from: String, to: String, ty: TypeAst, value: DefaultValueAst },
+    Add { field: FieldAst },
+    AddConst { field: ConstFieldAst },
+    Remove { name: String, span: Span, line: u32 },
+    Rename { from: String, to: String, span: Span, line: u32 },
+    UpdateType { name: String, ty: TypeAst, lazy: bool, span: Span, line: u32 },
+    Transform { from: String, to: String, ty: Option<TypeAst>, lazy: bool, span: Span, line: u32 },
+    UpdateConst { name: String, ty: TypeAst, value: DefaultValueAst, span: Span, line: u32 },
+    TransformConst { from: String, to: String, ty: TypeAst, value: DefaultValueAst, span: Span, line: u32 },
 }
