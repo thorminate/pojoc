@@ -36,9 +36,12 @@ impl<'a> SchemaAnalyzer<'a> {
     }
 
     pub fn run(&mut self) -> Result<(), AnalysisError> {
+        // we preregister unions so they can be referenced in types with no issues
+        // enums and bitsets dont depend on any external types so they dont need any special handling.
         self.collect_enums()?;
-        self.collect_types()?;
         self.collect_bitsets()?;
+        self.preregister_union_ids();
+        self.collect_types()?;
         self.collect_unions()?;
         for version in &self.ast.versions {
             self.process_version(version)?;
@@ -153,6 +156,18 @@ impl<'a> SchemaAnalyzer<'a> {
             }
         }
         Ok(())
+    }
+
+    fn preregister_union_ids(&mut self) {
+        for version in &self.ast.versions {
+            for block in &version.blocks {
+                if let VersionBlockAst::UnionDef(ud) = block {
+                    let id = TypeId { name: ud.name().to_string(), version: version.version };
+                    // empty variants — collect_unions overwrites this with the real data
+                    self.union_registry.unions.entry(id).or_insert(ResolvedUnion { variants: vec![] });
+                }
+            }
+        }
     }
 
     fn collect_unions(&mut self) -> Result<(), AnalysisError> {
