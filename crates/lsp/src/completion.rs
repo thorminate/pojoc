@@ -224,6 +224,8 @@ fn tokenize_prefix(src: &str) -> Vec<Tok> {
 #[derive(Debug, Clone)]
 enum BlockKind {
     Root,
+    #[allow(dead_code)]
+    Schema(String),
     Version(i128),
     TypeDef(String),
     Fields,
@@ -274,12 +276,11 @@ fn scan(tokens: &[Tok]) -> ScanState {
 
 fn classify_header(pending: &[Tok]) -> BlockKind {
     match pending {
-        [Tok::Ident(k), Tok::Number(n), ..] if k == "version" => {
-            BlockKind::Version(n.parse().unwrap_or(0))
-        }
-        [Tok::Ident(k), Tok::Ident(name), ..] if k == "type" => BlockKind::TypeDef(name.clone()),
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "schema"  => BlockKind::Schema(name.clone()), 
+        [Tok::Ident(k), Tok::Number(n),    ..] if k == "version" => BlockKind::Version(n.parse().unwrap_or(0)),
+        [Tok::Ident(k), Tok::Ident(name),  ..] if k == "type"    => BlockKind::TypeDef(name.clone()),
         [Tok::Ident(k), ..] if k == "fields" => BlockKind::Fields,
-        [Tok::Ident(k), ..] if k == "diff" => BlockKind::Diff,
+        [Tok::Ident(k), ..] if k == "diff"   => BlockKind::Diff,
         _ => BlockKind::Other,
     }
 }
@@ -319,6 +320,8 @@ fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char)> {
 }
 
 enum Ctx {
+    FileRoot,
+    SchemaBody { next_version: i128 },
     VersionBody,
     DiffLineStart,
     DiffOldFieldName { owner_type: Option<String>, version: i128 },
@@ -400,14 +403,27 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
         }
     }
 
+    if matches!(stack.last(), Some(BlockKind::Schema(_))) && pending.is_empty() {
+        let next_version = idx
+            .fields_before_version
+            .keys()
+            .max()
+            .copied()
+            .map(|v| v + 1)
+            .unwrap_or(1);
+        return Ctx::SchemaBody { next_version };
+    }
+
     if matches!(stack.last(), Some(BlockKind::Version(_))) && pending.is_empty() {
         return Ctx::VersionBody;
     }
 
+    if matches!(stack.last(), Some(BlockKind::Root)) && pending.is_empty() {
+        return Ctx::FileRoot;
+    }
+
     Ctx::Unknown
 }
-
-// --- Ctx -> CompletionItem[] --------------------------------------------
 
 pub fn completions_for_position(text: &str, offset: usize, idx: &SchemaIndex) -> Vec<CompletionItem> {
     let prefix = &text[..offset.min(text.len())];
@@ -416,7 +432,14 @@ pub fn completions_for_position(text: &str, offset: usize, idx: &SchemaIndex) ->
     let ctx = determine_ctx(&state, idx);
 
     match ctx {
-        Ctx::VersionBody => keyword_items(&["enum", "union", "type", "bitset", "fields", "diff"]),
+        Ctx::VersionBody => vec![
+            snippet("fields", "fields {\n\t$0\n}", "field declarations block"),
+            snippet("diff", "diff {\n\t$0\n}", "schema diff block"),
+            snippet("type", "type $1 {\n\t$0\n}", "define a type"),
+            snippet("enum", "enum $1 {\n\t$0\n}", "define an enum"),
+            snippet("union", "union $1 {\n\t$0\n}", "define a union"),
+            snippet("bitset", "bitset $1 {\n\t$0\n}", "define a bitset"),
+        ],
 
         Ctx::DiffLineStart => ["+", "-", "~"].iter().map(|op| CompletionItem {
             label: op.to_string(),
@@ -504,17 +527,29 @@ pub fn completions_for_position(text: &str, offset: usize, idx: &SchemaIndex) ->
                 Vec::new()
             }
         }
-
+        Ctx::FileRoot => vec![
+            snippet("schema", "schema $1 {\n\t$0\n}", "define a new schema"),
+        ],
+        Ctx::SchemaBody { next_version } => vec![
+            snippet(
+                &format!("version {next_version}"),
+                &format!("version {next_version} {{\n\t$0\n}}"),
+                &format!("add version {next_version} block"),
+            ),
+        ],
         Ctx::Unknown => Vec::new(),
     }
 }
 
-fn keyword_items(words: &[&str]) -> Vec<CompletionItem> {
-    words.iter().map(|w| CompletionItem {
-        label: w.to_string(),
+fn snippet(label: &str, insert: &str, detail: &str) -> CompletionItem {
+    CompletionItem {
+        label: label.to_string(),
+        insert_text: Some(insert.to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
         kind: Some(CompletionItemKind::KEYWORD),
+        detail: Some(detail.to_string()),
         ..Default::default()
-    }).collect()
+    }
 }
 
 fn type_position_items(idx: &SchemaIndex) -> Vec<CompletionItem> {
