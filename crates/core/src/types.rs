@@ -59,8 +59,12 @@ pub enum ResolvedTypeRef {
         step: f64,
         backing: VFloatBacking,
     },
-
     Optional(Box<ResolvedTypeRef>),
+    ImportedSchema {
+        alias: String,
+        root_name: String,
+        version: i128,
+    },
 }
 
 impl ResolvedTypeRef {
@@ -80,6 +84,7 @@ impl ResolvedTypeRef {
             ResolvedTypeRef::Tuple(_) => None,
             ResolvedTypeRef::VFloat { .. } => None,
             ResolvedTypeRef::Optional(v) => v.type_id(),
+            ResolvedTypeRef::ImportedSchema { .. } => None,
         }
     }
 }
@@ -156,13 +161,13 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         ResolvedTypeRef::Enum(id) => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: id.name.clone(),
-            skip_stmt: "{ let _ = read_varint(buf, pos)?; }".into(),
+            skip_stmt: "{ let _ = read_varint32(buf, pos)?; }".into(),
             read_fn: format!("read_enum::<{}>", id.name),
             write_fn: "encode_varint".into(),
             default_expr: format!("{}::default()", id.name),
             size_fn: None
         },
-        
+
         ResolvedTypeRef::Union(id) => {
             let lower = id.name.to_snake_case();
             TypeInfo {
@@ -347,6 +352,20 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: "/* optional expressions are handled inline */".into(),
                 write_fn: "/* optional expressions are handled inline */".into(),
                 default_expr: "None".into(),
+                size_fn: None,
+            }
+        }
+
+        ResolvedTypeRef::ImportedSchema { alias, root_name, version } => {
+            let module = alias.to_snake_case();
+            let rust_type = format!("{module}::{root_name}");
+            TypeInfo {
+                wire_size: WireSize::Variable,
+                rust_type: rust_type.clone(),
+                skip_stmt: format!("{module}::skip_v{version}(buf, pos)?;"),
+                read_fn: format!("{module}::decode_v{version}"),
+                write_fn: format!("{module}::encode_v{version}"),
+                default_expr: format!("{rust_type}::default()"),
                 size_fn: None,
             }
         }

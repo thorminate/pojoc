@@ -2,6 +2,7 @@ use super::lineage::SchemaLineage;
 use crate::ast::DefaultValueAst;
 use pojoc_core::types::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldId(pub u64);
@@ -177,6 +178,7 @@ pub struct ResolvedSchema {
     pub unions: UnionRegistry,
     pub bitsets: BitsetRegistry,
     pub lineage: SchemaLineage,
+    pub imports: HashMap<String, Arc<ResolvedSchema>>,
 }
 
 #[derive(Debug, Clone)]

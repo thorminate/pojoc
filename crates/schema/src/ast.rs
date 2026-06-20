@@ -3,6 +3,7 @@ use crate::span::Span;
 #[derive(Debug)]
 pub struct SchemaAst {
     pub name: String,
+    pub imports: Vec<ImportDeclAst>,
     pub versions: Vec<VersionAst>,
     pub span: Span,
     pub line: u32,
@@ -154,6 +155,14 @@ pub struct ConstFieldAst {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportDeclAst {
+    pub path: String,
+    pub alias: String,
+    pub span: Span,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone)]
 pub enum DefaultValueAst {
     Bool(bool),
     Int(i128),
@@ -186,6 +195,7 @@ pub enum TypeAst {
     FixedMap(Box<TypeAst>, Box<TypeAst>, usize),
     Tuple(Vec<TypeAst>),
     VFloat { min: f64, max: f64, step: f64 },
+    Imported {alias: String, version: i128},
 }
 
 #[derive(Debug, Clone)]

@@ -4,18 +4,20 @@ use lsp_server::*;
 use lsp_types::*;
 use std::collections::HashMap;
 use std::error::Error;
-use pojoc_schema::{Position as SchemaPosition, Lexer, LexError, Parser, ParseError, AnalysisError, SchemaError, LineIndex, Span, SchemaAst};
+use std::path::{Path, PathBuf};
+use pojoc_schema::{Position as SchemaPosition, Lexer, Parser, ParseError, AnalysisError, SchemaError, LineIndex, Span, SchemaAst, IndexableError, ImportOrchestrator};
 use pojoc_schema::analyzer::SchemaAnalyzer;
 use crate::completion::{completions_for_position, SchemaIndex};
 
 struct DocStore {
     docs: HashMap<Uri, String>,
     last_good_ast: HashMap<Uri, SchemaAst>,
+    import_versions: HashMap<Uri, HashMap<String, Vec<i128>>>,
 }
 
 impl DocStore {
     fn new() -> Self {
-        Self { docs: HashMap::new(), last_good_ast: HashMap::new() }
+        Self { docs: HashMap::new(), last_good_ast: HashMap::new(), import_versions: HashMap::new() }
     }
     fn set(&mut self, uri: Uri, text: String) {
         self.docs.insert(uri, text);
@@ -49,7 +51,12 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                         let pos = params.text_document_position.position;
                         let text = store.docs.get(uri)?;
                         let offset = position_to_offset(text, pos);
-                        let idx = store.last_good_ast.get(uri).map(SchemaIndex::build).unwrap_or_default();
+
+                        let mut idx = store.last_good_ast.get(uri).map(SchemaIndex::build).unwrap_or_default();
+                        if let Some(versions) = store.import_versions.get(uri) {
+                            idx.import_versions = versions.clone();
+                        }
+
                         Some(completions_for_position(text, offset, &idx))
                     })().unwrap_or_default();
 
@@ -125,43 +132,13 @@ fn error_to_diagnostic(err: &SchemaError, text: &str, line_index: &LineIndex) ->
 
 fn extract_span(err: &SchemaError, text: &str) -> Span {
     match err {
-        SchemaError::Lex(LexError::UnexpectedChar { span, .. }) => *span,
-        SchemaError::Parse(e) => extract_parse_span(e, text),
-        SchemaError::Analysis(e) => extract_analysis_span(e),
-    }
-}
-
-fn extract_parse_span(err: &ParseError, text: &str) -> Span {
-    match err {
-        ParseError::UnexpectedToken { span, .. } => *span,
-        ParseError::InvalidSyntax { span, .. } => *span,
-        ParseError::UnexpectedEof => {
+        SchemaError::Lex(e) => e.span(),
+        SchemaError::Parse(ParseError::UnexpectedEof) => {
             let end = text.len();
             Span::new(end, end)
         }
-    }
-}
-
-fn extract_analysis_span(err: &AnalysisError) -> Span {
-    use AnalysisError::*;
-    match err {
-        UnknownType { span, .. }
-        | UnknownParentType { span, .. }
-        | ExtendsWithFullDefinition { span, .. }
-        | FieldNotFound { span, .. }
-        | MissingDefault { span, .. }
-        | FieldAlreadyExists { span, .. }
-        | FixedStringDefaultLengthMismatch { span, .. }
-        | FixedSizeTooLarge { span, .. }
-        | TypeMismatch { span, .. }
-        | VarintsCannotBeConst { span, .. }
-        | InvalidVFloat { span, .. }
-        | VFloatRangeTooLarge { span, .. }
-        | VFloatDefaultOutOfRange { span, .. }
-        | InvalidDeltaElementType { span, .. }
-        | ReservedVariantName { span, .. }
-        | LazyDiffFieldMustBeOptional { span, .. }
-        | NoVersions { span, .. } => *span,
+        SchemaError::Parse(e) => e.span(),
+        SchemaError::Analysis(e) => e.span(),
     }
 }
 
@@ -184,8 +161,26 @@ fn parse_ast(source: &str) -> Result<SchemaAst, SchemaError> {
     Parser::new(tokens).parse_schema().map_err(SchemaError::from)
 }
 
-fn analyze(ast: &SchemaAst) -> Result<(), SchemaError> {
-    let mut ir = SchemaAnalyzer::new(ast);
+fn analyze(
+    ast: &SchemaAst,
+    own_path: &Path,
+    store: &mut DocStore,
+    uri: &Uri,
+) -> Result<(), SchemaError> {
+    let mut orchestrator = ImportOrchestrator::new();
+    let imports = orchestrator.resolve_imports_for(ast, own_path)?;
+
+    let import_versions: HashMap<String, Vec<i128>> = imports
+        .iter()
+        .map(|(alias, schema)| {
+            let mut versions: Vec<i128> = schema.versions.iter().map(|v| v.version).collect();
+            versions.sort_unstable();
+            (alias.clone(), versions)
+        })
+        .collect();
+    store.import_versions.insert(uri.clone(), import_versions);
+
+    let mut ir = SchemaAnalyzer::new(ast, imports);
     ir.run()?;
     ir.finish()?;
     Ok(())
@@ -194,10 +189,20 @@ fn analyze(ast: &SchemaAst) -> Result<(), SchemaError> {
 fn handle_text_update(store: &mut DocStore, uri: Uri, text: String, connection: &Connection)
                       -> Result<(), Box<dyn Error + Send + Sync>>
 {
+    let own_path = uri_to_path(&uri);
+
     let diagnostics = match parse_ast(&text) {
         Ok(ast) => {
-            let analysis_result = analyze(&ast);
-            store.last_good_ast.insert(uri.clone(), ast); // AST cached even if analysis fails
+            let analysis_result = match &own_path {
+                Some(p) => analyze(&ast, p, store, &uri),
+                None if ast.imports.is_empty() => Ok(()),
+                None => Err(SchemaError::Analysis(AnalysisError::ImportNotFound {
+                    path: "<unsaved document>".to_string(),
+                    span: ast.span,
+                    line: ast.line,
+                })),
+            };
+            store.last_good_ast.insert(uri.clone(), ast);
             match analysis_result {
                 Ok(_) => Vec::new(),
                 Err(err) => {
@@ -207,8 +212,6 @@ fn handle_text_update(store: &mut DocStore, uri: Uri, text: String, connection: 
             }
         }
         Err(err) => {
-            // parse failed entirely — leave last_good_ast untouched, completion
-            // falls back to whatever AST last parsed cleanly.
             let line_index = LineIndex::new(&text);
             vec![error_to_diagnostic(&err, &text, &line_index)]
         }
@@ -235,4 +238,11 @@ fn position_to_offset(text: &str, pos: Position) -> usize {
         byte_offset += c.len_utf8();
     }
     offset + byte_offset
+}
+
+fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    url::Url::parse(uri.as_str())
+        .ok()?
+        .to_file_path()
+        .ok()
 }

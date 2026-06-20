@@ -2,6 +2,11 @@ use crate::lexer::Token;
 use crate::span::Span;
 use thiserror::Error;
 
+pub trait IndexableError {
+    fn span(&self) -> Span;
+    fn line(&self) -> u32;
+}
+
 #[derive(Debug, Error)]
 pub enum ParseError {
     #[error("Unexpected token `{got}`, expected {expected}, at line {line}")]
@@ -21,10 +26,42 @@ pub enum ParseError {
     },
 }
 
+impl IndexableError for ParseError {
+    fn span(&self) -> Span {
+        match self {
+            ParseError::UnexpectedToken { span, .. } => span.clone(),
+            ParseError::UnexpectedEof => Span::new(0, 0),
+            ParseError::InvalidSyntax { span, .. } => span.clone(),
+        }
+    }
+
+    fn line(&self) -> u32 {
+        match self {
+            ParseError::UnexpectedToken { line, .. } => *line,
+            ParseError::UnexpectedEof => 0,
+            ParseError::InvalidSyntax { line, .. } => *line,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum LexError {
     #[error("Unexpected character `{ch}`, line {line}")]
     UnexpectedChar { ch: char, span: Span, line: u32 },
+}
+
+impl IndexableError for LexError {
+    fn span(&self) -> Span {
+        match self {
+            LexError::UnexpectedChar { span, .. } => span.clone(),
+        }
+    }
+
+    fn line(&self) -> u32 {
+        match self {
+            LexError::UnexpectedChar { line, .. } => *line,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -79,9 +116,79 @@ pub enum AnalysisError {
     #[error("version {version}: lazy field '{field}' added via diff must be optional (`lazy T?`) so older messages can default to None, line {line}")]
     LazyDiffFieldMustBeOptional { field: String, version: i128, span: Span, line: u32 },
 
-    // no field/version context exists for "zero versions" — point at the schema's own span.
+    #[error("unknown import alias '{alias}', line {line}")]
+    UnknownImportAlias { alias: String, span: Span, line: u32 },
+
+    #[error("import '{alias}' references version {version} but schema only has versions up to {max}, line {line}")]
+    ImportVersionOutOfRange { alias: String, version: i128, max: i128, span: Span, line: u32 },
+
+    #[error("import path '{path}' could not be found or read, line {line}")]
+    ImportNotFound { path: String, span: Span, line: u32 },
+
+    #[error("circular import detected: '{path}', line {line}")]
+    CircularImport { path: String, span: Span, line: u32 },
+
+    #[error("failed to parse schema '{path}': {src}, line {line}")]
+    ImportParseFailed { path: String, src: String, span: Span, line: u32 },
+
     #[error("schema must have at least one version")]
     NoVersions { span: Span, line: u32 },
+}
+
+impl IndexableError for AnalysisError {
+    fn span(&self) -> Span {
+        match self {
+            AnalysisError::UnknownType { span, .. } => span.clone(),
+            AnalysisError::UnknownParentType { span, .. } => span.clone(),
+            AnalysisError::ExtendsWithFullDefinition { span, .. } => span.clone(),
+            AnalysisError::FieldNotFound { span, .. } => span.clone(),
+            AnalysisError::MissingDefault { span, .. } => span.clone(),
+            AnalysisError::FieldAlreadyExists { span, .. } => span.clone(),
+            AnalysisError::FixedStringDefaultLengthMismatch { span, .. } => span.clone(),
+            AnalysisError::FixedSizeTooLarge { span, .. } => span.clone(),
+            AnalysisError::TypeMismatch { span, .. } => span.clone(),
+            AnalysisError::VarintsCannotBeConst { span, .. } => span.clone(),
+            AnalysisError::InvalidVFloat { span, .. } => span.clone(),
+            AnalysisError::VFloatRangeTooLarge { span, .. } => span.clone(),
+            AnalysisError::VFloatDefaultOutOfRange { span, .. } => span.clone(),
+            AnalysisError::InvalidDeltaElementType { span, .. } => span.clone(),
+            AnalysisError::ReservedVariantName { span, .. } => span.clone(),
+            AnalysisError::LazyDiffFieldMustBeOptional { span, .. } => span.clone(),
+            AnalysisError::UnknownImportAlias { span, .. } => span.clone(),
+            AnalysisError::ImportVersionOutOfRange { span, .. } => span.clone(),
+            AnalysisError::ImportNotFound { span, .. } => span.clone(),
+            AnalysisError::CircularImport { span, .. } => span.clone(),
+            AnalysisError::ImportParseFailed { span, .. } => span.clone(),
+            AnalysisError::NoVersions { span, .. } => span.clone(),
+        }
+    }
+
+    fn line(&self) -> u32 {
+        match self {
+            AnalysisError::UnknownType { line, .. } => *line,
+            AnalysisError::UnknownParentType { line, .. } => *line,
+            AnalysisError::ExtendsWithFullDefinition { line, .. } => *line,
+            AnalysisError::FieldNotFound { line, .. } => *line,
+            AnalysisError::MissingDefault { line, .. } => *line,
+            AnalysisError::FieldAlreadyExists { line, .. } => *line,
+            AnalysisError::FixedStringDefaultLengthMismatch { line, .. } => *line,
+            AnalysisError::FixedSizeTooLarge { line, .. } => *line,
+            AnalysisError::TypeMismatch { line, .. } => *line,
+            AnalysisError::VarintsCannotBeConst { line, .. } => *line,
+            AnalysisError::InvalidVFloat { line, .. } => *line,
+            AnalysisError::VFloatRangeTooLarge { line, .. } => *line,
+            AnalysisError::VFloatDefaultOutOfRange { line, .. } => *line,
+            AnalysisError::InvalidDeltaElementType { line, .. } => *line,
+            AnalysisError::ReservedVariantName { line, .. } => *line,
+            AnalysisError::LazyDiffFieldMustBeOptional { line, .. } => *line,
+            AnalysisError::UnknownImportAlias { line, .. } => *line,
+            AnalysisError::ImportVersionOutOfRange { line, .. } => *line,
+            AnalysisError::ImportNotFound { line, .. } => *line,
+            AnalysisError::CircularImport { line, .. } => *line,
+            AnalysisError::ImportParseFailed { line, .. } => *line,
+            AnalysisError::NoVersions { line, .. } => *line,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

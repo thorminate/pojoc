@@ -119,22 +119,37 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "'{'")?;
 
+        let mut imports = Vec::new();
+        while matches!(self.peek(), Token::Keyword(Keyword::Import)) {
+            let (imp_span, imp_line) = self.here();
+            self.advance();
+
+            let path = match self.advance_spanned() {
+                (Token::StringLiteral(s), _, _) => s.to_string(),
+                (got, span, line) => return Err(self.err_unexpected_at(got, "string path", span, line)),
+            };
+
+            self.expect_keyword(Keyword::As)?;
+            let alias = self.expect_ident()?;
+
+            let span = imp_span.join(self.last_consumed_span());
+            imports.push(ImportDeclAst { path, alias, span, line: imp_line });
+        }
+
         let mut versions = Vec::new();
         let mut seen_versions = HashSet::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
             let version_ast = self.parse_version()?;
-
             if !seen_versions.insert(version_ast.version) {
                 return Err(self.err_invalid(format!("duplicate version: {}", version_ast.version)));
             }
-
             versions.push(version_ast);
         }
 
         self.expect(Token::RBrace, "'}'")?;
         let span = start_span.join(self.last_consumed_span());
-        Ok(SchemaAst { name, versions, span, line: start_line })
+        Ok(SchemaAst { name, imports, versions, span, line: start_line })
     }
 
     fn parse_version(&mut self) -> Result<VersionAst, ParseError> {
@@ -543,20 +558,26 @@ impl Parser {
                 self.expect(Token::RBracket, "']'")?;
                 TypeAst::Array(Box::new(inner))
             }
-            Token::Identifier(ref s) if s == "vfloat" => {
-                self.advance();
-                self.parse_vfloat_params()?
+            Token::Identifier(_) => {
+                let name = self.expect_ident()?;
+
+                if matches!(self.peek(), Token::At) {
+                    self.advance(); // consume @
+                    let version = self.expect_number()?;
+                    TypeAst::Imported { alias: name, version }
+                } else if name == "vfloat" {
+                    self.parse_vfloat_params()?
+                } else if name == "map" {
+                    self.expect(Token::LAngle, "'<'")?;
+                    let k = self.parse_type()?;
+                    self.expect(Token::Comma, "','")?;
+                    let v = self.parse_type()?;
+                    self.expect(Token::RAngle, "'>'")?;
+                    TypeAst::Map(Box::new(k), Box::new(v))
+                } else {
+                    TypeAst::Named(name)
+                }
             }
-            Token::Identifier(ref s) if s == "map" => {
-                self.advance();
-                self.expect(Token::LAngle, "'<'")?;
-                let k = self.parse_type()?;
-                self.expect(Token::Comma, "','")?;
-                let v = self.parse_type()?;
-                self.expect(Token::RAngle, "'>'")?;
-                TypeAst::Map(Box::new(k), Box::new(v))
-            }
-            Token::Identifier(_) => TypeAst::Named(self.expect_ident()?),
             Token::LParen => {
                 self.advance();
                 let mut elements = Vec::new();
