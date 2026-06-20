@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use super::id_gen::*;
 use super::lineage::SchemaLineage;
 use super::resolver::*;
@@ -17,11 +19,12 @@ pub struct SchemaAnalyzer<'a> {
     bitset_registry: BitsetRegistry,
     version_states: Vec<ResolvedVersion>,
     current: Option<VersionContext>,
+    imports: HashMap<String, Arc<ResolvedSchema>>,
     id_gen: IdGen,
 }
 
 impl<'a> SchemaAnalyzer<'a> {
-    pub fn new(ast: &'a SchemaAst) -> Self {
+    pub fn new(ast: &'a SchemaAst, imports: HashMap<String, Arc<ResolvedSchema>>) -> Self {
         Self {
             resolver: Resolver { ast },
             ast,
@@ -32,12 +35,13 @@ impl<'a> SchemaAnalyzer<'a> {
             version_states: Vec::new(),
             id_gen: IdGen::new(),
             current: None,
+            imports,
         }
     }
 
     pub fn run(&mut self) -> Result<(), AnalysisError> {
         // we preregister unions so they can be referenced in types with no issues
-        // enums and bitsets dont depend on any external types so they dont need any special handling.
+        // enums and bitsets don't depend on any external types, so they don't need any special handling.
         self.collect_enums()?;
         self.collect_bitsets()?;
         self.preregister_union_ids();
@@ -923,6 +927,30 @@ impl<'a> SchemaAnalyzer<'a> {
                 let inner_ref = self.resolve(v, version, span, line)?;
                 Ok(ResolvedTypeRef::Optional(Box::new(inner_ref)))
             }
+            TypeAst::Imported { alias, version: import_version } => {
+                let schema = self.imports.get(alias).ok_or_else(|| AnalysisError::UnknownImportAlias {
+                    alias: alias.clone(),
+                    span,
+                    line,
+                })?;
+
+                let max_ver = schema.versions.iter().map(|v| v.version).max().unwrap_or(0);
+                if *import_version > max_ver {
+                    return Err(AnalysisError::ImportVersionOutOfRange {
+                        alias: alias.clone(),
+                        version: *import_version,
+                        max: max_ver,
+                        span,
+                        line,
+                    });
+                }
+
+                Ok(ResolvedTypeRef::ImportedSchema {
+                    alias: alias.clone(),
+                    root_name: schema.name_hint.clone(),
+                    version: *import_version,
+                })
+            }
         }
     }
 
@@ -944,6 +972,7 @@ impl<'a> SchemaAnalyzer<'a> {
             unions: self.union_registry,
             enums: self.enum_registry,
             bitsets: self.bitset_registry,
+            imports: self.imports,
             lineage,
         })
     }

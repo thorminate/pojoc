@@ -1,29 +1,28 @@
 use pojoc_codegen::builder::{BuildOptions, build_project};
 use pojoc_codegen::generate;
-use pojoc_schema::ir::analyzer::SchemaAnalyzer;
-use pojoc_schema::lexer::Lexer;
-use pojoc_schema::parser::Parser;
+use pojoc_schema::ImportOrchestrator;
 
 use std::path::PathBuf;
 
 fn main() {
-    let src = include_str!("player.pojoc");
-    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    // Was include_str! — fine for a single file, but import resolution
+    // needs a real path to resolve relative `import "..."` declarations
+    // against. Assumes player.pojoc sits next to this main.rs in src/;
+    // adjust the path if your layout differs.
+    let schema_path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/player.pojoc"));
 
-    let tokens = Lexer::new(src).tokenize().expect("lex error");
-
-    let ast = Parser::new(tokens).parse_schema().expect("parse error");
-
-    let mut ir = SchemaAnalyzer::new(&ast);
-    ir.run().expect("ir could not compile");
-    let ir = ir.finish().expect("ir could not finish");
+    let mut orchestrator = ImportOrchestrator::new();
+    let ir = orchestrator.resolve_root(&schema_path).unwrap_or_else(|e| {
+        eprintln!("schema compile failed: {e}");
+        std::process::exit(1);
+    });
 
     let generated = generate(&ir);
 
     let runtime_path = PathBuf::from("C:/dev/Rust/pojoc/crates/runtime");
 
     let opts = BuildOptions {
-        project_name: ast.name.clone(),
+        project_name: ir.name_hint.clone(),
         target: None,
         release: true,
         runtime_path,

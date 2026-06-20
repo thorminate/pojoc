@@ -1,0 +1,10 @@
+﻿[package]
+name = "pojoc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+compact_str = { workspace = true, features = ["serde"] }
+smallvec = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }

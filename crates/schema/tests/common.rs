@@ -4,6 +4,7 @@ use pojoc_schema::ir::analyzer::*;
 use pojoc_schema::ir::ir_types::*;
 use pojoc_schema::lexer::*;
 use pojoc_schema::parser::*;
+use std::collections::HashMap;
 
 pub fn parse_schema(input: &str) -> Result<SchemaAst, SchemaError> {
     let tokens = Lexer::new(input).tokenize()?;
@@ -11,7 +12,7 @@ pub fn parse_schema(input: &str) -> Result<SchemaAst, SchemaError> {
 }
 
 pub fn analyze_schema(ast: &SchemaAst) -> Result<ResolvedSchema, SchemaError> {
-    let mut analyzer = SchemaAnalyzer::new(ast);
+    let mut analyzer = SchemaAnalyzer::new(ast, HashMap::new());
     analyzer.run()?;
     Ok(analyzer.finish()?)
 }

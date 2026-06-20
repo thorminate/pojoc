@@ -1,4 +1,5 @@
 schema Edge {
+  import "player.pojoc" as Player
 
   version 1 {
     enum NumericBounds {
@@ -106,6 +107,8 @@ schema Edge {
 
       vfloat_arr: [vfloat(min: 0, max: 360, step: 0.1)] = []
       fixed_vfloat_arr: [vfloat(min: 0, max: 255, step: 1)](4) = [0.0, 0.0, 0.0, 0.0]
+
+      imported_player: Player@2
     }
   }
 
@@ -158,6 +161,7 @@ schema Edge {
       // Step narrowed 0.1 -> 0.05, same range — bit width grows, old wire data must still decode
       ~ angle_deg -> angle_deg_v2: vfloat(min: 0, max: 360, step: 0.05)
       + heal_radius: vfloat(min: 0, max: 25, step: 0.25) = 0.0
+      ~ imported_player -> updated_imported_player: Player@6
     }
   }
 

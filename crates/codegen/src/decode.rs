@@ -13,6 +13,7 @@ pub fn emit_decode_functions(schema: &ResolvedSchema, infected: &HashSet<String>
     emit_union_readers(schema, infected, w);
     emit_union_skippers(schema, w);
     emit_lazy_helpers(schema, w);
+    emit_skip_vn_functions(schema, w);
 
     for vl in &schema.lineage.versions {
         emit_decode_fn(schema, vl, infected, w);
@@ -399,6 +400,9 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             let inner_expr = emit_read_expr(inner);
             format!("if read_u8(buf, pos)? != 0 {{ Some({inner_expr}) }} else {{ None }}")
         }
+        ResolvedTypeRef::ImportedSchema { .. } => {
+            format!("{}(buf, pos)?", info.read_fn)
+        }
     }
 }
 
@@ -776,4 +780,48 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
             w.blank();
         }
     }
+}
+
+pub fn emit_skip_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    for vl in &schema.lineage.versions {
+        emit_skip_vn_fn(vl, w);
+        w.blank();
+    }
+}
+
+fn emit_skip_vn_fn(vl: &VersionLineage, w: &mut CodeWriter) {
+    let v = vl.version;
+    let buf_param = if vl.fields.is_empty() { "_buf" } else { "buf" };
+    let pos_param = if vl.fields.is_empty() { "_pos" } else { "pos" };
+
+    w.line("#[allow(dead_code)]");
+    w.line(&format!(
+        "pub fn skip_v{v}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<()> {{"
+    ));
+    w.indent();
+
+    let optional_count = vl.fields.iter()
+        .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
+        .count();
+    emit_optional_header_read(optional_count, w);
+
+    let mut optional_counter = 0;
+    for fl in &vl.fields {
+        if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
+            let byte_idx = optional_counter / 8;
+            let bit_idx = optional_counter % 8;
+            optional_counter += 1;
+            w.line(&format!("if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"));
+            w.indent();
+            w.line(&emit_skip_stmt(inner));
+            w.dedent();
+            w.line("}");
+        } else {
+            w.line(&emit_skip_stmt(&fl.source_ty));
+        }
+    }
+
+    w.line("Ok(())");
+    w.dedent();
+    w.line("}");
 }

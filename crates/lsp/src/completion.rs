@@ -8,21 +8,20 @@ pub struct SchemaIndex {
     pub enum_names: HashSet<String>,
     pub union_names: HashSet<String>,
     pub bitset_names: HashSet<String>,
-    /// name -> every version it was declared/extended at, in file order.
     pub declared_versions: HashMap<String, Vec<i128>>,
-    /// name -> currently active variants, after replaying all Definition/Extension ops.
     pub enum_variants: HashMap<String, Vec<String>>,
     pub bitset_variants: HashMap<String, Vec<String>>,
     pub union_variants: HashMap<String, Vec<String>>,
-    /// version -> top-level schema field names live *entering* that version's diff.
     pub fields_before_version: HashMap<i128, Vec<String>>,
-    /// (type_name, version) -> that type's field names live entering its diff at that version.
     pub type_fields_before_version: HashMap<(String, i128), Vec<String>>,
+    pub import_aliases: HashSet<String>,
+    pub import_versions: HashMap<String, Vec<i128>>,
 }
 
 impl SchemaIndex {
     pub fn build(ast: &SchemaAst) -> Self {
         let mut idx = SchemaIndex::default();
+        idx.import_aliases = ast.imports.iter().map(|i| i.alias.clone()).collect();
         let mut running_fields: Vec<String> = Vec::new();
         let mut type_running: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -328,6 +327,7 @@ enum Ctx {
     TypePosition,
     ExtendsName,
     ExtendsVersion { name: String, before_version: Option<i128> },
+    ImportVersion { alias: String },
     EnumVariantAccess { name: String },
     VFloatParam,
     BitsetLiteralField { bitset_name: String },
@@ -340,8 +340,18 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     let stack = &state.stack;
 
     if let [.., Tok::Ident(name), Tok::Punct('@')] = pending.as_slice() {
-        return Ctx::ExtendsVersion { name: name.clone(), before_version: current_version(stack) };
+        let preceded_by_extends = pending.len() >= 3
+            && matches!(&pending[pending.len() - 3], Tok::Ident(k) if k == "extends");
+
+        if preceded_by_extends {
+            return Ctx::ExtendsVersion { name: name.clone(), before_version: current_version(stack) };
+        }
+        if idx.import_aliases.contains(name) {
+            return Ctx::ImportVersion { alias: name.clone() };
+        }
+        return Ctx::Unknown;
     }
+
     if matches!(pending.as_slice(), [.., Tok::Ident(_), Tok::DoubleColon]
         | [.., Tok::Ident(_), Tok::DoubleColon, Tok::Ident(_)])
     {
@@ -479,6 +489,14 @@ pub fn completions_for_position(text: &str, offset: usize, idx: &SchemaIndex) ->
                 ..Default::default()
             }).collect(),
 
+        Ctx::ImportVersion { alias } => idx.import_versions.get(&alias).into_iter().flatten()
+            .map(|v| CompletionItem {
+                label: v.to_string(),
+                kind: Some(CompletionItemKind::CONSTANT),
+                detail: Some(format!("version of imported schema `{alias}`")),
+                ..Default::default()
+            }).collect(),
+
         Ctx::EnumVariantAccess { name } => idx.enum_variants.get(&name).into_iter().flatten()
             .map(|v| CompletionItem {
                 label: v.clone(),
@@ -536,6 +554,7 @@ pub fn completions_for_position(text: &str, offset: usize, idx: &SchemaIndex) ->
                 &format!("version {next_version} {{\n\t$0\n}}"),
                 &format!("add version {next_version} block"),
             ),
+            snippet("import", "import \"$1\" as $2", "import another schema"),
         ],
         Ctx::Unknown => Vec::new(),
     }
@@ -567,6 +586,13 @@ fn type_position_items(idx: &SchemaIndex) -> Vec<CompletionItem> {
     items.extend(idx.all_type_like_names().map(|n| CompletionItem {
         label: n.to_string(),
         kind: Some(CompletionItemKind::CLASS),
+        ..Default::default()
+    }));
+
+    items.extend(idx.import_aliases.iter().map(|n| CompletionItem {
+        label: n.clone(),
+        kind: Some(CompletionItemKind::MODULE),
+        detail: Some("imported schema".into()),
         ..Default::default()
     }));
 

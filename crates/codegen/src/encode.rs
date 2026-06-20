@@ -309,6 +309,10 @@ fn emit_write_expr(
             w.dedent();
             w.line("}");
         }
+
+        ResolvedTypeRef::ImportedSchema { .. } => {
+            w.line(&format!("{}(buf, &{accessor});", info.write_fn));
+        }
     }
 }
 
@@ -790,6 +794,12 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line(&format!("{}(buf, 0{});", backing.write_fn(), backing.rust_int_type()));
         }
         ResolvedTypeRef::Optional(_) => {}
+        ResolvedTypeRef::ImportedSchema { .. } => {
+            w.line(&format!(
+                "{}(buf, &{}::default());",
+                info.write_fn, info.rust_type
+            ));
+        }
     }
 }
 
@@ -978,6 +988,10 @@ fn emit_size_expr(ty: &ResolvedTypeRef, accessor: &str, w: &mut CodeWriter, sche
             emit_size_expr(inner, "__val", w, schema);
             w.dedent();
             w.line("}");
+        }
+        ResolvedTypeRef::ImportedSchema { alias, .. } => {
+            let module = alias.to_snake_case();
+            w.line(&format!("size += {module}::size_hint(&{accessor});"));
         }
     }
 }

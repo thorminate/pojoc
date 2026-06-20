@@ -5,6 +5,7 @@ mod structs;
 pub mod writer;
 
 use std::collections::{HashMap, HashSet};
+use heck::ToSnakeCase;
 use pojoc_core::types::{is_primitive, ResolvedTypeRef};
 use pojoc_schema::ir::ir_types::{DefaultValue, ResolvedSchema};
 use writer::CodeWriter;
@@ -22,6 +23,8 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.blank();
 
     let infected = compute_lifetime_infected(schema);
+
+    emit_imported_submodules(schema, &mut w);
 
     structs::emit_enums(schema, &mut w);
     structs::emit_structs(schema, &infected, &mut w);
@@ -280,5 +283,25 @@ fn field_type_name(ty: &ResolvedTypeRef) -> Option<&str> {
         | ResolvedTypeRef::FixedArray(inner, _)
         | ResolvedTypeRef::Optional(inner) => field_type_name(inner),
         _ => None,
+    }
+}
+
+fn emit_imported_submodules(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let mut aliases: Vec<&String> = schema.imports.keys().collect();
+    aliases.sort(); // deterministic output
+
+    for alias in aliases {
+        let imported = &schema.imports[alias];
+        let module = alias.to_snake_case();
+        let body = generate(imported);
+
+        w.line(&format!("pub mod {module} {{"));
+        w.indent();
+        for line in body.lines() {
+            if line.is_empty() { w.blank(); } else { w.line(line); }
+        }
+        w.dedent();
+        w.line("}");
+        w.blank();
     }
 }

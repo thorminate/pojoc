@@ -18,6 +18,8 @@ pub enum Keyword {
     Lazy,
     True,
     False,
+    Import,
+    As
 }
 
 impl std::fmt::Display for Keyword {
@@ -37,6 +39,8 @@ impl std::fmt::Display for Keyword {
             Keyword::Lazy => write!(f, "lazy"),
             Keyword::True => write!(f, "true"),
             Keyword::False => write!(f, "false"),
+            Keyword::Import => write!(f, "import"),
+            Keyword::As => write!(f, "as"),
         }
     }
 }
@@ -199,6 +203,8 @@ impl Lexer {
             "lazy" => Token::Keyword(Keyword::Lazy),
             "true" => Token::Keyword(Keyword::True),
             "false" => Token::Keyword(Keyword::False),
+            "import" => Token::Keyword(Keyword::Import),
+            "as" => Token::Keyword(Keyword::As),
             _ => Token::Identifier(s),
         }
     }

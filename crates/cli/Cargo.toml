@@ -9,4 +9,4 @@ path = "src/main.rs"
 
 [dependencies]
 pojoc-schema   = { path = "../schema" }
-pojoc-codegen = {path = "../codegen"}
+pojoc-codegen = { path = "../codegen" }

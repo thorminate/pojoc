@@ -11,6 +11,8 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.empty_arr.push(pojstr!("v"));
     e.root_struct.leaf.leaf_val = "leaf".into();
     e.root_struct.leaf.leaf_numeric = 1;
+    e.updated_imported_player.player_id = 12345.0;
+    e.updated_imported_player.status = player::Status::Spectating;
     e
 }
 
@@ -104,7 +106,80 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.control_log.push(ControlSignal::Disconnect(DisconnectPayload { reason_code: 4 }));
     e.control_map.insert("primary".into(), Payload::Attack(AttackPayload { target_id: 5, damage: 99.9, knockback: 1.2 }));
 
+    e.updated_imported_player = make_player_value();
+
     e
+}
+
+fn make_player_value() -> player::Player {
+    let mut p = player::Player::default();
+
+    p.player_id = 42.0;
+    p.level = 17.5;
+    p.status = player::Status::Spectating;
+    p.class = player::Class::Necromancer;
+    p.region = player::Region::Void;
+
+    p.inventory.push(pojstr!("Sword"));
+    p.inventory.push(pojstr!("Shield"));
+    p.callsign = "Ghost".into();
+
+    p.stats = player::Stats {
+        strength: 10,
+        agility: 12,
+        intelligence: 8,
+        endurance: 15,
+        charisma: 6,
+        resistance: 3.5,
+    };
+
+    p.hotbar = std::array::from_fn(|_| PojocString::default());
+    p.hotbar[0] = pojstr!("sword");
+    p.hotbar[1] = pojstr!("shield");
+
+    p.session_token = *b"PLAYERTOKEN12345";
+    p.coordinates = (1.5, 2.5);
+    p.position = player::Vector3 { x: 1.0, y: 2.0, z: 3.0, w: 1.0 };
+    p.kill_death = (5, 2);
+
+    p.tags.push(pojstr!("vip"));
+
+    p.transform = player::Transform {
+        position: player::Vector3 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+        bounds: player::AABB { min_x: -1.0, min_y: -1.0, max_x: 1.0, max_y: 1.0 },
+    };
+
+    p.recent_zones = std::array::from_fn(|_| PojocString::default());
+    p.recent_zones[0] = pojstr!("zoneA");
+
+    p.chat_history = std::array::from_fn(|_| PojocString::default());
+    p.chat_history[0] = pojstr!("hello");
+
+    p.velocity = (0.1, 0.2, 0.3);
+    p.status_code = *b"OK000000";
+    p.is_nauseous = false;
+    p.guild_tag = *b"WLF\0";
+    p.spawn_point = (10.0, 0.0, 10.0);
+
+    p.achievement_ids.push(101);
+    p.achievement_ids.push(202);
+
+    p.active_perks = player::Perks::DOUBLE_JUMP | player::Perks::TELEKINESIS;
+    p.account_flags = player::Flags::IS_VERIFIED | player::Flags::IS_DEVELOPER;
+
+    p.quest_progress.insert("main_quest".into(), 3);
+    p.quick_slots = pojmap!(0 => "potion", 1 => "scroll", 2 => "wow", 3 => "wow", 4 => "wow", 5 => "wow", 6 => "wow", 7 => "wow", 8 => "wow", 9 => "wow"; 10);
+    p.skill_levels.insert("archery".into(), 7.5);
+
+    p.loadout = std::array::from_fn(|_| (PojocString::default(), 0i32));
+    p.loadout[0] = (pojstr!("sword"), 1);
+    p.loadout[1] = (pojstr!("shield"), 1);
+
+    p.leaderboard_scores.insert("season1".into(), 9001);
+    p.party_members = [1, 2, 3, 4];
+    p.last_position = (5.0, 5.0, 5.0);
+
+    p
 }
 
 pub fn assert_nested_leaf_eq(a: &NestedLeaf, b: &NestedLeaf) {
@@ -268,7 +343,10 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
 
     // Deep wrapper
     assert_deep_complex_wrapper_eq(&a.ultimate_boss_structure, &b.ultimate_boss_structure);
-
+    
+    // Imports
+    assert_player_eq(&a.updated_imported_player, &b.updated_imported_player);
+    
     // Tagged unions
     assert_payload_eq(&a.action, &b.action);
     assert_eq!(a.action_log.len(), b.action_log.len());
@@ -292,4 +370,69 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
         let other = b.control_map.get(k).expect("control_map key missing after roundtrip");
         assert_payload_eq(v, other);
     }
+    
+    
+}
+
+pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {
+    assert_eq!(a.x, b.x);
+    assert_eq!(a.y, b.y);
+    assert_eq!(a.z, b.z);
+    assert_eq!(a.w, b.w);
+}
+
+pub fn assert_aabb_eq(a: &player::AABB, b: &player::AABB) {
+    assert_eq!(a.min_x, b.min_x);
+    assert_eq!(a.min_y, b.min_y);
+    assert_eq!(a.max_x, b.max_x);
+    assert_eq!(a.max_y, b.max_y);
+}
+
+pub fn assert_transform_eq(a: &player::Transform, b: &player::Transform) {
+    assert_vector3_eq(&a.position, &b.position);
+    assert_aabb_eq(&a.bounds, &b.bounds);
+}
+
+pub fn assert_stats_eq(a: &player::Stats, b: &player::Stats) {
+    assert_eq!(a.strength, b.strength);
+    assert_eq!(a.agility, b.agility);
+    assert_eq!(a.intelligence, b.intelligence);
+    assert_eq!(a.endurance, b.endurance);
+    assert_eq!(a.charisma, b.charisma);
+    assert_eq!(a.resistance, b.resistance);   // luck was removed in Stats@6
+}
+
+pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
+    assert_eq!(a.player_id, b.player_id);
+    assert_eq!(a.level, b.level);
+    assert_eq!(a.status, b.status);
+    assert_eq!(a.class, b.class);
+    assert_eq!(a.region, b.region);
+    assert_eq!(a.inventory, b.inventory);
+    assert_eq!(a.callsign, b.callsign);
+    assert_stats_eq(&a.stats, &b.stats);
+    assert_eq!(a.hotbar, b.hotbar);
+    assert_eq!(a.session_token, b.session_token);
+    assert_eq!(a.coordinates, b.coordinates);
+    assert_vector3_eq(&a.position, &b.position);
+    assert_eq!(a.kill_death, b.kill_death);
+    assert_eq!(a.tags, b.tags);
+    assert_transform_eq(&a.transform, &b.transform);
+    assert_eq!(a.recent_zones, b.recent_zones);
+    assert_eq!(a.chat_history, b.chat_history);
+    assert_eq!(a.velocity, b.velocity);
+    assert_eq!(a.status_code, b.status_code);
+    assert_eq!(a.is_nauseous, b.is_nauseous);
+    assert_eq!(a.guild_tag, b.guild_tag);
+    assert_eq!(a.spawn_point, b.spawn_point);
+    assert_eq!(a.achievement_ids, b.achievement_ids);
+    assert_eq!(a.active_perks, b.active_perks);
+    assert_eq!(a.account_flags, b.account_flags);
+    assert_eq!(a.quest_progress, b.quest_progress);
+    assert_eq!(a.quick_slots, b.quick_slots);
+    assert_eq!(a.skill_levels, b.skill_levels);
+    assert_eq!(a.loadout, b.loadout);
+    assert_eq!(a.leaderboard_scores, b.leaderboard_scores);
+    assert_eq!(a.party_members, b.party_members);
+    assert_eq!(a.last_position, b.last_position);
 }
