@@ -138,12 +138,18 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
         let (_, resolved) = latest[name];
 
         for variant in &resolved.variants {
-            assert!(
-                !infected.contains(&variant.payload.name),
-                "union `{name}` variant `{}` has a lazy-infected payload type `{}` — \
-                 lazy fields inside union payloads aren't supported yet",
-                variant.name, variant.payload.name
-            );
+            let infected_name = match &variant.payload {
+                ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Some(id.name.as_str()),
+                _ => None,
+            };
+            if let Some(n) = infected_name {
+                assert!(
+                    !infected.contains(n),
+                    "union `{name}` variant `{}` has a lazy-infected payload type `{n}` — \
+             lazy fields inside union payloads aren't supported yet",
+                    variant.name
+                );
+            }
         }
 
         let fn_name = format!("read_{}", name.to_snake_case());
@@ -158,9 +164,9 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
         w.line("let __result = match __discriminant {");
         w.indent();
         for variant in &resolved.variants {
-            let read_payload = format!("read_{}", variant.payload.name.to_snake_case());
+            let read_expr = emit_read_expr(&variant.payload);
             w.line(&format!(
-                "{} => {name}::{}({read_payload}(buf, pos)?),",
+                "{} => {name}::{}({read_expr}),",
                 variant.discriminant, variant.name
             ));
         }
@@ -489,14 +495,6 @@ fn get_field_default_expr(
     type_ref: &ResolvedTypeRef,
     schema: &ResolvedSchema,
 ) -> String {
-    if let ResolvedTypeRef::FixedMap(_, _, n) = type_ref {
-        return format!(
-            "{{ let mut __m = PojocFixedMap::with_capacity({n}); \
-             for _ in 0..{n} {{ __m.push((Default::default(), Default::default())); }} \
-             __m }}"
-        );
-    }
-    
     match default_val {
         Some(DefaultValue::None) if matches!(type_ref, ResolvedTypeRef::Optional(_)) => {
             "None".to_string()
@@ -504,6 +502,28 @@ fn get_field_default_expr(
 
         Some(DefaultValue::None) if !matches!(type_ref, ResolvedTypeRef::Optional(_)) => {
             type_info(type_ref).default_expr
+        }
+
+        Some(DefaultValue::Map(pairs)) if matches!(type_ref, ResolvedTypeRef::FixedMap(..)) => {
+            let ResolvedTypeRef::FixedMap(_, _, n) = type_ref else { unreachable!() };
+            let pushes = pairs
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "__m.push(({}, {}));",
+                        emit_default(k, schema),
+                        emit_default(v, schema)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let fill = n.saturating_sub(pairs.len());
+            let fill_str = if fill > 0 {
+                format!(" for _ in 0..{fill} {{ __m.push((Default::default(), Default::default())); }}")
+            } else {
+                String::new()
+            };
+            format!("{{ let mut __m = PojocFixedMap::with_capacity({n}); {pushes}{fill_str} __m }}")
         }
 
         Some(DefaultValue::BitsetLiteral { ty_name, kvs })
@@ -528,7 +548,7 @@ fn get_field_default_expr(
             _ if els.is_empty() => type_info(type_ref).default_expr,
             _ => emit_default(default_val.unwrap(), schema),
         },
-
+        
         Some(DefaultValue::Map(pairs)) if pairs.is_empty() => type_info(type_ref).default_expr,
         Some(other) => emit_default(other, schema),
         None => type_info(type_ref).default_expr,

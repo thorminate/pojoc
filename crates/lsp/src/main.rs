@@ -31,7 +31,13 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::FULL,
         )),
-        completion_provider: Some(CompletionOptions::default()),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![
+                ":".into(), "@".into(), "<".into(), "[".into(), "(".into(),
+                "-".into(), "~".into(), ",".into(), "=".into(), " ".into()
+            ]),
+            ..Default::default()
+        }),
         ..Default::default()
     })?;
 
@@ -57,7 +63,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                             idx.import_versions = versions.clone();
                         }
 
-                        Some(completions_for_position(text, offset, &idx))
+                        let schema_path = uri_to_path(uri);
+                        Some(completions_for_position(text, offset, &idx, schema_path.as_deref()))
                     })().unwrap_or_default();
 
                     let result = serde_json::to_value(CompletionResponse::Array(items))?;

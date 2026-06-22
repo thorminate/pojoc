@@ -78,12 +78,11 @@ fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line("match value {");
         w.indent();
         for variant in &resolved.variants {
-            let write_payload = format!("write_{}", variant.payload.name.to_snake_case());
             w.line(&format!("{name}::{}(__payload) => {{", variant.name));
             w.indent();
             w.line(&format!("write_varint64(buf, {});", variant.discriminant));
             w.line("let mut __tmp = Vec::new();");
-            w.line(&format!("{write_payload}(&mut __tmp, __payload);"));
+            emit_union_payload_write(&variant.payload, w);
             w.line("write_varint32(buf, __tmp.len() as u32);");
             w.line("buf.extend_from_slice(&__tmp);");
             w.dedent();
@@ -840,11 +839,26 @@ fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line("match value {");
         w.indent();
         for variant in &resolved.variants {
-            let payload_size_fn = format!("size_hint_{}", variant.payload.name.to_snake_case());
+            w.line(&format!("{name}::{}(__p) => {{", variant.name));
+            w.indent();
+            match &variant.payload {
+                ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+                    let size_fn = format!("size_hint_{}", id.name.to_snake_case());
+                    w.line(&format!("let __plen = {size_fn}(__p);"));
+                }
+                _ => {
+                    // use emit_size_expr with its own `size` accumulator, then rename
+                    w.line("let mut size = 0usize;");
+                    emit_size_expr(&variant.payload, "__p", w, schema);
+                    w.line("let __plen = size;");
+                }
+            }
             w.line(&format!(
-                "{name}::{}(__p) => {{ let __plen = {payload_size_fn}(__p); varint_size({}) + varint_size(__plen) + __plen }}",
-                variant.name, variant.discriminant
+                "varint_size({}) + varint_size(__plen) + __plen",
+                variant.discriminant
             ));
+            w.dedent();
+            w.line("}");
         }
         w.line(&format!(
             "{name}::Unknown {{ discriminant, data }} => varint_size(*discriminant as usize) + varint_size(data.len()) + data.len(),"
@@ -983,15 +997,34 @@ fn emit_size_expr(ty: &ResolvedTypeRef, accessor: &str, w: &mut CodeWriter, sche
         }
         ResolvedTypeRef::Optional(inner) => {
             w.line("size += 1;");
-            w.line(&format!("if let Some(__val) = &{accessor} {{"));
+            w.line(&format!("{accessor}.as_ref().map(|__val| {{"));
             w.indent();
             emit_size_expr(inner, "__val", w, schema);
             w.dedent();
-            w.line("}");
+            w.line("});");
         }
         ResolvedTypeRef::ImportedSchema { alias, .. } => {
             let module = alias.to_snake_case();
             w.line(&format!("size += {module}::size_hint(&{accessor});"));
+        }
+    }
+}
+
+fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
+    match payload {
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+            // existing named write helper, __payload is already &T
+            w.line(&format!("write_{}(&mut __tmp, __payload);", id.name.to_snake_case()));
+        }
+        _ => {
+            // rebind `buf` so emit_write_expr's hardcoded `buf` references __tmp
+            w.line("{");
+            w.indent();
+            w.line("let buf = &mut __tmp;");
+            let accessor = deref_if_copy(payload, "__payload");
+            emit_write_expr(payload, &accessor, None, w);
+            w.dedent();
+            w.line("}");
         }
     }
 }

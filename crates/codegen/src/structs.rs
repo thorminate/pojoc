@@ -108,7 +108,7 @@ fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
     w.line(&format!("pub enum {name} {{"));
     w.indent();
     for variant in &resolved.variants {
-        w.line(&format!("{}({}),", variant.name, variant.payload.name));
+        w.line(&format!("{}({}),", variant.name, type_info(&variant.payload).rust_type));
     }
     w.line("Unknown { discriminant: u64, data: Vec<u8> },");
     w.dedent();
@@ -133,7 +133,7 @@ fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
     w.line(&format!("impl {name} {{"));
     w.indent();
     w.line("#[allow(dead_code)]");
-    w.line("pub fn discriminant(&self) -> u64 {");
+    w.line("pub const fn discriminant(&self) -> u64 {");
     w.indent();
     w.line("match self {");
     w.indent();
@@ -203,7 +203,7 @@ fn emit_bitset_struct(
 
     // Added a helper to check if any flags are active
     w.line("#[inline]");
-    w.line("pub fn is_empty(&self) -> bool {");
+    w.line("pub const fn is_empty(&self) -> bool {");
     w.indent();
     let empty_checks = (0..computed_len)
         .map(|i| format!("self.0[{i}] == 0"))
@@ -225,7 +225,7 @@ fn emit_bitset_struct(
 
         w.line("#[inline]");
         w.line(&format!(
-            "pub fn {lower}(&self) -> bool {{ (self.0[{byte_idx}] & (1 << {bit_idx})) != 0 }}"
+            "pub const fn {lower}(&self) -> bool {{ (self.0[{byte_idx}] & (1 << {bit_idx})) != 0 }}"
         ));
 
         w.line("#[inline]");
@@ -237,7 +237,11 @@ fn emit_bitset_struct(
 
         w.line("#[inline]");
         w.line(&format!(
-            "pub fn with_{lower}(mut self, val: bool) -> Self {{ self.set_{lower}(val); self }}"
+            "pub const fn with_{lower}(mut self, val: bool) -> Self {{ \
+                if val {{ self.0[{byte_idx}] |= 1 << {bit_idx}; }} \
+                else {{ self.0[{byte_idx}] &= !(1 << {bit_idx}); }} \
+                self \
+            }}"
         ));
     }
 
@@ -378,12 +382,8 @@ fn emit_named_struct(
     let struct_lt     = if needs_lifetime { "<'buf>" } else { "" };
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
-    let has_fixed_map = fields.iter().any(|f| matches!(f.ty, ResolvedTypeRef::FixedMap(_, _, _)));
-
     if needs_lifetime {
         w.line("#[derive(Debug, Clone)]");
-    } else if has_fixed_map {
-        w.line("#[derive(Debug, Clone, Serialize, Deserialize)]");
     } else {
         w.line("#[derive(Debug, Clone, Default, Serialize, Deserialize)]");
     }
@@ -408,11 +408,11 @@ fn emit_named_struct(
     w.dedent();
     w.line("}");
 
-    // Manual Default — needed for both infected structs (LazyView) and FixedMap structs
-    if needs_lifetime || has_fixed_map {
+    if needs_lifetime {
         w.blank();
         w.line(&format!("impl{impl_lt_param} Default for {name}{struct_lt} {{"));
         w.indent();
+        w.line("#[inline]");
         w.line("fn default() -> Self {");
         w.indent();
         w.line("Self {");
@@ -421,11 +421,6 @@ fn emit_named_struct(
             if field.lazy {
                 let none_fn = format!("{}_none", field.name);
                 w.line(&format!("{}: LazyView::new(&[], {none_fn}),", field.name));
-            } else if let ResolvedTypeRef::FixedMap(_, _, n) = &field.ty {
-                w.line(&format!(
-                    "{}: {{ let mut __m = PojocFixedMap::with_capacity({n}); for _ in 0..{n} {{ __m.push((Default::default(), Default::default())); }} __m }},",
-                    field.name
-                ));
             } else {
                 w.line(&format!("{}: Default::default(),", field.name));
             }

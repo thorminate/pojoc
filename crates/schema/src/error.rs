@@ -72,6 +72,9 @@ pub enum AnalysisError {
     #[error("type '{child}' in version {version} extends unknown type '{parent}', line {line}")]
     UnknownParentType { child: String, parent: String, version: i128, span: Span, line: u32 },
 
+    #[error("version {version}: enum '{type_name}' has no variant '{variant}', line {line}")]
+    UnknownEnumVariant { type_name: String, variant: String, version: i128, span: Span, line: u32 },
+
     #[error("type '{name}' in version {version} uses 'extends' but body must be a diff, line {line}")]
     ExtendsWithFullDefinition { name: String, version: i128, span: Span, line: u32 },
 
@@ -81,7 +84,9 @@ pub enum AnalysisError {
     #[error("field '{field}' in version {version} doesn't have a default value, line {line}")]
     MissingDefault { field: String, version: i128, span: Span, line: u32 },
 
-    // was a tuple variant `(i128, String)`; given a struct shape now that it carries span/line too.
+    #[error("field '{field}' in version {version} has a fixed {kind} of {expected} entries but default value has {got} entries, line {line}")]
+    FixedSizeDefaultLengthMismatch { field: String, kind: &'static str, expected: usize, got: usize, version: i128, span: Span, line: u32 },
+
     #[error("version {version}: diff adds field `{field}` but it already exists, line {line}")]
     FieldAlreadyExists { version: i128, field: String, span: Span, line: u32 },
 
@@ -100,13 +105,24 @@ pub enum AnalysisError {
     #[error("version {version}: invalid vfloat: {reason}, line {line}")]
     InvalidVFloat { reason: String, version: i128, span: Span, line: u32 },
 
-    // renamed `span: f64` -> `range: f64` to avoid colliding with the new Span type.
     #[error("version {version}: vfloat range is too large: {range}, line {line}")]
     VFloatRangeTooLarge { range: f64, version: i128, span: Span, line: u32 },
 
     #[error("field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}")]
     VFloatDefaultOutOfRange { field: String, value: f64, min: f64, max: f64, version: i128, span: Span, line: u32 },
 
+    #[error("field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}")]
+    IntDefaultOutOfRange {
+        field: String,
+        value: i128,
+        min: i128,
+        max: i128,
+        type_name: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+    
     #[error("version {version}: `(delta)` can only be applied to integer array elements (u8/u16/u32/u64/i8/i16/i32/i64), not `{type_desc}`, line {line}")]
     InvalidDeltaElementType { type_desc: String, version: i128, span: Span, line: u32 },
 
@@ -140,9 +156,11 @@ impl IndexableError for AnalysisError {
         match self {
             AnalysisError::UnknownType { span, .. } => span.clone(),
             AnalysisError::UnknownParentType { span, .. } => span.clone(),
+            AnalysisError::UnknownEnumVariant { span, .. } => span.clone(),
             AnalysisError::ExtendsWithFullDefinition { span, .. } => span.clone(),
             AnalysisError::FieldNotFound { span, .. } => span.clone(),
             AnalysisError::MissingDefault { span, .. } => span.clone(),
+            AnalysisError::FixedSizeDefaultLengthMismatch { span, .. } => span.clone(),
             AnalysisError::FieldAlreadyExists { span, .. } => span.clone(),
             AnalysisError::FixedStringDefaultLengthMismatch { span, .. } => span.clone(),
             AnalysisError::FixedSizeTooLarge { span, .. } => span.clone(),
@@ -151,6 +169,7 @@ impl IndexableError for AnalysisError {
             AnalysisError::InvalidVFloat { span, .. } => span.clone(),
             AnalysisError::VFloatRangeTooLarge { span, .. } => span.clone(),
             AnalysisError::VFloatDefaultOutOfRange { span, .. } => span.clone(),
+            AnalysisError::IntDefaultOutOfRange { span, .. } => span.clone(),
             AnalysisError::InvalidDeltaElementType { span, .. } => span.clone(),
             AnalysisError::ReservedVariantName { span, .. } => span.clone(),
             AnalysisError::LazyDiffFieldMustBeOptional { span, .. } => span.clone(),
@@ -167,9 +186,11 @@ impl IndexableError for AnalysisError {
         match self {
             AnalysisError::UnknownType { line, .. } => *line,
             AnalysisError::UnknownParentType { line, .. } => *line,
+            AnalysisError::UnknownEnumVariant { line, .. } => *line,
             AnalysisError::ExtendsWithFullDefinition { line, .. } => *line,
             AnalysisError::FieldNotFound { line, .. } => *line,
             AnalysisError::MissingDefault { line, .. } => *line,
+            AnalysisError::FixedSizeDefaultLengthMismatch { line, .. } => *line,
             AnalysisError::FieldAlreadyExists { line, .. } => *line,
             AnalysisError::FixedStringDefaultLengthMismatch { line, .. } => *line,
             AnalysisError::FixedSizeTooLarge { line, .. } => *line,
@@ -178,6 +199,7 @@ impl IndexableError for AnalysisError {
             AnalysisError::InvalidVFloat { line, .. } => *line,
             AnalysisError::VFloatRangeTooLarge { line, .. } => *line,
             AnalysisError::VFloatDefaultOutOfRange { line, .. } => *line,
+            AnalysisError::IntDefaultOutOfRange { line, .. } => *line,
             AnalysisError::InvalidDeltaElementType { line, .. } => *line,
             AnalysisError::ReservedVariantName { line, .. } => *line,
             AnalysisError::LazyDiffFieldMustBeOptional { line, .. } => *line,

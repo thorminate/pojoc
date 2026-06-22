@@ -220,19 +220,10 @@ impl<'a> SchemaAnalyzer<'a> {
                                             });
                                         }
 
-                                        let payload_id = self
-                                            .resolver
-                                            .resolve_type(payload_ty, version.version)
-                                            .ok_or_else(|| AnalysisError::UnknownType {
-                                                name: payload_ty.clone(),
-                                                version: version.version,
-                                                span: *span,
-                                                line: *line,
-                                            })?;
+                                        let payload = self.resolve(payload_ty, version.version, *span, *line)?;
 
                                         let discriminant = variants.iter().map(|v| v.discriminant).max().map_or(0, |m| m + 1);
-
-                                        variants.push(UnionVariant { name: vname.clone(), payload: payload_id, discriminant });
+                                        variants.push(UnionVariant { name: vname.clone(), payload, discriminant });
                                     }
                                 }
                             }
@@ -258,14 +249,7 @@ impl<'a> SchemaAnalyzer<'a> {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let payload = self.resolver.resolve_type(&v.payload_ty, version).ok_or_else(|| {
-                    AnalysisError::UnknownType {
-                        name: v.payload_ty.clone(),
-                        version,
-                        span: v.span,
-                        line: v.line,
-                    }
-                })?;
+                let payload = self.resolve(&v.payload_ty, version, v.span, v.line)?;  // ← was resolver.resolve_type + ok_or
                 Ok(UnionVariant { name: v.name.clone(), payload, discriminant: i as u64 })
             })
             .collect()
@@ -372,6 +356,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     &f.name,
                     version,
                     &self.bitset_registry,
+                    &self.enum_registry,
                     f.span,
                     f.line,
                 )?;
@@ -458,6 +443,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                 &field.name,
                                 version,
                                 &self.bitset_registry,
+                                &self.enum_registry,
                                 field.span,
                                 field.line,
                             )?
@@ -646,6 +632,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 &field.name,
                 version,
                 &self.bitset_registry,
+                &self.enum_registry,
                 field.span,
                 field.line,
             )?;
@@ -705,6 +692,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                 &field.name,
                                 version,
                                 &self.bitset_registry,
+                                &self.enum_registry,
                                 field.span,
                                 field.line,
                             )?
@@ -752,12 +740,19 @@ impl<'a> SchemaAnalyzer<'a> {
                 DiffAst::Transform { from, to, ty, lazy, span, line } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
-                        if let Some(ty) = ty {
-                            f.ty = self.resolve(ty, version, *span, *line)?;
-                        }
+                        if let Some(ty) = ty { f.ty = self.resolve(ty, version, *span, *line)?; }
                         f.lazy = *lazy;
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
                         c.name = to.clone();
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "transform",
+                            field: from.clone(),
+                            type_name: "<root>".to_string(),
+                            version,
+                            span: *span,
+                            line: *line,
+                        });
                     }
                 }
 
@@ -984,12 +979,84 @@ fn coerce_default(
     field_name: &str,
     version: i128,
     bitset_registry: &BitsetRegistry,
+    enum_registry: &EnumRegistry,
     span: Span,
     line: u32,
 ) -> Result<Option<DefaultValue>, AnalysisError> {
+    let Some(value) = default else { return Ok(None) };
+    coerce_value(value, ty, field_name, version, bitset_registry, enum_registry, span, line).map(Some)
+}
+
+/// Recursively checks a literal default against its declared type, normalizing
+/// it into the canonical `DefaultValue` shape codegen already expects (e.g.
+/// `Str` -> `FixedBytes` for fixed strings, `Repeat` -> `Array` for spreads).
+/// Every nested position (array elements, map keys/values, tuple slots) goes
+/// through this same function, so `[..[..0]]` for `[[u32](4)](256)` resolves
+/// correctly without any special-casing.
+fn coerce_value(
+    value: DefaultValue,
+    ty: &ResolvedTypeRef,
+    field_name: &str,
+    version: i128,
+    bitset_registry: &BitsetRegistry,
+    enum_registry: &EnumRegistry,
+    span: Span,
+    line: u32,
+) -> Result<DefaultValue, AnalysisError> {
+    // `..elem` only makes sense where the repeat count is statically known.
+    if let DefaultValue::Repeat(elem) = value {
+        return match ty {
+            ResolvedTypeRef::FixedArray(inner, n) | ResolvedTypeRef::FixedDeltaArray(inner, n) => {
+                let coerced = coerce_value(*elem, inner, field_name, version, bitset_registry, enum_registry, span, line)?;
+                Ok(DefaultValue::Array(vec![coerced; *n]))
+            }
+            other => Err(AnalysisError::TypeMismatch {
+                expected: format!("{:?}", other),
+                got: "spread default (`..`)".into(),
+                version,
+                span,
+                line,
+            }),
+        };
+    }
+
+    // Sentinel for "wire-absent" — only legal under `Optional`.
+    if matches!(value, DefaultValue::None) {
+        return match ty {
+            ResolvedTypeRef::Optional(_) => Ok(DefaultValue::None),
+            other => Err(AnalysisError::TypeMismatch {
+                expected: format!("{:?}", other),
+                got: "none".into(),
+                version,
+                span,
+                line,
+            }),
+        };
+    }
+
+    // Sentinel for "use the type's own constructor" — only legal for
+    // non-primitive scalars and unions, which have no literal-default grammar.
+    if matches!(value, DefaultValue::Struct) {
+        return match ty {
+            ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Ok(DefaultValue::Struct),
+            ResolvedTypeRef::Union(_) => Ok(DefaultValue::Struct),
+            other => Err(AnalysisError::TypeMismatch {
+                expected: format!("{:?}", other),
+                got: "struct".into(),
+                version,
+                span,
+                line,
+            }),
+        };
+    }
+
     match ty {
-        ResolvedTypeRef::FixedString(n) => match default {
-            Some(DefaultValue::Str(s)) => {
+        ResolvedTypeRef::Optional(inner) => {
+            coerce_value(value, inner, field_name, version, bitset_registry, enum_registry, span, line)
+        }
+
+        ResolvedTypeRef::FixedString(n) => match value {
+            DefaultValue::Str(s) => {
                 let bytes = s.into_bytes();
                 if bytes.len() != *n {
                     return Err(AnalysisError::FixedStringDefaultLengthMismatch {
@@ -1001,30 +1068,112 @@ fn coerce_default(
                         line,
                     });
                 }
-                Ok(Some(DefaultValue::FixedBytes(bytes)))
+                Ok(DefaultValue::FixedBytes(bytes))
             }
-            other => Ok(other),
+            other => type_mismatch("string", &other, version, span, line),
         },
-        ResolvedTypeRef::Bitset(type_id, _) => match default {
-            Some(DefaultValue::BitsetLiteral { ref ty_name, ref kvs }) => {
-                if ty_name != &type_id.name {
-                    return Err(AnalysisError::TypeMismatch {
-                        expected: type_id.name.clone(),
-                        got: ty_name.clone(),
+
+        ResolvedTypeRef::Array(inner) | ResolvedTypeRef::DeltaArray(inner) => match value {
+            DefaultValue::Array(elements) => Ok(DefaultValue::Array(
+                elements
+                    .into_iter()
+                    .map(|e| coerce_value(e, inner, field_name, version, bitset_registry, enum_registry, span, line))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            other => type_mismatch("array", &other, version, span, line),
+        },
+
+        ResolvedTypeRef::FixedArray(inner, n) | ResolvedTypeRef::FixedDeltaArray(inner, n) => match value {
+            DefaultValue::Array(elements) => {
+                if elements.len() != *n {
+                    return Err(AnalysisError::FixedSizeDefaultLengthMismatch {
+                        field: field_name.to_string(),
+                        kind: "array",
+                        expected: *n,
+                        got: elements.len(),
                         version,
                         span,
                         line,
                     });
                 }
+                Ok(DefaultValue::Array(
+                    elements
+                        .into_iter()
+                        .map(|e| coerce_value(e, inner, field_name, version, bitset_registry, enum_registry, span, line))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ))
+            }
+            other => type_mismatch("array", &other, version, span, line),
+        },
 
+        ResolvedTypeRef::Map(k, v) => match value {
+            DefaultValue::Map(pairs) => Ok(DefaultValue::Map(coerce_map_pairs(
+                pairs, k, v, field_name, version, bitset_registry, enum_registry, span, line,
+            )?)),
+            other => type_mismatch("map", &other, version, span, line),
+        },
+
+        ResolvedTypeRef::FixedMap(k, v, n) => match value {
+            DefaultValue::Map(pairs) => {
+                if pairs.len() != *n {
+                    return Err(AnalysisError::FixedSizeDefaultLengthMismatch {
+                        field: field_name.to_string(),
+                        kind: "map",
+                        expected: *n,
+                        got: pairs.len(),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+                Ok(DefaultValue::Map(coerce_map_pairs(
+                    pairs, k, v, field_name, version, bitset_registry, enum_registry, span, line,
+                )?))
+            }
+            other => type_mismatch("map", &other, version, span, line),
+        },
+
+        ResolvedTypeRef::Tuple(elements) => match value {
+            DefaultValue::Tuple(vals) => {
+                if vals.len() != elements.len() {
+                    return Err(AnalysisError::FixedSizeDefaultLengthMismatch {
+                        field: field_name.to_string(),
+                        kind: "tuple",
+                        expected: elements.len(),
+                        got: vals.len(),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+                Ok(DefaultValue::Tuple(
+                    vals.into_iter()
+                        .zip(elements.iter())
+                        .map(|(v, t)| coerce_value(v, t, field_name, version, bitset_registry, enum_registry, span, line))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ))
+            }
+            other => type_mismatch("tuple", &other, version, span, line),
+        },
+
+        ResolvedTypeRef::Bitset(type_id, _) => match value {
+            DefaultValue::BitsetLiteral { ty_name, kvs } => {
+                if ty_name != type_id.name {
+                    return Err(AnalysisError::TypeMismatch {
+                        expected: type_id.name.clone(),
+                        got: ty_name,
+                        version,
+                        span,
+                        line,
+                    });
+                }
                 let bitset_def = bitset_registry.bitsets.get(type_id).ok_or_else(|| AnalysisError::UnknownType {
                     name: type_id.name.clone(),
                     version,
                     span,
                     line,
                 })?;
-
-                for (flag_name, _) in kvs {
+                for (flag_name, _) in &kvs {
                     if !bitset_def.variants.contains(flag_name) {
                         return Err(AnalysisError::FieldNotFound {
                             op: "default assignment",
@@ -1036,50 +1185,182 @@ fn coerce_default(
                         });
                     }
                 }
-                Ok(Some(DefaultValue::BitsetLiteral { ty_name: ty_name.clone(), kvs: kvs.clone() }))
+                Ok(DefaultValue::BitsetLiteral { ty_name, kvs })
             }
-            Some(DefaultValue::Int(0)) => Ok(Some(DefaultValue::BitsetLiteral { ty_name: type_id.name.clone(), kvs: vec![] })),
-            Some(DefaultValue::Int(n)) => Err(AnalysisError::TypeMismatch {
-                expected: type_id.name.clone(),
-                got: format!("{n}"),
-                version,
-                span,
-                line,
-            }),
-            other => Ok(other),
+            DefaultValue::Int(0) => Ok(DefaultValue::BitsetLiteral { ty_name: type_id.name.clone(), kvs: vec![] }),
+            other => type_mismatch(&type_id.name, &other, version, span, line),
         },
-        ResolvedTypeRef::VFloat { min, max, .. } => {
-            let as_f64 = match &default {
-                Some(DefaultValue::Float(f)) => Some(*f),
-                Some(DefaultValue::Int(i)) => Some(*i as f64),
-                None => None,
-                Some(other) => {
-                    return Err(AnalysisError::TypeMismatch {
-                        expected: "vfloat (number)".into(),
-                        got: format!("{:?}", other),
-                        version,
-                        span,
-                        line,
-                    })
-                }
-            };
 
-            match as_f64 {
-                Some(f) if f < *min || f > *max => Err(AnalysisError::VFloatDefaultOutOfRange {
+        ResolvedTypeRef::VFloat { min, max, .. } => {
+            let as_f64 = match &value {
+                DefaultValue::Float(f) => *f,
+                DefaultValue::Int(i) => *i as f64,
+                other => return type_mismatch("vfloat (number)", other, version, span, line),
+            };
+            if as_f64 < *min || as_f64 > *max {
+                return Err(AnalysisError::VFloatDefaultOutOfRange {
                     field: field_name.to_string(),
-                    value: f,
+                    value: as_f64,
                     min: *min,
                     max: *max,
                     version,
                     span,
                     line,
-                }),
-                Some(f) => Ok(Some(DefaultValue::Float(f))),
-                None => Ok(None),
+                });
+            }
+            Ok(DefaultValue::Float(as_f64))
+        }
+
+        ResolvedTypeRef::Enum(type_id) => match value {
+            DefaultValue::EnumVariant { ty_name, variant } => {
+                if ty_name != type_id.name {
+                    return Err(AnalysisError::TypeMismatch {
+                        expected: type_id.name.clone(),
+                        got: ty_name,
+                        version,
+                        span,
+                        line,
+                    });
+                }
+                let enum_def = enum_registry.enums.get(type_id).ok_or_else(|| AnalysisError::UnknownType {
+                    name: type_id.name.clone(),
+                    version,
+                    span,
+                    line,
+                })?;
+                if !enum_def.variants.iter().any(|v| v.name == variant) {
+                    return Err(AnalysisError::UnknownEnumVariant {
+                        type_name: type_id.name.clone(),
+                        variant,
+                        version,
+                        span,
+                        line,
+                    });
+                }
+                Ok(DefaultValue::EnumVariant { ty_name, variant })
+            }
+            other => type_mismatch(&type_id.name, &other, version, span, line),
+        },
+
+        ResolvedTypeRef::Scalar(type_id) => {
+            if is_primitive(&type_id.name) {
+                coerce_scalar(value, &type_id.name, field_name, version, span, line)
+            } else {
+                type_mismatch(
+                    &format!("no literal default for struct type `{}`", type_id.name),
+                    &value, version, span, line,
+                )
             }
         }
-        _ => Ok(default),
+
+        ResolvedTypeRef::Union(type_id) => {
+            type_mismatch(&format!("no literal default for union `{}`", type_id.name), &value, version, span, line)
+        }
+        ResolvedTypeRef::ImportedSchema { alias, .. } => {
+            type_mismatch(&format!("no literal default for imported type `{}`", alias), &value, version, span, line)
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coerce_map_pairs(
+    pairs: Vec<(DefaultValue, DefaultValue)>,
+    k: &ResolvedTypeRef,
+    v: &ResolvedTypeRef,
+    field_name: &str,
+    version: i128,
+    bitset_registry: &BitsetRegistry,
+    enum_registry: &EnumRegistry,
+    span: Span,
+    line: u32,
+) -> Result<Vec<(DefaultValue, DefaultValue)>, AnalysisError> {
+    pairs
+        .into_iter()
+        .map(|(pk, pv)| {
+            let pk = coerce_value(pk, k, field_name, version, bitset_registry, enum_registry, span, line)?;
+            let pv = coerce_value(pv, v, field_name, version, bitset_registry, enum_registry, span, line)?;
+            Ok((pk, pv))
+        })
+        .collect()
+}
+
+fn coerce_scalar(
+    value: DefaultValue,
+    name: &str,
+    field_name: &str,
+    version: i128,
+    span: Span,
+    line: u32,
+) -> Result<DefaultValue, AnalysisError> {
+    match normalize_type(name) {
+        "bool" => match value {
+            DefaultValue::Bool(_) => Ok(value),
+            other => type_mismatch("bool", &other, version, span, line),
+        },
+        "string" => match value {
+            DefaultValue::Str(_) => Ok(value),
+            other => type_mismatch("string", &other, version, span, line),
+        },
+        ty @ ("f32" | "f64") => match value {
+            DefaultValue::Float(f) => {
+                if !f.is_finite() {
+                    return type_mismatch(&format!("finite {ty}"), &DefaultValue::Float(f), version, span, line);
+                }
+                Ok(DefaultValue::Float(f))
+            }
+            DefaultValue::Int(i) => Ok(DefaultValue::Float(i as f64)),
+            other => type_mismatch(ty, &other, version, span, line),
+        },
+        int_ty @ ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "varint32" | "varint64") => {
+            match value {
+                DefaultValue::Int(n) => {
+                    check_int_range(int_ty, n, field_name, version, span, line)?;
+                    Ok(DefaultValue::Int(n))
+                }
+                other => type_mismatch(int_ty, &other, version, span, line),
+            }
+        }
+        other_ty => type_mismatch(other_ty, &value, version, span, line),
+    }
+}
+
+fn check_int_range(ty: &str, n: i128, field_name: &str, version: i128, span: Span, line: u32) -> Result<(), AnalysisError> {
+    let (lo, hi): (i128, i128) = match ty {
+        "u8" => (u8::MIN as i128, u8::MAX as i128),
+        "u16" => (u16::MIN as i128, u16::MAX as i128),
+        "u32" => (u32::MIN as i128, u32::MAX as i128),
+        "u64" => (u64::MIN as i128, u64::MAX as i128),
+        "i8" => (i8::MIN as i128, i8::MAX as i128),
+        "i16" => (i16::MIN as i128, i16::MAX as i128),
+        "i32" => (i32::MIN as i128, i32::MAX as i128),
+        "i64" => (i64::MIN as i128, i64::MAX as i128),
+        "varint32" => (u32::MIN as i128, u32::MAX as i128),
+        "varint64" => (u64::MIN as i128, u64::MAX as i128),
+        _ => return Ok(()),
+    };
+    if n < lo || n > hi {
+        return Err(AnalysisError::IntDefaultOutOfRange {
+            field: field_name.to_string(),
+            value: n,
+            min: lo,
+            max: hi,
+            type_name: ty.to_string(),
+            version,
+            span,
+            line,
+        });
+    }
+    Ok(())
+}
+
+fn type_mismatch<T>(expected: &str, got: &DefaultValue, version: i128, span: Span, line: u32) -> Result<T, AnalysisError> {
+    Err(AnalysisError::TypeMismatch {
+        expected: expected.to_string(),
+        got: format!("{:?}", got),
+        version,
+        span,
+        line,
+    })
 }
 
 fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, AnalysisError> {

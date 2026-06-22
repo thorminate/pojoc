@@ -290,7 +290,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             let (ki, vi) = (type_info(k), type_info(v));
             TypeInfo {
                 wire_size: WireSize::Variable,
-                rust_type: format!("PojocFixedMap<{}, {}>", ki.rust_type, vi.rust_type),
+                rust_type: format!("PojocFixedMap<{}, {}, {n}>", ki.rust_type, vi.rust_type),
                 skip_stmt: format!("for _ in 0..{n} {{ {} {} }}", ki.skip_stmt, vi.skip_stmt),
                 read_fn: format!("read_fixed_map::<{n}>"),
                 write_fn: format!("write_fixed_map::<{n}>"),
@@ -467,9 +467,10 @@ fn is_balanced(s: &str) -> bool {
 pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {
     matches!(
         ty,
-        ResolvedTypeRef::Scalar(id) if matches!(
-            normalize_type(&id.name),
-            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
-        )
+        ResolvedTypeRef::Scalar(id) if is_delta_eligible_str(normalize_type(&id.name))
     )
+}
+
+pub fn is_delta_eligible_str(str: &str) -> bool {
+    matches!(str, "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64")
 }

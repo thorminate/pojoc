@@ -47,7 +47,7 @@ schema Edge {
       i64_max: i64 = 9223372036854775807
       i64_min: i64 = -9223372036854775808
       varint32_max: varint32 = 2147483647
-      varint64_min: varint64 = -9223372036854775808
+      varint64_min: varint64 = 0
 
       // Special IEEE 754 Floating-Point Const Injections
       f32_nan: f32 = 0.0
@@ -146,7 +146,7 @@ schema Edge {
       + newly_added_optional: u64?
       ~ root_struct: MiddleLayer
       ~ legacy_positions: [i32](delta)
-      + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 0]
+      + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 1000]
 
       // Re-resolve to Payload@2 (now Heal-aware). The generated reader/writer
       // is name-keyed and identical regardless of which TypeId the field
@@ -166,8 +166,7 @@ schema Edge {
   }
 
   version 3 {
-    type EmptyStruct {
-    }
+    type EmptyStruct {}
 
     type SensorFrame {
       readings: [i32](delta) = []
@@ -178,8 +177,7 @@ schema Edge {
     // A second, independent union coexisting with Payload — exercises the
     // codegen paths that iterate "all unions in the schema" rather than
     // assuming there's exactly one.
-    type PingPayload {
-    }
+    type PingPayload {}
 
     type PongPayload {
       latency_ms: u32 = 0
@@ -193,7 +191,7 @@ schema Edge {
     diff {
       + basic_map: map<string, string> = {}
       + fixed_map_empty: map<i32, f32>(0) = {}
-      + fixed_map_populated: map<string, i64>(4) = {}
+      + fixed_map_populated: map<string, i64>(4) = {"ok": -1, "not_ok": 1, "bad": 0, "bad2": 0}
       + nested_map: map<string, [map<i32, bool>]> = {}
       + void_container: EmptyStruct
 
@@ -201,7 +199,7 @@ schema Edge {
       ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)]
 
       + sensor_log: [SensorFrame] = []
-      + delta_value_map: map<string, [i64](delta)>(2) = {}
+      + delta_value_map: map<string, [i64](delta)>(2) = {"entry": [], "entry2": []}
 
       // Bare union field added via diff — relies on the Union auto-default
       // carve-out (Default::default() -> Unknown variant), same free pass
@@ -236,6 +234,8 @@ schema Edge {
     type DisconnectPayload {
       reason_code: u16 = 0
     }
+
+    type EmptyStruct {}
 
     union ControlSignal extends ControlSignal@3 {
       + Disconnect: DisconnectPayload
