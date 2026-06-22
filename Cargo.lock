@@ -738,6 +738,7 @@ version = "0.1.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
+ "pojoc-core",
  "pojoc-schema",
  "serde_json",
  "url",

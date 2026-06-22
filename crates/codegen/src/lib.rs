@@ -127,7 +127,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 f.to_string()
             }
         }
-        DefaultValue::Str(s) => format!("{s:?}.to_string()"),
+        DefaultValue::Str(s) => format!("PojocString::const_new({s:?})"),
         DefaultValue::Array(els) => {
             if els.is_empty() {
                 "PojocVec::new()".to_string()
@@ -140,9 +140,12 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 format!("{{ let mut __v = PojocVec::new(); {pushes} __v }}")
             }
         }
+        DefaultValue::Repeat(_) => unreachable!(
+            "DefaultValue::Repeat should always get expanded into DefaultValue::Array before codegen."
+        ),
         DefaultValue::Map(pairs) => {
             if pairs.is_empty() {
-                "HashMap::new()".to_string()
+                "PojocMap::new()".to_string()
             } else {
                 let inserts = pairs
                     .iter()
@@ -155,7 +158,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
-                format!("{{ let mut __m = HashMap::new(); {inserts} __m }}")
+                format!("{{ let mut __m = PojocMap::new(); {inserts} __m }}")
             }
         }
         DefaultValue::Struct => "Default::default()".to_string(),

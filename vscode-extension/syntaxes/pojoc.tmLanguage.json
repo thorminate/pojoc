@@ -7,6 +7,7 @@
     { "include": "#strings" },
     { "include": "#decl-extends" },
     { "include": "#decl-simple" },
+    { "include": "#import-decl" },
     { "include": "#schema-decl" },
     { "include": "#version-decl" },
     { "include": "#diff-op" },
@@ -54,6 +55,16 @@
       "captures": {
         "1": { "name": "keyword.control.pojoc" },
         "2": { "name": "entity.name.type.pojoc" }
+      }
+    },
+    "import-decl": {
+      "comment": "import \"path/to/file.pojoc\" as Alias",
+      "match": "\\b(import)\\s+(\"(?:[^\"\\\\]|\\\\.)*\")\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.pojoc" },
+        "2": { "patterns": [{ "include": "#strings" }] },
+        "3": { "name": "keyword.control.pojoc" },
+        "4": { "name": "entity.name.type.pojoc" }
       }
     },
     "schema-decl": {
@@ -123,7 +134,7 @@
     },
     "keywords": {
       "name": "keyword.control.pojoc",
-      "match": "\\b(fields|diff|extends)\\b"
+      "match": "\\b(fields|diff|extends|import)\\b"
     },
     "type-name-bare": {
       "comment": "fallback: any remaining PascalCase identifier is a type reference, union variant tag, or bitset-literal constructor name",

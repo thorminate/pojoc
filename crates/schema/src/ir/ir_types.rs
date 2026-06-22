@@ -125,7 +125,7 @@ pub struct BitsetRegistry {
 #[derive(Debug, Clone)]
 pub struct UnionVariant {
     pub name: String,
-    pub payload: TypeId,
+    pub payload: ResolvedTypeRef,
     pub discriminant: u64,
 }
 
@@ -193,14 +193,9 @@ pub enum DefaultValue {
     Struct,
     FixedBytes(Vec<u8>),
     Tuple(Vec<DefaultValue>),
-    EnumVariant {
-        ty_name: String,
-        variant: String,
-    },
-    BitsetLiteral {
-        ty_name: String,
-        kvs: Vec<(String, bool)>,
-    },
+    EnumVariant { ty_name: String, variant: String },
+    BitsetLiteral { ty_name: String, kvs: Vec<(String, bool)> },
+    Repeat(Box<DefaultValue>),
 }
 
 impl From<&DefaultValueAst> for DefaultValue {
@@ -231,6 +226,7 @@ impl From<&DefaultValueAst> for DefaultValue {
                 ty_name: ty.clone(),
                 kvs: kvs.clone(),
             },
+            DefaultValueAst::Repeat(inner) => DefaultValue::Repeat(Box::new(DefaultValue::from(inner.as_ref()))),
         }
     }
 }

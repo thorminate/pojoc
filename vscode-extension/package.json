@@ -41,6 +41,11 @@
           "description": "Path to the pojoc-lsp executable"
         }
       }
+    },
+    "configurationDefaults": {
+      "[pojoc]": {
+        "editor.wordBasedSuggestions": "off"
+      }
     }
   },
   "scripts": {
@@ -49,11 +54,11 @@
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.0.0"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
-    "@types/node": "^20.0.0",
+    "@types/node": "^26.0.0",
     "typescript": "^5.4.0"
   }
 }

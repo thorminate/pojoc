@@ -2,7 +2,7 @@ use crate::ast::*;
 use crate::error::*;
 use crate::lexer::{Keyword, SpannedToken, Token};
 use crate::span::Span;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct Parser {
     tokens: Vec<SpannedToken>,
@@ -159,10 +159,11 @@ impl Parser {
         self.expect(Token::LBrace, "'{'")?;
 
         let mut seen_sections: HashSet<&'static str> = HashSet::new();
-        let mut seen_type_names: HashSet<String> = HashSet::new();
-        let mut seen_union_names: HashSet<String> = HashSet::new();
-        let mut seen_enum_names: HashSet<String> = HashSet::new();
-        let mut seen_bitset_names: HashSet<String> = HashSet::new();
+        // type/enum/union/bitset share one namespace per version — `resolve()` picks
+        // one of them by priority (bitset > enum > union > type) when a field
+        // references a name, so two defs with the same name would silently shadow
+        // each other at codegen time instead of erroring here where it's cheap to catch.
+        let mut seen_decl_names: HashMap<String, &'static str> = HashMap::new();
         let mut blocks = Vec::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
@@ -180,24 +181,16 @@ impl Parser {
                     }
                 }
                 VersionBlockAst::TypeDef(td) => {
-                    if !seen_type_names.insert(td.name.clone()) {
-                        return Err(self.err_invalid(format!("version {} has duplicate type `{}`", version, td.name)));
-                    }
+                    self.check_decl_name_unique(&mut seen_decl_names, &td.name, "type", version)?;
                 }
                 VersionBlockAst::EnumDef(ed) => {
-                    if !seen_enum_names.insert(ed.name().to_string()) {
-                        return Err(self.err_invalid(format!("version {} has duplicate enum `{}`", version, ed.name())));
-                    }
+                    self.check_decl_name_unique(&mut seen_decl_names, ed.name(), "enum", version)?;
                 }
                 VersionBlockAst::UnionDef(ud) => {
-                    if !seen_union_names.insert(ud.name().to_string()) {
-                        return Err(self.err_invalid(format!("version {} has duplicate union `{}`", version, ud.name())));
-                    }
+                    self.check_decl_name_unique(&mut seen_decl_names, ud.name(), "union", version)?;
                 }
                 VersionBlockAst::BitsetDef(bd) => {
-                    if !seen_bitset_names.insert(bd.name().to_string()) {
-                        return Err(self.err_invalid(format!("version {} has duplicate bitset `{}`", version, bd.name())));
-                    }
+                    self.check_decl_name_unique(&mut seen_decl_names, bd.name(), "bitset", version)?;
                 }
             }
 
@@ -207,6 +200,25 @@ impl Parser {
         self.expect(Token::RBrace, "'}'")?;
         let span = start_span.join(self.last_consumed_span());
         Ok(VersionAst { version, blocks, span, line: start_line })
+    }
+
+    /// Records `name` as declared with kind `kind` ("type"/"enum"/"union"/"bitset")
+    /// in this version. Errors if the name was already taken — possibly by a
+    /// different kind, since they all share one namespace.
+    fn check_decl_name_unique(
+        &self,
+        seen: &mut HashMap<String, &'static str>,
+        name: &str,
+        kind: &'static str,
+        version: i128,
+    ) -> Result<(), ParseError> {
+        if let Some(existing_kind) = seen.insert(name.to_string(), kind) {
+            return Err(self.err_invalid(format!(
+                "version {} declares `{}` as a {}, but it's already defined as a {}",
+                version, name, kind, existing_kind
+            )));
+        }
+        Ok(())
     }
 
     fn parse_version_block(&mut self) -> Result<VersionBlockAst, ParseError> {
@@ -449,7 +461,7 @@ impl Parser {
             }
 
             self.expect(Token::Colon, "':'")?;
-            let payload_ty = self.expect_ident()?;
+            let payload_ty = self.parse_type()?;
 
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
@@ -480,7 +492,7 @@ impl Parser {
                     self.advance();
                     let name = self.expect_ident()?;
                     self.expect(Token::Colon, "':'")?;
-                    let payload_ty = self.expect_ident()?;
+                    let payload_ty = self.parse_type()?;
 
                     if matches!(self.peek(), Token::Comma) {
                         self.advance();
@@ -893,6 +905,14 @@ impl Parser {
             }
             Token::LBracket => {
                 self.advance();
+
+                if matches!(self.peek(), Token::DotDot) {
+                    self.advance();
+                    let elem = self.parse_default()?;
+                    self.expect(Token::RBracket, "']'")?;
+                    return Ok(DefaultValueAst::Repeat(Box::new(elem)));
+                }
+
                 let mut elements = Vec::new();
                 while !matches!(self.peek(), Token::RBracket | Token::Eof) {
                     elements.push(self.parse_default()?);

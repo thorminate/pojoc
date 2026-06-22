@@ -70,6 +70,7 @@ pub enum Token {
     Comma,
     At,
     QuestionMark,
+    DotDot,
     Eof,
 }
 
@@ -99,6 +100,7 @@ impl std::fmt::Display for Token {
             Token::Comma => write!(f, ","),
             Token::At => write!(f, "@"),
             Token::QuestionMark => write!(f, "?"),
+            Token::DotDot => write!(f, ".."),
             Token::Eof => write!(f, "EOF"),
         }
     }
@@ -317,6 +319,19 @@ impl Lexer {
                         }
                         '@' => { self.advance(); Token::At }
                         '?' => { self.advance(); Token::QuestionMark }
+                        '.' => {
+                            self.advance();
+                            if self.peek() == Some('.') {
+                                self.advance();
+                                Token::DotDot
+                            } else {
+                                return Err(LexError::UnexpectedChar {
+                                    ch: '.',
+                                    span: Span::new(start_byte, self.byte_pos),
+                                    line: start_line,
+                                });
+                            }
+                        }
                         c if c.is_alphabetic() || c == '_' => self.read_ident_or_keyword(),
                         c if c.is_ascii_digit() => self.read_number(),
                         c => {

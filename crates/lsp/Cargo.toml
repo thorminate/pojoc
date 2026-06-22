@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+pojoc-schema = { path = "../schema" }
+pojoc-core = { path = "../core" }
 lsp-server = { workspace = true }
 lsp-types = { workspace = true }
 serde_json = { workspace = true }
-pojoc-schema = { path = "../schema" }
 url = { workspace = true }

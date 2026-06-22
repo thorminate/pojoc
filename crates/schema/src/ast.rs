@@ -104,7 +104,7 @@ pub enum BitsetOpAst {
 #[derive(Debug, Clone)]
 pub struct UnionVariantAst {
     pub name: String,
-    pub payload_ty: String,
+    pub payload_ty: TypeAst,
     pub span: Span,
     pub line: u32,
 }
@@ -126,7 +126,7 @@ impl UnionDefAst {
 
 #[derive(Debug, Clone)]
 pub enum UnionVariantOpAst {
-    Add { name: String, payload_ty: String, span: Span, line: u32 },
+    Add { name: String, payload_ty: TypeAst, span: Span, line: u32 },
 }
 
 #[derive(Debug, Clone)]
@@ -172,14 +172,9 @@ pub enum DefaultValueAst {
     Map(Vec<(DefaultValueAst, DefaultValueAst)>),
     FixedBytes(Vec<u8>),
     Tuple(Vec<DefaultValueAst>),
-    EnumVariant {
-        ty: String,
-        variant: String,
-    },
-    BitsetLiteral {
-        ty: String,
-        kvs: Vec<(String, bool)>,
-    },
+    EnumVariant { ty: String, variant: String },
+    BitsetLiteral { ty: String, kvs: Vec<(String, bool)> },
+    Repeat(Box<DefaultValueAst>),
 }
 
 #[derive(Debug, Clone)]
