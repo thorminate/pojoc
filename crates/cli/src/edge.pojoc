@@ -1,4 +1,4 @@
-﻿schema Edge {
+schema Edge {
   version 1 {
     fields {
       empty_str: string = ""
