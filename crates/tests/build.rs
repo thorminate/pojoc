@@ -1,5 +1,5 @@
 use pojoc_codegen::generate;
-use pojoc_schema::{ImportOrchestrator};
+use pojoc_schema::ImportOrchestrator;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ fn main() {
         out_dir.join("player_generated.rs"),
         out_dir.join("flatbuf.rs"),
     )
-        .expect("rename failed");
+    .expect("rename failed");
 
     println!("cargo:rerun-if-changed=schemas/player.fbs");
     println!("cargo:rerun-if-changed=schemas/player.capnp");

@@ -112,10 +112,17 @@ pub fn normalize_type(name: &str) -> &str {
 pub fn is_primitive(name: &str) -> bool {
     matches!(
         normalize_type(name),
-            "u8" | "u16" | "u32" | "u64"
-            | "i8" | "i16" | "i32" | "i64"
-            | "f32" | "f64"
-            | "varint32" | "varint64"
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "f32"
+            | "f64"
+            | "varint32"
+            | "varint64"
             | "bool"
             | "string"
     )
@@ -165,7 +172,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             read_fn: format!("read_enum::<{}>", id.name),
             write_fn: "encode_varint".into(),
             default_expr: format!("{}::default()", id.name),
-            size_fn: None
+            size_fn: None,
         },
 
         ResolvedTypeRef::Union(id) => {
@@ -195,7 +202,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: format!("{}::default()", id.name),
-                size_fn: None
+                size_fn: None,
             }
         }
 
@@ -209,7 +216,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             read_fn: format!("read_fixed_bytes::<{n}>"),
             write_fn: format!("write_fixed_bytes::<{n}>"),
             default_expr: format!("[0u8; {n}]"),
-            size_fn: None
+            size_fn: None,
         },
 
         ResolvedTypeRef::FixedArray(inner, n) => {
@@ -224,7 +231,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: format!("read_fixed_array::<{n}>"),
                 write_fn: format!("write_fixed_array::<{n}>"),
                 default_expr: "std::array::from_fn(|_| Default::default())".into(),
-                size_fn: None
+                size_fn: None,
             }
         }
 
@@ -240,7 +247,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: "read_array".into(),
                 write_fn: "write_array".into(),
                 default_expr: "PojocVec::new()".into(),
-                size_fn: None
+                size_fn: None,
             }
         }
 
@@ -282,7 +289,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: "/* map expressions are inlined */".into(),
                 write_fn: "/* map expressions are inlined */".into(),
                 default_expr: "PojocMap::new()".into(),
-                size_fn: None
+                size_fn: None,
             }
         }
 
@@ -295,7 +302,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 read_fn: format!("read_fixed_map::<{n}>"),
                 write_fn: format!("write_fixed_map::<{n}>"),
                 default_expr: "PojocFixedMap::new()".into(),
-                size_fn: None
+                size_fn: None,
             }
         }
 
@@ -326,21 +333,19 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                size_fn: None
-            }
-        }
-
-        ResolvedTypeRef::VFloat { min, backing, .. } => {
-            TypeInfo {
-                wire_size: WireSize::Fixed(backing.wire_size()),
-                rust_type: "f32".into(),
-                skip_stmt: format!("let _ = {}(buf, pos)?;", backing.read_fn()),
-                read_fn: backing.read_fn().into(),
-                write_fn: backing.write_fn().into(),
-                default_expr: format!("{}f32", *min as f32),
                 size_fn: None,
             }
         }
+
+        ResolvedTypeRef::VFloat { min, backing, .. } => TypeInfo {
+            wire_size: WireSize::Fixed(backing.wire_size()),
+            rust_type: "f32".into(),
+            skip_stmt: format!("let _ = {}(buf, pos)?;", backing.read_fn()),
+            read_fn: backing.read_fn().into(),
+            write_fn: backing.write_fn().into(),
+            default_expr: format!("{}f32", *min as f32),
+            size_fn: None,
+        },
 
         ResolvedTypeRef::Optional(inner) => {
             let i = type_info(inner);
@@ -356,7 +361,11 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             }
         }
 
-        ResolvedTypeRef::ImportedSchema { alias, root_name, version } => {
+        ResolvedTypeRef::ImportedSchema {
+            alias,
+            root_name,
+            version,
+        } => {
             let module = alias.to_snake_case();
             let rust_type = format!("{module}::{root_name}");
             TypeInfo {
@@ -382,7 +391,7 @@ fn scalar_info(name: &str) -> TypeInfo {
                 read_fn: $read.into(),
                 write_fn: $write.into(),
                 default_expr: $default.into(),
-                size_fn: None
+                size_fn: None,
             }
         };
     }
@@ -403,19 +412,19 @@ fn scalar_info(name: &str) -> TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: "u32".into(),
             skip_stmt: "skip_varint32(buf, pos)?;".into(),
-            read_fn:   "read_varint32".into(),
-            write_fn:  "write_varint32".into(),
+            read_fn: "read_varint32".into(),
+            write_fn: "write_varint32".into(),
             default_expr: "0u32".into(),
-            size_fn: Some("varint_size".into())
+            size_fn: Some("varint_size".into()),
         },
         "varint64" => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: "u64".into(),
             skip_stmt: "skip_varint64(buf, pos)?;".into(),
-            read_fn:   "read_varint64".into(),
-            write_fn:  "write_varint64".into(),
+            read_fn: "read_varint64".into(),
+            write_fn: "write_varint64".into(),
             default_expr: "0u64".into(),
-            size_fn: Some("varint_size".into())
+            size_fn: Some("varint_size".into()),
         },
         "string" => TypeInfo {
             wire_size: WireSize::Variable,
@@ -424,7 +433,7 @@ fn scalar_info(name: &str) -> TypeInfo {
             read_fn: "read_pojoc_string".into(),
             write_fn: "write_pojoc_string".into(),
             default_expr: "PojocString::default()".into(),
-            size_fn: None
+            size_fn: None,
         },
         other => {
             let lower = other.to_snake_case();
@@ -435,7 +444,7 @@ fn scalar_info(name: &str) -> TypeInfo {
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: "Default::default()".into(),
-                size_fn: None
+                size_fn: None,
             }
         }
     }
@@ -457,7 +466,12 @@ fn is_balanced(s: &str) -> bool {
     for c in s.chars() {
         match c {
             '{' => depth += 1,
-            '}' => { depth -= 1; if depth < 0 { return false; } }
+            '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
             _ => {}
         }
     }
@@ -472,5 +486,8 @@ pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {
 }
 
 pub fn is_delta_eligible_str(str: &str) -> bool {
-    matches!(str, "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64")
+    matches!(
+        str,
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
+    )
 }

@@ -4,10 +4,10 @@ mod encode;
 mod structs;
 pub mod writer;
 
-use std::collections::{HashMap, HashSet};
 use heck::ToSnakeCase;
 use pojoc_core::types::{is_primitive, ResolvedTypeRef};
 use pojoc_schema::ir::ir_types::{DefaultValue, ResolvedSchema};
+use std::collections::{HashMap, HashSet};
 use writer::CodeWriter;
 
 pub fn generate(schema: &ResolvedSchema) -> String {
@@ -69,12 +69,16 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
     w.line("}");
     w.blank();
 
-    w.line(&format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"));
+    w.line(&format!(
+        "pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"
+    ));
     w.indent();
     w.line("buf.reserve(size_hint(value));");
-    w.line(&format!("let len_pos = write_envelope_header(buf, {latest});"));
+    w.line(&format!(
+        "let len_pos = write_envelope_header(buf, {latest});"
+    ));
     w.line("let payload_start = buf.len();");
-    w.line(&format!("encode_v{latest}(buf, value);"));   // ← was encode_payload
+    w.line(&format!("encode_v{latest}(buf, value);")); // ← was encode_payload
     w.line("let payload_len = buf.len() - payload_start;");
     w.line("patch_envelope_length(buf, len_pos, payload_len);");
     w.dedent();
@@ -106,7 +110,9 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
 
     w.line("pub fn supported_versions() -> &'static [u64] {");
     w.indent();
-    let versions: Vec<String> = schema.lineage.versions
+    let versions: Vec<String> = schema
+        .lineage
+        .versions
         .iter()
         .map(|vl| vl.version.to_string())
         .collect();
@@ -239,11 +245,7 @@ where
 }
 
 fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
-    let latest = get_latest_versions(
-        &schema.types.types,
-        |id| id.name.clone(),
-        |id| id.version,
-    );
+    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
 
     let mut infected: HashSet<String> = latest
         .iter()
@@ -251,7 +253,12 @@ fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
         .map(|(name, _)| name.clone())
         .collect();
 
-    if schema.versions.last().map(|v| v.fields.iter().any(|f| f.lazy)).unwrap_or(false) {
+    if schema
+        .versions
+        .last()
+        .map(|v| v.fields.iter().any(|f| f.lazy))
+        .unwrap_or(false)
+    {
         infected.insert(schema.name_hint.clone());
     }
 
@@ -301,7 +308,11 @@ fn emit_imported_submodules(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line(&format!("pub mod {module} {{"));
         w.indent();
         for line in body.lines() {
-            if line.is_empty() { w.blank(); } else { w.line(line); }
+            if line.is_empty() {
+                w.blank();
+            } else {
+                w.line(line);
+            }
         }
         w.dedent();
         w.line("}");

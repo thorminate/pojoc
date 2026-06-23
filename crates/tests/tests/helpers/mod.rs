@@ -1,5 +1,4 @@
-﻿use pojoc_tests::pojoc_edge::{runtime::*, *};
-
+use pojoc_tests::pojoc_edge::{runtime::*, *};
 
 pub fn make_version_probe_edge() -> Edge<'static> {
     let mut e = Edge::default();
@@ -49,8 +48,16 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.root_struct.leaf.leaf_val = "LeafNode".into();
     e.root_struct.leaf.leaf_numeric = 777;
     e.root_struct.weight = 3.14;
-    e.root_struct.leaf_arr.push(NestedLeaf { leaf_val: "ArrayLeaf".into(), leaf_numeric: 11, leaf_rotation: 0f32 });
-    e.root_struct.leaf_opt = Some(NestedLeaf { leaf_val: "OptionalLeaf".into(), leaf_numeric: 22, leaf_rotation: 180f32 });
+    e.root_struct.leaf_arr.push(NestedLeaf {
+        leaf_val: "ArrayLeaf".into(),
+        leaf_numeric: 11,
+        leaf_rotation: 0f32,
+    });
+    e.root_struct.leaf_opt = Some(NestedLeaf {
+        leaf_val: "OptionalLeaf".into(),
+        leaf_numeric: 22,
+        leaf_rotation: 180f32,
+    });
 
     // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
@@ -81,7 +88,8 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.opt_bitset = Some(SystemPrivileges::READ | SystemPrivileges::WRITE);
 
     // Bitset and flags
-    e.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS | SystemPrivileges::EXECUTE;
+    e.system_perms =
+        SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS | SystemPrivileges::EXECUTE;
     e.legacy_hw_flags = 0xFFFFFFFF;
 
     // Optional delta array
@@ -94,17 +102,43 @@ pub fn make_populated_edge() -> Edge<'static> {
 
     // Tagged unions — scalar, array, optional, and map-value positions,
     // spread across the variants each union has accumulated over its history.
-    e.action = Payload::Attack(AttackPayload { target_id: 42, damage: 17.5, knockback: 2.6 });
-    e.action_log.push(Payload::Move(MovePayload { dx: 3, dy: -3 }));
-    e.action_log.push(Payload::Heal(HealPayload { target_id: 7, amount: 25.0, overheal: true, splash_radius: 5.2 }));
-    e.action_log.push(Payload::Despawn(DespawnPayload { entity_id: 900 }));
-    e.deferred_action = Some(Payload::Heal(HealPayload { target_id: 1, amount: 10.0, overheal: false, splash_radius: 1.5 }));
+    e.action = Payload::Attack(AttackPayload {
+        target_id: 42,
+        damage: 17.5,
+        knockback: 2.6,
+    });
+    e.action_log
+        .push(Payload::Move(MovePayload { dx: 3, dy: -3 }));
+    e.action_log.push(Payload::Heal(HealPayload {
+        target_id: 7,
+        amount: 25.0,
+        overheal: true,
+        splash_radius: 5.2,
+    }));
+    e.action_log
+        .push(Payload::Despawn(DespawnPayload { entity_id: 900 }));
+    e.deferred_action = Some(Payload::Heal(HealPayload {
+        target_id: 1,
+        amount: 10.0,
+        overheal: false,
+        splash_radius: 1.5,
+    }));
     e.final_action = Payload::Despawn(DespawnPayload { entity_id: 12345 });
 
     e.control = ControlSignal::Pong(PongPayload { latency_ms: 42 });
     e.control_log.push(ControlSignal::Ping(PingPayload {}));
-    e.control_log.push(ControlSignal::Disconnect(DisconnectPayload { reason_code: 4 }));
-    e.control_map.insert("primary".into(), Payload::Attack(AttackPayload { target_id: 5, damage: 99.9, knockback: 1.2 }));
+    e.control_log
+        .push(ControlSignal::Disconnect(DisconnectPayload {
+            reason_code: 4,
+        }));
+    e.control_map.insert(
+        "primary".into(),
+        Payload::Attack(AttackPayload {
+            target_id: 5,
+            damage: 99.9,
+            knockback: 1.2,
+        }),
+    );
 
     e.updated_imported_player = make_player_value();
 
@@ -139,14 +173,29 @@ fn make_player_value() -> player::Player {
 
     p.session_token = *b"PLAYERTOKEN12345";
     p.coordinates = (1.5, 2.5);
-    p.position = player::Vector3 { x: 1.0, y: 2.0, z: 3.0, w: 1.0 };
+    p.position = player::Vector3 {
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+        w: 1.0,
+    };
     p.kill_death = (5, 2);
 
     p.tags.push(pojstr!("vip"));
 
     p.transform = player::Transform {
-        position: player::Vector3 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
-        bounds: player::AABB { min_x: -1.0, min_y: -1.0, max_x: 1.0, max_y: 1.0 },
+        position: player::Vector3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        bounds: player::AABB {
+            min_x: -1.0,
+            min_y: -1.0,
+            max_x: 1.0,
+            max_y: 1.0,
+        },
     };
 
     p.recent_zones = std::array::from_fn(|_| PojocString::default());
@@ -237,7 +286,16 @@ pub fn assert_payload_eq(a: &Payload, b: &Payload) {
         (Payload::Despawn(x), Payload::Despawn(y)) => {
             assert_eq!(x.entity_id, y.entity_id);
         }
-        (Payload::Unknown { discriminant: d1, data: dt1 }, Payload::Unknown { discriminant: d2, data: dt2 }) => {
+        (
+            Payload::Unknown {
+                discriminant: d1,
+                data: dt1,
+            },
+            Payload::Unknown {
+                discriminant: d2,
+                data: dt2,
+            },
+        ) => {
             assert_eq!(d1, d2);
             assert_eq!(dt1, dt2);
         }
@@ -254,7 +312,16 @@ pub fn assert_control_signal_eq(a: &ControlSignal, b: &ControlSignal) {
         (ControlSignal::Disconnect(x), ControlSignal::Disconnect(y)) => {
             assert_eq!(x.reason_code, y.reason_code);
         }
-        (ControlSignal::Unknown { discriminant: d1, data: dt1 }, ControlSignal::Unknown { discriminant: d2, data: dt2 }) => {
+        (
+            ControlSignal::Unknown {
+                discriminant: d1,
+                data: dt1,
+            },
+            ControlSignal::Unknown {
+                discriminant: d2,
+                data: dt2,
+            },
+        ) => {
             assert_eq!(d1, d2);
             assert_eq!(dt1, dt2);
         }
@@ -343,10 +410,10 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
 
     // Deep wrapper
     assert_deep_complex_wrapper_eq(&a.ultimate_boss_structure, &b.ultimate_boss_structure);
-    
+
     // Imports
     assert_player_eq(&a.updated_imported_player, &b.updated_imported_player);
-    
+
     // Tagged unions
     assert_payload_eq(&a.action, &b.action);
     assert_eq!(a.action_log.len(), b.action_log.len());
@@ -367,11 +434,12 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
     }
     assert_eq!(a.control_map.len(), b.control_map.len());
     for (k, v) in a.control_map.iter() {
-        let other = b.control_map.get(k).expect("control_map key missing after roundtrip");
+        let other = b
+            .control_map
+            .get(k)
+            .expect("control_map key missing after roundtrip");
         assert_payload_eq(v, other);
     }
-    
-    
 }
 
 pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {
@@ -399,7 +467,7 @@ pub fn assert_stats_eq(a: &player::Stats, b: &player::Stats) {
     assert_eq!(a.intelligence, b.intelligence);
     assert_eq!(a.endurance, b.endurance);
     assert_eq!(a.charisma, b.charisma);
-    assert_eq!(a.resistance, b.resistance);   // luck was removed in Stats@6
+    assert_eq!(a.resistance, b.resistance); // luck was removed in Stats@6
 }
 
 pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
