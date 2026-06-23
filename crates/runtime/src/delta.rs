@@ -1,9 +1,8 @@
-﻿use crate::error::Error;
 use crate::PojocVec;
+use crate::error::Error;
 use crate::varint::{
-    read_varint32, write_varint32, skip_varint32,
-    read_varint64, write_varint64, skip_varint64,
-    varint_size,
+    read_varint32, read_varint64, skip_varint32, skip_varint64, varint_size, write_varint32,
+    write_varint64,
 };
 
 #[inline]
@@ -146,7 +145,10 @@ pub fn write_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) {
     }
 }
 
-pub fn read_delta_array<T: DeltaElement>(buf: &[u8], pos: &mut usize) -> Result<PojocVec<T>, Error> {
+pub fn read_delta_array<T: DeltaElement>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> Result<PojocVec<T>, Error> {
     let len = read_varint32(buf, pos)? as usize;
     let mut out = PojocVec::with_capacity(len);
     if len == 0 {
@@ -186,7 +188,10 @@ pub fn write_fixed_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) 
     }
 }
 
-pub fn read_fixed_delta_array<T: DeltaElement, const N: usize>(buf: &[u8], pos: &mut usize) -> Result<[T; N], Error> {
+pub fn read_fixed_delta_array<T: DeltaElement, const N: usize>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> Result<[T; N], Error> {
     let mut out = [T::default(); N];
     if N == 0 {
         return Ok(out);
@@ -199,7 +204,10 @@ pub fn read_fixed_delta_array<T: DeltaElement, const N: usize>(buf: &[u8], pos: 
     Ok(out)
 }
 
-pub fn skip_fixed_delta_array<T: DeltaElement, const N: usize>(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
+pub fn skip_fixed_delta_array<T: DeltaElement, const N: usize>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> Result<(), Error> {
     if N == 0 {
         return Ok(());
     }
