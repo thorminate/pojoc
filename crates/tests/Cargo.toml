@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 pojoc = { path = "../runtime" }
 prost = "0.14.3"
-capnp = "0.25.5"
+capnp = "0.26.0"
 flatbuffers = "25.12.19"
 serde = { version = "1.0.228", features = ["derive"] }
 
@@ -17,7 +17,7 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 pojoc-codegen = {path = "../codegen"}
 pojoc-schema = { path = "../schema" }
 prost-build = "0.14.3"
-capnpc = "0.25.3"
+capnpc = "0.26.0"
 
 [[bench]]
 name = "roundtrip"

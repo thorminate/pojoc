@@ -240,7 +240,17 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_skip_stmt(ty: &ResolvedTypeRef) -> String {
-    type_info(ty).skip_stmt
+    let info = type_info(ty);
+    if let WireSize::Fixed(n) = info.wire_size {
+        if n > 0 {
+            return format!(
+                "{{ let __end = pos.checked_add({n}).ok_or(Error::UnexpectedEof)?; \
+                 if __end > buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                 *pos = __end; }}"
+            );
+        }
+    }
+    info.skip_stmt
 }
 
 fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, infected: &HashSet<String>, w: &mut CodeWriter) {
@@ -280,7 +290,7 @@ fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, infected: &HashS
             if mf.lazy {
                 let none_fn = format!("{}_none", mf.target_name);
                 w.line(&format!(
-                    "let {} = LazyView::new(&buf[*pos..*pos], {none_fn});",
+                    "let {} = LazyView::new(&[], {none_fn});",
                     mf.target_name
                 ));
             } else {
@@ -307,6 +317,17 @@ fn emit_decode_fn(schema: &ResolvedSchema, vl: &VersionLineage, infected: &HashS
 fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
     match &fl.mapping {
         FieldMapping::Discard => {
+            if let ResolvedTypeRef::Array(inner) = &fl.source_ty {
+                if let WireSize::Fixed(stride) = type_info(inner).wire_size {
+                    w.line(&format!(
+                        "{{ let __n = read_array_len(buf, pos)? as usize; \
+                 let __end = pos.checked_add(__n * {stride}).ok_or(Error::UnexpectedEof)?; \
+                 if __end > buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                 *pos = __end; }}"
+                    ));
+                    return;
+                }
+            }
             w.line(&emit_skip_stmt(&fl.source_ty));
         }
         FieldMapping::PassThrough { target_name } => {
@@ -326,20 +347,13 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
             if target_is_lazy {
                 w.line(&emit_skip_stmt(from));
                 let none_fn = format!("{target_name}_none");
-                w.line(&format!("let {target_name} = LazyView::new(&buf[*pos..*pos], {none_fn});"));
+                w.line(&format!("let {target_name} = LazyView::new(&[], {none_fn});"));
                 return;
             }
-            let rhs = match emit_cast_value(schema, from, to) {
+            let rhs = match emit_cast_value(schema, from, to, &w.indent) {
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
-            let comment = if matches!(to, ResolvedTypeRef::Optional(_))
-                && !matches!(from, ResolvedTypeRef::Optional(_))
-            {
-                " // promoted: mandatory in this wire version"
-            } else {
-                ""
-            };
-            w.line(&format!("let {target_name} = {rhs};{comment}"));
+            w.line(&format!("let {target_name} = {rhs};"));
         }
     }
 }
@@ -362,7 +376,13 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
             let inner_expr = emit_read_expr(inner);
-            format!("{{ let mut __arr: [_; {n}] = std::array::from_fn(|_| Default::default()); for __i in 0..{n} {{ __arr[__i] = {inner_expr}; }} __arr }}")
+            let init = if let WireSize::Fixed(_) = type_info(inner).wire_size {
+                let default = type_info(inner).default_expr;
+                format!("[{default}; {n}]")
+            } else {
+                "std::array::from_fn(|_| Default::default())".to_string()
+            };
+            format!("{{ let mut __arr: [_; {n}] = {init}; for __i in 0..{n} {{ __arr[__i] = {inner_expr}; }} __arr }}")
         }
         ResolvedTypeRef::DeltaArray(inner) => {
             let inner_rust = type_info(inner).rust_type;
@@ -451,7 +471,7 @@ fn emit_field_mapping_arm(
                     "let {target_name} = if {__present} {{ \
                      LazyView::new(&buf[__{target_name}_start..*pos], {some_fn}) \
                      }} else {{ \
-                     LazyView::new(&buf[*pos..*pos], {none_fn}) \
+                     LazyView::new(&[], {none_fn}) \
                      }};"
                 ));
                 return;
@@ -470,14 +490,14 @@ fn emit_field_mapping_arm(
                 w.dedent();
                 w.line("}");
                 let none_fn = format!("{target_name}_none");
-                w.line(&format!("let {target_name} = LazyView::new(&buf[*pos..*pos], {none_fn});"));
+                w.line(&format!("let {target_name} = LazyView::new(&[], {none_fn});"));
                 return;
             }
             let (target_inner, optional_out) = match to {
                 ResolvedTypeRef::Optional(t) => (&**t, true),
                 t => (t, false),
             };
-            let rhs = match emit_cast_value(schema, inner, target_inner) {
+            let rhs = match emit_cast_value(schema, inner, target_inner, &w.indent) {
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
             if optional_out {
@@ -579,7 +599,7 @@ enum CastExpr {
     Block(String),
 }
 
-fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &ResolvedTypeRef) -> CastExpr {
+fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &ResolvedTypeRef, indent: &usize) -> CastExpr {
     use ResolvedTypeRef::*;
     match (from, to) {
         (Scalar(f), Scalar(t)) if is_primitive(&f.name) && is_primitive(&t.name) => {
@@ -592,7 +612,7 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
             }
         }
 
-        (Scalar(f), Scalar(t)) => CastExpr::Block(struct_cast_block(schema, f, t)),
+        (Scalar(f), Scalar(t)) => CastExpr::Block(struct_cast_block(schema, f, t, indent)),
 
         (FixedString(from_n), FixedString(to_n)) => {
             let copy_n = (*from_n).min(*to_n);
@@ -610,17 +630,17 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
             if from_n <= to_n {
                 CastExpr::Block(format!(
                     "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
-             for _ in 0..{from_n} {{ let __k = {ke}; let __v = {ve}; __m.push((__k, __v)); }} \
-             __m }}"
+                     for _ in 0..{from_n} {{ let __k = {ke}; let __v = {ve}; __m.push((__k, __v)); }} \
+                     __m }}"
                 ))
             } else {
                 CastExpr::Block(format!(
                     "{{ let mut __m = PojocFixedMap::with_capacity({to_n}); \
-             for __i in 0..{from_n} {{ \
-               let __k = {ke}; let __v = {ve}; \
-               if __i < {to_n} {{ __m.push((__k, __v)); }} \
-             }} \
-             __m }}"
+                     for __i in 0..{from_n} {{ \
+                       let __k = {ke}; let __v = {ve}; \
+                       if __i < {to_n} {{ __m.push((__k, __v)); }} \
+                     }} \
+                     __m }}"
                 ))
             }
         }
@@ -652,14 +672,14 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
             let copy_n = (*from_n).min(*to_n);
             CastExpr::Block(format!(
                 "{{ let __src = read_fixed_delta_array::<{elem_rust}, {from_n}>(buf, pos)?; \
-                 let mut __dst: [{elem_rust}; {to_n}] = std::array::from_fn(|_| {elem_default}); \
-                 for __i in 0..{copy_n} {{ __dst[__i] = __src[__i]; }} \
-                 __dst }}"
+                let mut __dst = [{elem_default}; {to_n}]; \
+                __dst[..{copy_n}].copy_from_slice(&__src[..{copy_n}]); \
+                __dst }}"
             ))
         }
 
         (from_ty, Optional(to_inner)) if !matches!(from_ty, Optional(_)) => {
-            let inner_expr = match emit_cast_value(schema, from_ty, to_inner) {
+            let inner_expr = match emit_cast_value(schema, from_ty, to_inner, indent) {
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
             CastExpr::Inline(format!("Some({inner_expr})"))
@@ -669,13 +689,16 @@ fn emit_cast_value(schema: &ResolvedSchema, from: &ResolvedTypeRef, to: &Resolve
     }
 }
 
-fn struct_cast_block(schema: &ResolvedSchema, from: &TypeId, to: &TypeId) -> String {
+// indent is brought in so the sub writer matches the parent writer's indent.
+fn struct_cast_block(schema: &ResolvedSchema, from: &TypeId, to: &TypeId, indent: &usize) -> String {
     let mut sub = CodeWriter::default();
     sub.line("{");
+    // set the indent after '{' so that the '{' doesn't get incorrectly indented.
+    sub.indent = *indent;
     sub.indent();
     emit_struct_cast_body(schema, from, to, &mut sub);
     sub.dedent();
-    sub.line("}");
+    sub.write("}");
     sub.finish()
 }
 
