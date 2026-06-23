@@ -213,11 +213,11 @@ fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut C
             ResolvedTypeRef::Optional(inner) => {
                 w.line(&format!("if let Some(__val) = &{accessor} {{"));
                 w.indent();
-                emit_write_expr(inner, &deref_if_copy(inner, "__val"), None, w);
+                emit_write_expr(inner, &deref_if_copy(inner, "__val"), None, true, w);
                 w.dedent();
                 w.line("}");
             }
-            _ => emit_write_expr(&field.ty, &accessor, None, w),
+            _ => emit_write_expr(&field.ty, &accessor, None, false, w),
         }
     }
 }
@@ -226,13 +226,18 @@ fn emit_write_expr(
     ty: &ResolvedTypeRef,
     accessor: &str,
     vn: Option<&ResolvedSchema>,
+    is_ref: bool,
     w: &mut CodeWriter,
 ) {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
-                w.line(&format!("{}(buf, &{accessor});", info.write_fn));
+                w.line(&format!(
+                    "{}(buf, {}{accessor});",
+                    info.write_fn,
+                    if is_ref { "" } else { "&" }
+                ));
             } else {
                 w.line(&format!("{}(buf, {accessor});", info.write_fn));
             }
@@ -257,27 +262,33 @@ fn emit_write_expr(
 
         ResolvedTypeRef::Union(id) => {
             w.line(&format!(
-                "write_{}(buf, &{accessor});",
-                id.name.to_snake_case()
+                "write_{}(buf, {}{accessor});",
+                id.name.to_snake_case(),
+                if is_ref { "" } else { "&" }
             ));
         }
 
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!(
-                "write_{}(buf, &{accessor});",
-                id.name.to_snake_case()
+                "write_{}(buf, {}{accessor});",
+                id.name.to_snake_case(),
+                if is_ref { "" } else { "&" }
             ));
         }
 
         ResolvedTypeRef::Scalar(_) => {
-            w.line(&format!("{}(buf, &{accessor});", info.write_fn));
+            w.line(&format!(
+                "{}(buf, {}{accessor});",
+                info.write_fn,
+                if is_ref { "" } else { "&" }
+            ));
         }
 
         ResolvedTypeRef::Array(inner) => {
             w.line(&format!("write_array_len(buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
-            emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, w);
+            emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, true, w);
             w.dedent();
             w.line("}");
         }
@@ -285,7 +296,7 @@ fn emit_write_expr(
         ResolvedTypeRef::FixedArray(inner, _) => {
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
-            emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, w);
+            emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, true, w);
             w.dedent();
             w.line("}");
         }
@@ -299,15 +310,19 @@ fn emit_write_expr(
         }
 
         ResolvedTypeRef::FixedString(_) => {
-            w.line(&format!("{}(buf, &{accessor});", info.write_fn));
+            w.line(&format!(
+                "{}(buf, {}{accessor});",
+                info.write_fn,
+                if is_ref { "" } else { "&" }
+            ));
         }
 
         ResolvedTypeRef::Map(k_ty, v_ty) => {
             w.line(&format!("write_array_len(buf, {accessor}.len());"));
             w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
             w.indent();
-            emit_write_expr(k_ty, &deref_if_copy(k_ty, "__k"), vn, w);
-            emit_write_expr(v_ty, &deref_if_copy(v_ty, "__v"), vn, w);
+            emit_write_expr(k_ty, &deref_if_copy(k_ty, "__k"), vn, true, w);
+            emit_write_expr(v_ty, &deref_if_copy(v_ty, "__v"), vn, true, w);
             w.dedent();
             w.line("}");
         }
@@ -318,15 +333,15 @@ fn emit_write_expr(
             ));
             w.line(&format!("for (__k, __v) in {accessor}.inner.iter() {{"));
             w.indent();
-            emit_write_expr(k_ty, &deref_if_copy(k_ty, "__k"), vn, w);
-            emit_write_expr(v_ty, &deref_if_copy(v_ty, "__v"), vn, w);
+            emit_write_expr(k_ty, &deref_if_copy(k_ty, "__k"), vn, true, w);
+            emit_write_expr(v_ty, &deref_if_copy(v_ty, "__v"), vn, true, w);
             w.dedent();
             w.line("}");
         }
 
         ResolvedTypeRef::Tuple(elements) => {
             for (i, elem) in elements.iter().enumerate() {
-                emit_write_expr(elem, &format!("{accessor}.{i}"), vn, w);
+                emit_write_expr(elem, &format!("{accessor}.{i}"), vn, false, w);
             }
         }
 
@@ -346,7 +361,7 @@ fn emit_write_expr(
             w.line("Some(__val) => {");
             w.indent();
             w.line("write_u8(buf, 1);");
-            emit_write_expr(inner, &deref_if_copy(inner, "__val"), vn, w);
+            emit_write_expr(inner, &deref_if_copy(inner, "__val"), vn, true, w);
             w.dedent();
             w.line("}");
             w.line("None => write_u8(buf, 0),");
@@ -484,6 +499,7 @@ fn emit_vn_optional_body(
                     inner_src,
                     &deref_if_copy(inner_src, "__val"),
                     Some(schema),
+                    true,
                     w,
                 );
                 w.dedent();
@@ -514,6 +530,7 @@ fn emit_vn_optional_body(
                             f_inner,
                             t_inner,
                             &deref_if_copy(t_inner, "__val"),
+                            true,
                             w,
                         );
                         w.dedent();
@@ -525,6 +542,7 @@ fn emit_vn_optional_body(
                             f_inner,
                             t_inner,
                             &format!("value.{target_name}"),
+                            false,
                             w,
                         );
                     }
@@ -535,6 +553,7 @@ fn emit_vn_optional_body(
                             inner_src,
                             &deref_if_copy(inner_src, "__val"),
                             Some(schema),
+                            true,
                             w,
                         );
                         w.dedent();
@@ -586,6 +605,7 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
                     &fl.source_ty,
                     &format!("value.{target_name}"),
                     Some(schema),
+                    false,
                     w,
                 );
             }
@@ -607,7 +627,7 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
             if target_is_lazy {
                 emit_vn_default_write(from, schema, w);
             } else {
-                emit_vn_cast_value(schema, from, to, &format!("value.{target_name}"), w);
+                emit_vn_cast_value(schema, from, to, &format!("value.{target_name}"), false, w);
             }
         }
     }
@@ -618,6 +638,7 @@ fn emit_vn_cast_value(
     from: &ResolvedTypeRef,
     to: &ResolvedTypeRef,
     accessor: &str,
+    is_ref: bool,
     w: &mut CodeWriter,
 ) {
     use ResolvedTypeRef::*;
@@ -626,9 +647,9 @@ fn emit_vn_cast_value(
             let f_norm = normalize_type(&f.name);
             let t_norm = normalize_type(&t.name);
             if f_norm == t_norm {
-                emit_write_expr(from, accessor, Some(schema), w);
+                emit_write_expr(from, accessor, Some(schema), is_ref, w);
             } else if f_norm == "string" || t_norm == "string" {
-                emit_write_expr(from, accessor, Some(schema), w);
+                emit_write_expr(from, accessor, Some(schema), is_ref, w);
             } else {
                 let f_info = type_info(from);
                 w.line(&format!(
@@ -691,12 +712,15 @@ fn emit_vn_cast_value(
                                     inner,
                                     &deref_if_copy(inner, "__val"),
                                     Some(schema),
+                                    true,
                                     w,
                                 );
                                 w.dedent();
                                 w.line("}");
                             }
-                            _ => emit_write_expr(&field.ty, &field_accessor, Some(schema), w),
+                            _ => {
+                                emit_write_expr(&field.ty, &field_accessor, Some(schema), false, w)
+                            }
                         }
                     } else {
                         if !matches!(field.ty, Optional(_)) {
@@ -758,7 +782,7 @@ fn emit_vn_cast_value(
             w.line("let mut __written = 0usize;");
             w.line(&format!("for (_, __v) in {accessor}.iter().take({f_n}) {{"));
             w.indent();
-            emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__v"), None, w);
+            emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__v"), None, true, w);
             w.line("__written += 1;");
             w.dedent();
             w.line("}");
@@ -775,13 +799,13 @@ fn emit_vn_cast_value(
             if f_n <= t_n {
                 w.line(&format!("for __item in {accessor}[..{f_n}].iter() {{"));
                 w.indent();
-                emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__item"), None, w);
+                emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__item"), None, true, w);
                 w.dedent();
                 w.line("}");
             } else {
                 w.line(&format!("for __item in {accessor}.iter() {{"));
                 w.indent();
-                emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__item"), None, w);
+                emit_write_expr(elem_ty, &deref_if_copy(elem_ty, "__item"), None, true, w);
                 w.dedent();
                 w.line("}");
                 w.line(&format!("for _ in {t_n}..{f_n} {{"));
@@ -816,7 +840,7 @@ fn emit_vn_cast_value(
             w.line(&format!("write_array_len(buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
-            emit_write_expr(f_elem, &deref_if_copy(f_elem, "__item"), None, w);
+            emit_write_expr(f_elem, &deref_if_copy(f_elem, "__item"), None, true, w);
             w.dedent();
             w.line("}");
         }
@@ -832,8 +856,8 @@ fn emit_vn_cast_value(
                 "if let Some((__k, __v)) = {accessor}.inner.get(__i) {{"
             ));
             w.indent();
-            emit_write_expr(fk, &deref_if_copy(fk, "__k"), None, w);
-            emit_write_expr(fv, &deref_if_copy(fv, "__v"), None, w);
+            emit_write_expr(fk, &deref_if_copy(fk, "__k"), None, true, w);
+            emit_write_expr(fv, &deref_if_copy(fv, "__v"), None, true, w);
             w.dedent();
             w.line("} else {");
             w.indent();
@@ -872,6 +896,7 @@ fn emit_vn_cast_value(
                 from_ty,
                 t_inner,
                 &deref_if_copy(t_inner, "__val"),
+                true,
                 w,
             );
             w.dedent();
@@ -885,7 +910,7 @@ fn emit_vn_cast_value(
             w.line("}");
         }
 
-        _ => emit_write_expr(from, accessor, Some(schema), w),
+        _ => emit_write_expr(from, accessor, Some(schema), is_ref, w),
     }
 }
 
@@ -1242,12 +1267,11 @@ fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
             ));
         }
         _ => {
-            // rebind `buf` so emit_write_expr's hardcoded `buf` references __tmp
             w.line("{");
             w.indent();
             w.line("let buf = &mut __tmp;");
             let accessor = deref_if_copy(payload, "__payload");
-            emit_write_expr(payload, &accessor, None, w);
+            emit_write_expr(payload, &accessor, None, true, w);
             w.dedent();
             w.line("}");
         }
