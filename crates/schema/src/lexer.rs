@@ -212,7 +212,7 @@ impl Lexer {
     }
 
     fn read_number(&mut self) -> Token {
-        let mut s = compact_str::CompactString::new("");
+        let mut s = CompactString::new("");
         let mut is_float = false;
 
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {

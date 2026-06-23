@@ -37,7 +37,7 @@
       inventory: [string] = []
       callsign: string = "none"
       stats: Stats
-      hotbar: [string](6) = ["", "", "", "", "", ""]
+      hotbar: [string](6) = [..""]
       session_token: string(16) = "0000000000000000"
       coordinates: (f32, f32) = (0.0, 0.0)
       max_hp: const f32 = 100.0
