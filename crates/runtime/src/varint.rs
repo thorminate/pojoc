@@ -88,15 +88,15 @@ pub fn skip_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
 
 pub fn varint_size(n: usize) -> usize {
     match n {
-        0..=0x7F                          => 1,
-        0x80..=0x3FFF                     => 2,
-        0x4000..=0x1FFFFF                 => 3,
-        0x200000..=0xFFFFFFF              => 4,
-        0x10000000..=0x7FFFFFFFF          => 5,
-        0x800000000..=0x3FFFFFFFFFF       => 6,
-        0x40000000000..=0x1FFFFFFFFFFFF   => 7,
-        0x2000000000000..=0xFFFFFFFFFFFFFF        => 8,
-        0x100000000000000..=0x7FFFFFFFFFFFFFFF    => 9,
-        _                                         => 10,
+        0..=0x7F => 1,
+        0x80..=0x3FFF => 2,
+        0x4000..=0x1FFFFF => 3,
+        0x200000..=0xFFFFFFF => 4,
+        0x10000000..=0x7FFFFFFFF => 5,
+        0x800000000..=0x3FFFFFFFFFF => 6,
+        0x40000000000..=0x1FFFFFFFFFFFF => 7,
+        0x2000000000000..=0xFFFFFFFFFFFFFF => 8,
+        0x100000000000000..=0x7FFFFFFFFFFFFFFF => 9,
+        _ => 10,
     }
 }

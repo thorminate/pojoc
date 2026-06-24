@@ -38,14 +38,14 @@ pub struct FieldIR {
     pub name: String,
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
-    pub lazy: bool
+    pub lazy: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct VersionContext {
     pub version: i128,
     pub fields: Vec<FieldIR>,
-    pub const_fields: Vec<ResolvedConst>
+    pub const_fields: Vec<ResolvedConst>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +91,6 @@ impl EnumRegistry {
             .iter()
             .filter(|(id, _)| id.name == name && id.version < before_version)
             .max_by_key(|(id, _)| id.version)
-            .map(|(id, e)| (id, e))
     }
 }
 
@@ -140,19 +139,22 @@ pub struct UnionRegistry {
 }
 
 impl UnionRegistry {
-    pub fn latest_before(&self, name: &str, before_version: i128) -> Option<(&TypeId, &ResolvedUnion)> {
+    pub fn latest_before(
+        &self,
+        name: &str,
+        before_version: i128,
+    ) -> Option<(&TypeId, &ResolvedUnion)> {
         self.unions
             .iter()
             .filter(|(id, _)| id.name == name && id.version < before_version)
             .max_by_key(|(id, _)| id.version)
-            .map(|(id, u)| (id, u))
     }
 }
 
 #[derive(Debug)]
 pub struct ResolvedType {
     pub fields: Vec<FieldIR>,
-    pub const_fields: Vec<ResolvedConst>
+    pub const_fields: Vec<ResolvedConst>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,7 +168,7 @@ pub struct ResolvedConst {
 pub struct ResolvedVersion {
     pub version: i128,
     pub fields: Vec<FieldIR>,
-    pub const_fields: Vec<ResolvedConst>
+    pub const_fields: Vec<ResolvedConst>,
 }
 
 #[derive(Debug)]
@@ -193,8 +195,14 @@ pub enum DefaultValue {
     Struct,
     FixedBytes(Vec<u8>),
     Tuple(Vec<DefaultValue>),
-    EnumVariant { ty_name: String, variant: String },
-    BitsetLiteral { ty_name: String, kvs: Vec<(String, bool)> },
+    EnumVariant {
+        ty_name: String,
+        variant: String,
+    },
+    BitsetLiteral {
+        ty_name: String,
+        kvs: Vec<(String, bool)>,
+    },
     Repeat(Box<DefaultValue>),
 }
 
@@ -226,7 +234,9 @@ impl From<&DefaultValueAst> for DefaultValue {
                 ty_name: ty.clone(),
                 kvs: kvs.clone(),
             },
-            DefaultValueAst::Repeat(inner) => DefaultValue::Repeat(Box::new(DefaultValue::from(inner.as_ref()))),
+            DefaultValueAst::Repeat(inner) => {
+                DefaultValue::Repeat(Box::new(DefaultValue::from(inner.as_ref())))
+            }
         }
     }
 }

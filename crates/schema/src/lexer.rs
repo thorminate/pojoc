@@ -1,6 +1,6 @@
-use compact_str::CompactString;
 use crate::error::*;
 use crate::span::Span;
+use compact_str::CompactString;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
@@ -19,7 +19,7 @@ pub enum Keyword {
     True,
     False,
     Import,
-    As
+    As,
 }
 
 impl std::fmt::Display for Keyword {
@@ -286,14 +286,38 @@ impl Lexer {
                 }
                 Some(c) => {
                     let tok = match c {
-                        '{' => { self.advance(); Token::LBrace }
-                        '}' => { self.advance(); Token::RBrace }
-                        '[' => { self.advance(); Token::LBracket }
-                        ']' => { self.advance(); Token::RBracket }
-                        '(' => { self.advance(); Token::LParen }
-                        ')' => { self.advance(); Token::RParen }
-                        '<' => { self.advance(); Token::LAngle }
-                        '>' => { self.advance(); Token::RAngle }
+                        '{' => {
+                            self.advance();
+                            Token::LBrace
+                        }
+                        '}' => {
+                            self.advance();
+                            Token::RBrace
+                        }
+                        '[' => {
+                            self.advance();
+                            Token::LBracket
+                        }
+                        ']' => {
+                            self.advance();
+                            Token::RBracket
+                        }
+                        '(' => {
+                            self.advance();
+                            Token::LParen
+                        }
+                        ')' => {
+                            self.advance();
+                            Token::RParen
+                        }
+                        '<' => {
+                            self.advance();
+                            Token::LAngle
+                        }
+                        '>' => {
+                            self.advance();
+                            Token::RAngle
+                        }
                         ':' => {
                             self.advance();
                             if self.peek() == Some(':') {
@@ -303,11 +327,23 @@ impl Lexer {
                                 Token::Colon
                             }
                         }
-                        '+' => { self.advance(); Token::Plus }
-                        '~' => { self.advance(); Token::Tilde }
-                        '=' => { self.advance(); Token::Equals }
+                        '+' => {
+                            self.advance();
+                            Token::Plus
+                        }
+                        '~' => {
+                            self.advance();
+                            Token::Tilde
+                        }
+                        '=' => {
+                            self.advance();
+                            Token::Equals
+                        }
                         '"' => self.read_string_lit()?,
-                        ',' => { self.advance(); Token::Comma }
+                        ',' => {
+                            self.advance();
+                            Token::Comma
+                        }
                         '-' => {
                             self.advance();
                             if self.peek() == Some('>') {
@@ -317,8 +353,14 @@ impl Lexer {
                                 Token::Minus
                             }
                         }
-                        '@' => { self.advance(); Token::At }
-                        '?' => { self.advance(); Token::QuestionMark }
+                        '@' => {
+                            self.advance();
+                            Token::At
+                        }
+                        '?' => {
+                            self.advance();
+                            Token::QuestionMark
+                        }
                         '.' => {
                             self.advance();
                             if self.peek() == Some('.') {

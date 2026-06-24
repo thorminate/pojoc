@@ -1,13 +1,16 @@
 mod completion;
 
+use crate::completion::{SchemaIndex, completions_for_position};
 use lsp_server::*;
 use lsp_types::*;
+use pojoc_schema::analyzer::SchemaAnalyzer;
+use pojoc_schema::{
+    AnalysisError, ImportOrchestrator, IndexableError, Lexer, LineIndex, ParseError, Parser,
+    Position as SchemaPosition, SchemaAst, SchemaError, Span,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use pojoc_schema::{Position as SchemaPosition, Lexer, Parser, ParseError, AnalysisError, SchemaError, LineIndex, Span, SchemaAst, IndexableError, ImportOrchestrator};
-use pojoc_schema::analyzer::SchemaAnalyzer;
-use crate::completion::{completions_for_position, SchemaIndex};
 
 struct DocStore {
     docs: HashMap<Uri, String>,
@@ -17,7 +20,11 @@ struct DocStore {
 
 impl DocStore {
     fn new() -> Self {
-        Self { docs: HashMap::new(), last_good_ast: HashMap::new(), import_versions: HashMap::new() }
+        Self {
+            docs: HashMap::new(),
+            last_good_ast: HashMap::new(),
+            import_versions: HashMap::new(),
+        }
     }
     fn set(&mut self, uri: Uri, text: String) {
         self.docs.insert(uri, text);
@@ -28,13 +35,19 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (connection, io_threads) = Connection::stdio();
 
     let server_capabilities = serde_json::to_value(ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::FULL,
-        )),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![
-                ":".into(), "@".into(), "<".into(), "[".into(), "(".into(),
-                "-".into(), "~".into(), ",".into(), "=".into(), " ".into()
+                ":".into(),
+                "@".into(),
+                "<".into(),
+                "[".into(),
+                "(".into(),
+                "-".into(),
+                "~".into(),
+                ",".into(),
+                "=".into(),
+                " ".into(),
             ]),
             ..Default::default()
         }),
@@ -52,20 +65,31 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
                 if req.method == "textDocument/completion" {
                     let items = (|| -> Option<Vec<CompletionItem>> {
-                        let params: CompletionParams = serde_json::from_value(req.params.clone()).ok()?;
+                        let params: CompletionParams =
+                            serde_json::from_value(req.params.clone()).ok()?;
                         let uri = &params.text_document_position.text_document.uri;
                         let pos = params.text_document_position.position;
                         let text = store.docs.get(uri)?;
                         let offset = position_to_offset(text, pos);
 
-                        let mut idx = store.last_good_ast.get(uri).map(SchemaIndex::build).unwrap_or_default();
+                        let mut idx = store
+                            .last_good_ast
+                            .get(uri)
+                            .map(SchemaIndex::build)
+                            .unwrap_or_default();
                         if let Some(versions) = store.import_versions.get(uri) {
                             idx.import_versions = versions.clone();
                         }
 
                         let schema_path = uri_to_path(uri);
-                        Some(completions_for_position(text, offset, &idx, schema_path.as_deref()))
-                    })().unwrap_or_default();
+                        Some(completions_for_position(
+                            text,
+                            offset,
+                            &idx,
+                            schema_path.as_deref(),
+                        ))
+                    })()
+                    .unwrap_or_default();
 
                     let result = serde_json::to_value(CompletionResponse::Array(items))?;
                     connection.sender.send(Message::Response(Response {
@@ -92,17 +116,20 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     match serde_json::from_value::<DidChangeTextDocumentParams>(notif.params) {
                         Ok(params) => {
                             let uri = params.text_document.uri;
-                            if let Some(change) = params.content_changes.into_iter().last() {
-                                if let Err(e) = handle_text_update(&mut store, uri, change.text, &connection) {
-                                    eprintln!("failed to handle didChange: {e}");
-                                }
+                            if let Some(change) = params.content_changes.into_iter().last()
+                                && let Err(e) =
+                                    handle_text_update(&mut store, uri, change.text, &connection)
+                            {
+                                eprintln!("failed to handle didChange: {e}");
                             }
                         }
                         Err(e) => eprintln!("malformed didChange params: {e}"),
                     }
                 }
                 "textDocument/didClose" => {
-                    if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(notif.params) {
+                    if let Ok(params) =
+                        serde_json::from_value::<DidCloseTextDocumentParams>(notif.params)
+                    {
                         store.docs.remove(&params.text_document.uri);
                     }
                 }
@@ -116,14 +143,22 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-fn publish_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<Diagnostic>)
-                       -> Result<(), Box<dyn Error + Send + Sync>>
-{
-    let params = PublishDiagnosticsParams { uri, diagnostics, version: None };
-    connection.sender.send(Message::Notification(Notification::new(
-        "textDocument/publishDiagnostics".to_string(),
-        params,
-    )))?;
+fn publish_diagnostics(
+    connection: &Connection,
+    uri: Uri,
+    diagnostics: Vec<Diagnostic>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let params = PublishDiagnosticsParams {
+        uri,
+        diagnostics,
+        version: None,
+    };
+    connection
+        .sender
+        .send(Message::Notification(Notification::new(
+            "textDocument/publishDiagnostics".to_string(),
+            params,
+        )))?;
     Ok(())
 }
 
@@ -163,11 +198,15 @@ fn to_lsp_position(pos: SchemaPosition) -> Position {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_ast(source: &str) -> Result<SchemaAst, SchemaError> {
     let tokens = Lexer::new(source).tokenize()?;
-    Parser::new(tokens).parse_schema().map_err(SchemaError::from)
+    Parser::new(tokens)
+        .parse_schema()
+        .map_err(SchemaError::from)
 }
 
+#[allow(clippy::result_large_err)]
 fn analyze(
     ast: &SchemaAst,
     own_path: &Path,
@@ -193,9 +232,12 @@ fn analyze(
     Ok(())
 }
 
-fn handle_text_update(store: &mut DocStore, uri: Uri, text: String, connection: &Connection)
-                      -> Result<(), Box<dyn Error + Send + Sync>>
-{
+fn handle_text_update(
+    store: &mut DocStore,
+    uri: Uri,
+    text: String,
+    connection: &Connection,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let own_path = uri_to_path(&uri);
 
     let diagnostics = match parse_ast(&text) {
@@ -240,7 +282,9 @@ fn position_to_offset(text: &str, pos: Position) -> usize {
     let mut utf16_count = 0u32;
     let mut byte_offset = 0usize;
     for c in line.chars() {
-        if utf16_count >= pos.character { break; }
+        if utf16_count >= pos.character {
+            break;
+        }
         utf16_count += c.len_utf16() as u32;
         byte_offset += c.len_utf8();
     }
@@ -248,8 +292,5 @@ fn position_to_offset(text: &str, pos: Position) -> usize {
 }
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    url::Url::parse(uri.as_str())
-        .ok()?
-        .to_file_path()
-        .ok()
+    url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()
 }

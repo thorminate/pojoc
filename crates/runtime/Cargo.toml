@@ -1,10 +1,13 @@
-﻿[package]
+[package]
 name = "pojoc"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 compact_str = { workspace = true, features = ["serde"] }
-smallvec = { workspace = true }
+smallvec = { workspace = true, features = ["const_new"] }
 serde = { workspace = true }
 serde_bytes = { workspace = true }

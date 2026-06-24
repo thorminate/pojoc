@@ -59,9 +59,19 @@ pub struct EnumVariantNode {
 
 #[derive(Debug)]
 pub enum EnumDefAst {
-    Definition { name: String, variants: Vec<EnumVariantNode>, span: Span, line: u32 },
-    Extension { name: String, base: ExtendsAst, ops: Vec<EnumVariantOpAst>, span: Span, line: u32 },
-
+    Definition {
+        name: String,
+        variants: Vec<EnumVariantNode>,
+        span: Span,
+        line: u32,
+    },
+    Extension {
+        name: String,
+        base: ExtendsAst,
+        ops: Vec<EnumVariantOpAst>,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl EnumDefAst {
@@ -75,15 +85,34 @@ impl EnumDefAst {
 
 #[derive(Debug, Clone)]
 pub enum EnumVariantOpAst {
-    Add { name: String, span: Span, line: u32 },
-    Rename { from: String, to: String, span: Span, line: u32 },
+    Add {
+        name: String,
+        span: Span,
+        line: u32,
+    },
+    Rename {
+        from: String,
+        to: String,
+        span: Span,
+        line: u32,
+    },
 }
 
 #[derive(Debug)]
 pub enum BitsetDefAst {
-    Definition { name: String, variants: Vec<String>, span: Span, line: u32 },
-    Extension { name: String, base: ExtendsAst, ops: Vec<BitsetOpAst>, span: Span, line: u32 },
-
+    Definition {
+        name: String,
+        variants: Vec<String>,
+        span: Span,
+        line: u32,
+    },
+    Extension {
+        name: String,
+        base: ExtendsAst,
+        ops: Vec<BitsetOpAst>,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl BitsetDefAst {
@@ -111,8 +140,19 @@ pub struct UnionVariantAst {
 
 #[derive(Debug, Clone)]
 pub enum UnionDefAst {
-    Definition { name: String, variants: Vec<UnionVariantAst>, span: Span, line: u32 },
-    Extension { name: String, base: ExtendsAst, ops: Vec<UnionVariantOpAst>, span: Span, line: u32 },
+    Definition {
+        name: String,
+        variants: Vec<UnionVariantAst>,
+        span: Span,
+        line: u32,
+    },
+    Extension {
+        name: String,
+        base: ExtendsAst,
+        ops: Vec<UnionVariantOpAst>,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl UnionDefAst {
@@ -126,7 +166,12 @@ impl UnionDefAst {
 
 #[derive(Debug, Clone)]
 pub enum UnionVariantOpAst {
-    Add { name: String, payload_ty: TypeAst, span: Span, line: u32 },
+    Add {
+        name: String,
+        payload_ty: TypeAst,
+        span: Span,
+        line: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -172,8 +217,14 @@ pub enum DefaultValueAst {
     Map(Vec<(DefaultValueAst, DefaultValueAst)>),
     FixedBytes(Vec<u8>),
     Tuple(Vec<DefaultValueAst>),
-    EnumVariant { ty: String, variant: String },
-    BitsetLiteral { ty: String, kvs: Vec<(String, bool)> },
+    EnumVariant {
+        ty: String,
+        variant: String,
+    },
+    BitsetLiteral {
+        ty: String,
+        kvs: Vec<(String, bool)>,
+    },
     Repeat(Box<DefaultValueAst>),
 }
 
@@ -190,17 +241,56 @@ pub enum TypeAst {
     FixedMap(Box<TypeAst>, Box<TypeAst>, usize),
     Tuple(Vec<TypeAst>),
     VFloat { min: f64, max: f64, step: f64 },
-    Imported {alias: String, version: i128},
+    Imported { alias: String, version: i128 },
 }
 
 #[derive(Debug, Clone)]
 pub enum DiffAst {
-    Add { field: FieldAst },
-    AddConst { field: ConstFieldAst },
-    Remove { name: String, span: Span, line: u32 },
-    Rename { from: String, to: String, span: Span, line: u32 },
-    UpdateType { name: String, ty: TypeAst, lazy: bool, span: Span, line: u32 },
-    Transform { from: String, to: String, ty: Option<TypeAst>, lazy: bool, span: Span, line: u32 },
-    UpdateConst { name: String, ty: TypeAst, value: DefaultValueAst, span: Span, line: u32 },
-    TransformConst { from: String, to: String, ty: TypeAst, value: DefaultValueAst, span: Span, line: u32 },
+    Add {
+        field: FieldAst,
+    },
+    AddConst {
+        field: ConstFieldAst,
+    },
+    Remove {
+        name: String,
+        span: Span,
+        line: u32,
+    },
+    Rename {
+        from: String,
+        to: String,
+        span: Span,
+        line: u32,
+    },
+    UpdateType {
+        name: String,
+        ty: TypeAst,
+        lazy: bool,
+        span: Span,
+        line: u32,
+    },
+    Transform {
+        from: String,
+        to: String,
+        ty: Option<TypeAst>,
+        lazy: bool,
+        span: Span,
+        line: u32,
+    },
+    UpdateConst {
+        name: String,
+        ty: TypeAst,
+        value: DefaultValueAst,
+        span: Span,
+        line: u32,
+    },
+    TransformConst {
+        from: String,
+        to: String,
+        ty: TypeAst,
+        value: DefaultValueAst,
+        span: Span,
+        line: u32,
+    },
 }

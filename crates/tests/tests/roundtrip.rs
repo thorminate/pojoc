@@ -1,6 +1,6 @@
 mod helpers;
-use pojoc_tests::pojoc_edge::*;
 use helpers::*;
+use pojoc_tests::pojoc_edge::*;
 
 #[test]
 fn test_roundtrip_default() {
@@ -28,8 +28,7 @@ fn test_encode_for_version_default_decodes_all() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)
             .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
-        decode(&buf)
-            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+        decode(&buf).unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
     }
 }
 
@@ -41,8 +40,7 @@ fn test_encode_for_version_populated_decodes_all() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)
             .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
-        decode(&buf)
-            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+        decode(&buf).unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
     }
 }
 
@@ -54,24 +52,36 @@ fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)
             .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
-        let decoded = decode(&buf)
-            .unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+        let decoded = decode(&buf).unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
 
-        assert_eq!(decoded.u8_to_i64, original.u8_to_i64,
-                   "v{version}: u8_to_i64 mismatch");
-        assert_eq!(decoded.nullified_str, original.nullified_str,
-                   "v{version}: nullified_str mismatch");
-        assert_eq!(decoded.root_struct.leaf.leaf_val, original.root_struct.leaf.leaf_val,
-                   "v{version}: root_struct.leaf.leaf_val mismatch");
-        assert_eq!(decoded.root_struct.leaf.leaf_numeric, original.root_struct.leaf.leaf_numeric,
-                   "v{version}: root_struct.leaf.leaf_numeric mismatch");
+        assert_eq!(
+            decoded.u8_to_i64, original.u8_to_i64,
+            "v{version}: u8_to_i64 mismatch"
+        );
+        assert_eq!(
+            decoded.nullified_str, original.nullified_str,
+            "v{version}: nullified_str mismatch"
+        );
+        assert_eq!(
+            decoded.root_struct.leaf.leaf_val, original.root_struct.leaf.leaf_val,
+            "v{version}: root_struct.leaf.leaf_val mismatch"
+        );
+        assert_eq!(
+            decoded.root_struct.leaf.leaf_numeric, original.root_struct.leaf.leaf_numeric,
+            "v{version}: root_struct.leaf.leaf_numeric mismatch"
+        );
     }
 }
 
 #[test]
 fn test_encode_for_version_latest_version_fields_survive() {
     let mut original = make_version_probe_edge();
-    original.action = Payload::Heal(HealPayload { target_id: 2, amount: 8.0, overheal: false, splash_radius: 3.0 });
+    original.action = Payload::Heal(HealPayload {
+        target_id: 2,
+        amount: 8.0,
+        overheal: false,
+        splash_radius: 3.0,
+    });
     original.control = ControlSignal::Disconnect(DisconnectPayload { reason_code: 1 });
 
     let latest = *supported_versions().last().expect("no supported versions");
@@ -79,13 +89,16 @@ fn test_encode_for_version_latest_version_fields_survive() {
     let mut buf = Vec::new();
     encode_for_version(&mut buf, &original, latest)
         .unwrap_or_else(|e| panic!("v{latest}: encode_for_version failed: {e:?}"));
-    let decoded = decode(&buf)
-        .unwrap_or_else(|e| panic!("v{latest}: decode failed: {e:?}"));
+    let decoded = decode(&buf).unwrap_or_else(|e| panic!("v{latest}: decode failed: {e:?}"));
 
-    assert_eq!(decoded.bounds_enum, original.bounds_enum,
-               "v{latest}: bounds_enum mismatch");
-    assert_eq!(decoded.system_perms, original.system_perms,
-               "v{latest}: system_perms mismatch");
+    assert_eq!(
+        decoded.bounds_enum, original.bounds_enum,
+        "v{latest}: bounds_enum mismatch"
+    );
+    assert_eq!(
+        decoded.system_perms, original.system_perms,
+        "v{latest}: system_perms mismatch"
+    );
     assert_payload_eq(&decoded.action, &original.action);
     assert_control_signal_eq(&decoded.control, &original.control);
 }
@@ -101,16 +114,27 @@ fn test_encode_for_version_latest_is_byte_identical_to_encode() {
     encode_for_version(&mut buf_versioned, &original, latest)
         .expect("encode_for_version failed for latest");
 
-    assert_eq!(buf_encode, buf_versioned,
-               "encode() and encode_for_version(latest) produced different bytes");
+    assert_eq!(
+        buf_encode, buf_versioned,
+        "encode() and encode_for_version(latest) produced different bytes"
+    );
 }
 
 #[test]
 fn test_roundtrip_payload_variants() {
     let variants = vec![
         Payload::Move(MovePayload { dx: 7, dy: -2 }),
-        Payload::Attack(AttackPayload { target_id: 11, damage: 33.3, knockback: 0.5 }),
-        Payload::Heal(HealPayload { target_id: 4, amount: 50.0, overheal: true, splash_radius: 1.5 }),
+        Payload::Attack(AttackPayload {
+            target_id: 11,
+            damage: 33.3,
+            knockback: 0.5,
+        }),
+        Payload::Heal(HealPayload {
+            target_id: 4,
+            amount: 50.0,
+            overheal: true,
+            splash_radius: 1.5,
+        }),
         Payload::Despawn(DespawnPayload { entity_id: 808 }),
     ];
 
