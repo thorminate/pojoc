@@ -3,8 +3,8 @@
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
 
 permissions:
   contents: write
@@ -102,8 +102,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p vscode-extension/bin
-          cp lsp-bin/${{ matrix.lsp_bin }} vscode-extension/bin/pojoc-lsp
-          chmod +x vscode-extension/bin/pojoc-lsp
+          EXT=""
+          [[ "${{ matrix.vsix_target }}" == "win32-x64" ]] && EXT=".exe"
+          cp "lsp-bin/${{ matrix.lsp_bin }}" "vscode-extension/bin/pojoc-lsp${EXT}"
+          chmod +x "vscode-extension/bin/pojoc-lsp${EXT}"
 
       - uses: actions/setup-node@v4
         with:
