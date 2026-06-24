@@ -1,9 +1,9 @@
 use lsp_types::*;
+use pojoc_core::types::is_delta_eligible_str;
 use pojoc_schema::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use pojoc_core::types::is_delta_eligible_str;
 
 #[derive(Default)]
 pub struct SchemaIndex {
@@ -26,19 +26,25 @@ pub struct SchemaIndex {
 
 impl SchemaIndex {
     pub fn build(ast: &SchemaAst) -> Self {
-        let mut idx = SchemaIndex::default();
-        idx.import_aliases = ast.imports.iter().map(|i| i.alias.clone()).collect();
+        let mut idx = SchemaIndex {
+            import_aliases: ast.imports.iter().map(|i| i.alias.clone()).collect(),
+            ..Default::default()
+        };
         let mut running_fields: Vec<String> = Vec::new();
         let mut type_running: HashMap<String, Vec<String>> = HashMap::new();
 
         for v in &ast.versions {
-            idx.fields_before_version.insert(v.version, running_fields.clone());
+            idx.fields_before_version
+                .insert(v.version, running_fields.clone());
 
             for block in &v.blocks {
                 match block {
                     VersionBlockAst::TypeDef(t) => {
                         idx.type_names.insert(t.name.clone());
-                        idx.declared_versions.entry(t.name.clone()).or_default().push(v.version);
+                        idx.declared_versions
+                            .entry(t.name.clone())
+                            .or_default()
+                            .push(v.version);
                         match &t.body {
                             TypeBody::Fields(f) => {
                                 let names = field_names(f);
@@ -54,17 +60,26 @@ impl SchemaIndex {
                     }
                     VersionBlockAst::EnumDef(e) => {
                         idx.enum_names.insert(e.name().to_string());
-                        idx.declared_versions.entry(e.name().to_string()).or_default().push(v.version);
+                        idx.declared_versions
+                            .entry(e.name().to_string())
+                            .or_default()
+                            .push(v.version);
                         apply_enum(&mut idx, e);
                     }
                     VersionBlockAst::UnionDef(u) => {
                         idx.union_names.insert(u.name().to_string());
-                        idx.declared_versions.entry(u.name().to_string()).or_default().push(v.version);
+                        idx.declared_versions
+                            .entry(u.name().to_string())
+                            .or_default()
+                            .push(v.version);
                         apply_union(&mut idx, u);
                     }
                     VersionBlockAst::BitsetDef(b) => {
                         idx.bitset_names.insert(b.name().to_string());
-                        idx.declared_versions.entry(b.name().to_string()).or_default().push(v.version);
+                        idx.declared_versions
+                            .entry(b.name().to_string())
+                            .or_default()
+                            .push(v.version);
                         apply_bitset(&mut idx, b);
                     }
                     VersionBlockAst::Fields(f) => {
@@ -77,13 +92,16 @@ impl SchemaIndex {
             }
 
             for (name, variants) in idx.enum_variants.clone() {
-                idx.enum_variants_at_version.insert((name, v.version), variants);
+                idx.enum_variants_at_version
+                    .insert((name, v.version), variants);
             }
             for (name, variants) in idx.bitset_variants.clone() {
-                idx.bitset_variants_at_version.insert((name, v.version), variants);
+                idx.bitset_variants_at_version
+                    .insert((name, v.version), variants);
             }
             for (name, variants) in idx.union_variants.clone() {
-                idx.union_variants_at_version.insert((name, v.version), variants);
+                idx.union_variants_at_version
+                    .insert((name, v.version), variants);
             }
         }
 
@@ -91,7 +109,9 @@ impl SchemaIndex {
     }
 
     pub fn all_type_like_names(&self) -> impl Iterator<Item = &str> {
-        self.type_names.iter().map(String::as_str)
+        self.type_names
+            .iter()
+            .map(String::as_str)
             .chain(self.enum_names.iter().map(String::as_str))
             .chain(self.union_names.iter().map(String::as_str))
             .chain(self.bitset_names.iter().map(String::as_str))
@@ -101,20 +121,26 @@ impl SchemaIndex {
         self.all_type_like_names()
             .filter(|name| match version {
                 None => true,
-                Some(ver) => self.declared_versions
+                Some(ver) => self
+                    .declared_versions
                     .get(*name)
-                    .map_or(false, |vs| vs.iter().any(|&dv| dv <= ver)),
+                    .is_some_and(|vs| vs.iter().any(|&dv| dv <= ver)),
             })
             .collect()
     }
 
     pub fn versions_for(&self, name: &str) -> &[i128] {
-        self.declared_versions.get(name).map(Vec::as_slice).unwrap_or(&[])
+        self.declared_versions
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
 fn field_names(f: &FieldsAst) -> Vec<String> {
-    f.fields.iter().map(|fld| fld.name.clone())
+    f.fields
+        .iter()
+        .map(|fld| fld.name.clone())
         .chain(f.const_fields.iter().map(|c| c.name.clone()))
         .collect()
 }
@@ -122,7 +148,10 @@ fn field_names(f: &FieldsAst) -> Vec<String> {
 fn apply_enum(idx: &mut SchemaIndex, e: &EnumDefAst) {
     match e {
         EnumDefAst::Definition { name, variants, .. } => {
-            idx.enum_variants.insert(name.clone(), variants.iter().map(|v| v.name.clone()).collect());
+            idx.enum_variants.insert(
+                name.clone(),
+                variants.iter().map(|v| v.name.clone()).collect(),
+            );
         }
         EnumDefAst::Extension { name, ops, .. } => {
             let list = idx.enum_variants.entry(name.clone()).or_default();
@@ -160,7 +189,10 @@ fn apply_bitset(idx: &mut SchemaIndex, b: &BitsetDefAst) {
 fn apply_union(idx: &mut SchemaIndex, u: &UnionDefAst) {
     match u {
         UnionDefAst::Definition { name, variants, .. } => {
-            idx.union_variants.insert(name.clone(), variants.iter().map(|v| v.name.clone()).collect());
+            idx.union_variants.insert(
+                name.clone(),
+                variants.iter().map(|v| v.name.clone()).collect(),
+            );
         }
         UnionDefAst::Extension { name, ops, .. } => {
             let list = idx.union_variants.entry(name.clone()).or_default();
@@ -211,16 +243,27 @@ fn tokenize_prefix(src: &str) -> Vec<Tok> {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i] as char;
-        if c == '\n' { toks.push(Tok::Newline); i += 1; continue; }
-        if c.is_whitespace() { i += 1; continue; }
+        if c == '\n' {
+            toks.push(Tok::Newline);
+            i += 1;
+            continue;
+        }
+        if c.is_whitespace() {
+            i += 1;
+            continue;
+        }
         if c == '/' && bytes.get(i + 1) == Some(&b'/') {
-            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
             continue;
         }
         if c == '"' {
             i += 1;
             while i < bytes.len() && bytes[i] as char != '"' {
-                if bytes[i] as char == '\\' { i += 1; }
+                if bytes[i] as char == '\\' {
+                    i += 1;
+                }
                 i += 1;
             }
             i += 1;
@@ -228,18 +271,28 @@ fn tokenize_prefix(src: &str) -> Vec<Tok> {
         }
         if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < bytes.len() && (bytes[i] as char == '_' || (bytes[i] as char).is_alphanumeric()) { i += 1; }
+            while i < bytes.len()
+                && (bytes[i] as char == '_' || (bytes[i] as char).is_alphanumeric())
+            {
+                i += 1;
+            }
             toks.push(Tok::Ident(src[start..i].to_string()));
             continue;
         }
         if c.is_ascii_digit() {
             let start = i;
-            while i < bytes.len() && ((bytes[i] as char).is_ascii_digit() || bytes[i] as char == '.') { i += 1; }
+            while i < bytes.len()
+                && ((bytes[i] as char).is_ascii_digit() || bytes[i] as char == '.')
+            {
+                i += 1;
+            }
             toks.push(Tok::Number(src[start..i].to_string()));
             continue;
         }
         if c == ':' && bytes.get(i + 1) == Some(&b':') {
-            toks.push(Tok::DoubleColon); i += 2; continue;
+            toks.push(Tok::DoubleColon);
+            i += 2;
+            continue;
         }
         toks.push(Tok::Punct(c));
         i += 1;
@@ -280,49 +333,73 @@ fn scan(tokens: &[Tok]) -> ScanState {
                 depth = 0;
             }
             Tok::Punct('}') => {
-                if stack.len() > 1 { stack.pop(); consumed.pop(); }
+                if stack.len() > 1 {
+                    stack.pop();
+                    consumed.pop();
+                }
                 pending.clear();
                 depth = 0;
             }
             Tok::Newline => {
                 if depth == 0 {
-                    if matches!(stack.last(), Some(BlockKind::Diff)) {
-                        if let [Tok::Punct(op), Tok::Ident(name), ..] = pending.as_slice() {
-                            if matches!(op, '-' | '~') {
-                                consumed.last_mut().unwrap().insert(name.clone());
-                            }
-                        }
+                    if matches!(stack.last(), Some(BlockKind::Diff))
+                        && let [Tok::Punct(op), Tok::Ident(name), ..] = pending.as_slice()
+                        && matches!(op, '-' | '~')
+                    {
+                        consumed.last_mut().unwrap().insert(name.clone());
                     }
                     pending.clear();
                 }
             }
-            Tok::Punct(c @ ('(' | '[' | '<')) => { depth += 1; pending.push(Tok::Punct(*c)); }
-            Tok::Punct(c @ (')' | ']' | '>')) => { depth -= 1; pending.push(Tok::Punct(*c)); }
+            Tok::Punct(c @ ('(' | '[' | '<')) => {
+                depth += 1;
+                pending.push(Tok::Punct(*c));
+            }
+            Tok::Punct(c @ (')' | ']' | '>')) => {
+                depth -= 1;
+                pending.push(Tok::Punct(*c));
+            }
             other => pending.push(other.clone()),
         }
-        if pending.len() > 16 { pending.remove(0); }
+        if pending.len() > 16 {
+            pending.remove(0);
+        }
     }
 
-    ScanState { stack, pending, consumed }
+    ScanState {
+        stack,
+        pending,
+        consumed,
+    }
 }
 
 fn classify_header(pending: &[Tok]) -> BlockKind {
     match pending {
-        [Tok::Ident(k), Tok::Ident(name), ..] if k == "schema"  => BlockKind::Schema(name.clone()), 
-        [Tok::Ident(k), Tok::Number(n),    ..] if k == "version" => BlockKind::Version(n.parse().unwrap_or(0)),
-        [Tok::Ident(k), Tok::Ident(name),  ..] if k == "type"    => BlockKind::TypeDef(name.clone()),
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "schema" => BlockKind::Schema(name.clone()),
+        [Tok::Ident(k), Tok::Number(n), ..] if k == "version" => {
+            BlockKind::Version(n.parse().unwrap_or(0))
+        }
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "type" => BlockKind::TypeDef(name.clone()),
         [Tok::Ident(k), ..] if k == "fields" => BlockKind::Fields,
-        [Tok::Ident(k), ..] if k == "diff"   => BlockKind::Diff,
+        [Tok::Ident(k), ..] if k == "diff" => BlockKind::Diff,
         _ => BlockKind::Other,
     }
 }
 
 fn current_version(stack: &[BlockKind]) -> Option<i128> {
-    stack.iter().rev().find_map(|f| if let BlockKind::Version(v) = f { Some(*v) } else { None })
+    stack.iter().rev().find_map(|f| {
+        if let BlockKind::Version(v) = f {
+            Some(*v)
+        } else {
+            None
+        }
+    })
 }
 
 fn find_diff_context(stack: &[BlockKind]) -> Option<(Option<String>, i128)> {
-    if !matches!(stack.last(), Some(BlockKind::Diff)) { return None; }
+    if !matches!(stack.last(), Some(BlockKind::Diff)) {
+        return None;
+    }
     let mut owner = None;
     let mut version = None;
     for frame in stack.iter().rev() {
@@ -343,7 +420,9 @@ fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char)> {
         match tok {
             Tok::Ident(s) => last_ident = Some(s.clone()),
             Tok::Punct(c @ ('(' | '[' | '<')) => stack.push((last_ident.take(), *c)),
-            Tok::Punct(')' | ']' | '>') => { stack.pop(); }
+            Tok::Punct(')' | ']' | '>') => {
+                stack.pop();
+            }
             Tok::Punct(',') | Tok::Punct(':') => {}
             _ => last_ident = None,
         }
@@ -353,21 +432,47 @@ fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char)> {
 
 enum Ctx {
     FileRoot,
-    SchemaBody { next_version: i128 },
+    SchemaBody {
+        next_version: i128,
+    },
     VersionBody(i128),
     DiffLineStart,
-    DiffOldFieldName { owner_type: Option<String>, version: i128, already_used: HashSet<String> },
+    DiffOldFieldName {
+        owner_type: Option<String>,
+        version: i128,
+        already_used: HashSet<String>,
+    },
     TypePosition(Option<i128>),
     ExtendsName(Option<i128>),
-    ArrayElementType { delta: bool, version: Option<i128> },
-    ExtendsVersion { name: String, before_version: Option<i128> },
-    ImportVersion { alias: String },
-    ImportPath { dir_prefix: String, partial: String },
-    VariantAccess { name: String, version: Option<i128> },
+    ArrayElementType {
+        delta: bool,
+        version: Option<i128>,
+    },
+    ExtendsVersion {
+        name: String,
+        before_version: Option<i128>,
+    },
+    ImportVersion {
+        alias: String,
+    },
+    ImportPath {
+        dir_prefix: String,
+        partial: String,
+    },
+    VariantAccess {
+        name: String,
+        version: Option<i128>,
+    },
     VFloatParam,
-    BitsetLiteralField { bitset_name: String, used: HashSet<String>, version: Option<i128> },
+    BitsetLiteralField {
+        bitset_name: String,
+        used: HashSet<String>,
+        version: Option<i128>,
+    },
     BitsetLiteralValue,
-    ArraySuffixModifier { delta_eligible: bool },
+    ArraySuffixModifier {
+        delta_eligible: bool,
+    },
     DefaultValue(DefaultKind),
     Unknown,
 }
@@ -376,10 +481,10 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     let pending = &state.pending;
     let stack = &state.stack;
 
-    if let Some(type_tokens) = type_tokens_before_default(pending) {
-        if let Some(kind) = classify_default_type(type_tokens, idx, current_version(stack)) {
-            return Ctx::DefaultValue(kind);
-        }
+    if let Some(type_tokens) = type_tokens_before_default(pending)
+        && let Some(kind) = classify_default_type(type_tokens, idx, current_version(stack))
+    {
+        return Ctx::DefaultValue(kind);
     }
 
     if let [.., Tok::Ident(name), Tok::Punct('@')] = pending.as_slice() {
@@ -387,23 +492,33 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
             && matches!(&pending[pending.len() - 3], Tok::Ident(k) if k == "extends");
 
         if preceded_by_extends {
-            return Ctx::ExtendsVersion { name: name.clone(), before_version: current_version(stack) };
+            return Ctx::ExtendsVersion {
+                name: name.clone(),
+                before_version: current_version(stack),
+            };
         }
         if idx.import_aliases.contains(name) {
-            return Ctx::ImportVersion { alias: name.clone() };
+            return Ctx::ImportVersion {
+                alias: name.clone(),
+            };
         }
         return Ctx::Unknown;
     }
 
-    if matches!(pending.as_slice(), [.., Tok::Ident(_), Tok::DoubleColon]
-    | [.., Tok::Ident(_), Tok::DoubleColon, Tok::Ident(_)])
-    {
+    if matches!(
+        pending.as_slice(),
+        [.., Tok::Ident(_), Tok::DoubleColon]
+            | [.., Tok::Ident(_), Tok::DoubleColon, Tok::Ident(_)]
+    ) {
         let name = match pending.as_slice() {
             [.., Tok::Ident(n), Tok::DoubleColon] => n.clone(),
             [.., Tok::Ident(n), Tok::DoubleColon, Tok::Ident(_)] => n.clone(),
             _ => unreachable!(),
         };
-        return Ctx::VariantAccess { name, version: current_version(stack) };
+        return Ctx::VariantAccess {
+            name,
+            version: current_version(stack),
+        };
     }
 
     if let Some(info) = array_suffix_info(pending) {
@@ -411,7 +526,9 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
             ArrayElement::Scalar(name) => is_delta_eligible_str(name),
             ArrayElement::Other => false,
         };
-        return Ctx::ArraySuffixModifier { delta_eligible: eligible && !info.already_has_delta };
+        return Ctx::ArraySuffixModifier {
+            delta_eligible: eligible && !info.already_has_delta,
+        };
     }
 
     if bitset_literal_value_info(pending, idx).is_some() {
@@ -425,9 +542,18 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
                 let used = find_enclosing_open_paren(pending)
                     .map(|open_idx| used_bitset_flags(pending, open_idx))
                     .unwrap_or_default();
-                return Ctx::BitsetLiteralField { bitset_name: name.to_string(), used, version: current_version(stack) };
+                return Ctx::BitsetLiteralField {
+                    bitset_name: name.to_string(),
+                    used,
+                    version: current_version(stack),
+                };
             }
-            (_, '[') => return Ctx::ArrayElementType { delta: false, version: current_version(stack) },
+            (_, '[') => {
+                return Ctx::ArrayElementType {
+                    delta: false,
+                    version: current_version(stack),
+                };
+            }
             (_, '<') => return Ctx::TypePosition(current_version(stack)),
             _ => {}
         }
@@ -436,36 +562,39 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     if matches!(pending.last(), Some(Tok::Ident(k)) if k == "extends") {
         return Ctx::ExtendsName(current_version(stack));
     }
-    if pending.len() >= 2 {
-        if let (Tok::Ident(k), Tok::Ident(_)) = (&pending[pending.len() - 2], &pending[pending.len() - 1]) {
-            if k == "extends" { return Ctx::ExtendsName(current_version(stack)); }
-        }
+    if pending.len() >= 2
+        && let (Tok::Ident(k), Tok::Ident(_)) =
+            (&pending[pending.len() - 2], &pending[pending.len() - 1])
+        && k == "extends"
+    {
+        return Ctx::ExtendsName(current_version(stack));
     }
 
     if matches!(pending.last(), Some(Tok::Punct(':'))) {
         return Ctx::TypePosition(current_version(stack));
     }
 
-    if pending.len() >= 2 {
-
-        if let (Tok::Punct(':'), Tok::Ident(_)) = (&pending[pending.len() - 2], &pending[pending.len() - 1]) {
-            return Ctx::TypePosition(current_version(stack));
-        }
-
+    if pending.len() >= 2
+        && let (Tok::Punct(':'), Tok::Ident(_)) =
+            (&pending[pending.len() - 2], &pending[pending.len() - 1])
+    {
+        return Ctx::TypePosition(current_version(stack));
     }
 
     if let Some((owner, version)) = find_diff_context(stack) {
         match pending.as_slice() {
             [] => return Ctx::DiffLineStart,
-            [Tok::Punct(op)] if matches!(op, '-' | '~') => {
+            [Tok::Punct('-' | '~')] => {
                 return Ctx::DiffOldFieldName {
-                    owner_type: owner, version,
+                    owner_type: owner,
+                    version,
                     already_used: state.consumed.last().cloned().unwrap_or_default(),
                 };
             }
-            [Tok::Punct(op), Tok::Ident(_)] if matches!(op, '-' | '~') => {
+            [Tok::Punct('-' | '~'), Tok::Ident(_)] => {
                 return Ctx::DiffOldFieldName {
-                    owner_type: owner, version,
+                    owner_type: owner,
+                    version,
                     already_used: state.consumed.last().cloned().unwrap_or_default(),
                 };
             }
@@ -484,10 +613,10 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
         return Ctx::SchemaBody { next_version };
     }
 
-    if let Some(BlockKind::Version(version)) = stack.last() {
-        if pending.is_empty() {
-            return Ctx::VersionBody(*version);
-        }
+    if let Some(BlockKind::Version(version)) = stack.last()
+        && pending.is_empty()
+    {
+        return Ctx::VersionBody(*version);
     }
 
     if matches!(stack.last(), Some(BlockKind::Root)) && pending.is_empty() {
@@ -505,16 +634,19 @@ pub fn completions_for_position(
 ) -> Vec<CompletionItem> {
     // prevent IntelliSense in a comment
     if cursor_in_line_comment(text, offset) {
-        return Vec::new(); 
+        return Vec::new();
     }
-    
+
     let ctx = import_path_ctx(text, offset).unwrap_or_else(|| {
         let prefix = &text[..offset.min(text.len())];
         let tokens = tokenize_prefix(prefix);
         let state = scan(&tokens);
         let mut ctx = determine_ctx(&state, idx);
         if let Ctx::ArrayElementType { version, .. } = ctx {
-            ctx = Ctx::ArrayElementType { delta: suffix_has_delta(text, offset), version };
+            ctx = Ctx::ArrayElementType {
+                delta: suffix_has_delta(text, offset),
+                version,
+            };
         }
         ctx
     });
@@ -530,7 +662,10 @@ pub fn completions_for_position(
             ];
 
             if v == 1 {
-                snippets.insert(0, snippet("fields", "fields {\n\t$0\n}", "field declarations block"));
+                snippets.insert(
+                    0,
+                    snippet("fields", "fields {\n\t$0\n}", "field declarations block"),
+                );
             } else if v > 1 {
                 snippets.insert(0, snippet("diff", "diff {\n\t$0\n}", "schema diff block"));
             }
@@ -538,33 +673,50 @@ pub fn completions_for_position(
             snippets
         }
 
-        Ctx::DiffLineStart => ["+", "-", "~"].iter().map(|op| CompletionItem {
-            label: op.to_string(),
-            kind: Some(CompletionItemKind::OPERATOR),
-            detail: Some(match *op {
-                "+" => "add a field/variant".into(),
-                "-" => "remove a field/variant".into(),
-                _ => "rename or retype a field/variant".into(),
-            }),
-            ..Default::default()
-        }).collect(),
+        Ctx::DiffLineStart => ["+", "-", "~"]
+            .iter()
+            .map(|op| CompletionItem {
+                label: op.to_string(),
+                kind: Some(CompletionItemKind::OPERATOR),
+                detail: Some(match *op {
+                    "+" => "add a field/variant".into(),
+                    "-" => "remove a field/variant".into(),
+                    _ => "rename or retype a field/variant".into(),
+                }),
+                ..Default::default()
+            })
+            .collect(),
 
-        Ctx::DiffOldFieldName { owner_type, version, already_used } => {
+        Ctx::DiffOldFieldName {
+            owner_type,
+            version,
+            already_used,
+        } => {
             let names: &[String] = match &owner_type {
-                Some(ty) => idx.type_fields_before_version
-                    .get(&(ty.clone(), version)).map(Vec::as_slice).unwrap_or(&[]),
-                None => idx.fields_before_version.get(&version).map(Vec::as_slice).unwrap_or(&[]),
+                Some(ty) => idx
+                    .type_fields_before_version
+                    .get(&(ty.clone(), version))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                None => idx
+                    .fields_before_version
+                    .get(&version)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
             };
-            names.iter()
+            names
+                .iter()
                 .filter(|n| !already_used.contains(*n))
                 .map(|n| CompletionItem {
                     label: n.clone(),
                     kind: Some(CompletionItemKind::FIELD),
                     ..Default::default()
-                }).collect()
+                })
+                .collect()
         }
 
-        Ctx::ExtendsName(version) => idx.type_like_names_at(version)
+        Ctx::ExtendsName(version) => idx
+            .type_like_names_at(version)
             .into_iter()
             .map(|n| CompletionItem {
                 label: n.to_string(),
@@ -573,24 +725,37 @@ pub fn completions_for_position(
             })
             .collect(),
 
-        Ctx::ExtendsVersion { name, before_version } => idx.versions_for(&name).iter()
-            .filter(|v| before_version.map_or(true, |bv| **v < bv))
+        Ctx::ExtendsVersion {
+            name,
+            before_version,
+        } => idx
+            .versions_for(&name)
+            .iter()
+            .filter(|v| before_version.is_none_or(|bv| **v < bv))
             .map(|v| CompletionItem {
                 label: v.to_string(),
                 kind: Some(CompletionItemKind::CONSTANT),
                 ..Default::default()
-            }).collect(),
+            })
+            .collect(),
 
-
-        Ctx::ImportVersion { alias } => idx.import_versions.get(&alias).into_iter().flatten()
+        Ctx::ImportVersion { alias } => idx
+            .import_versions
+            .get(&alias)
+            .into_iter()
+            .flatten()
             .map(|v| CompletionItem {
                 label: v.to_string(),
                 kind: Some(CompletionItemKind::CONSTANT),
                 detail: Some(format!("version of imported schema `{alias}`")),
                 ..Default::default()
-            }).collect(),
+            })
+            .collect(),
 
-        Ctx::ImportPath { dir_prefix, partial } => match schema_path {
+        Ctx::ImportPath {
+            dir_prefix,
+            partial,
+        } => match schema_path {
             Some(path) => import_path_completions(path, &dir_prefix, &partial),
             None => Vec::new(),
         },
@@ -600,18 +765,25 @@ pub fn completions_for_position(
                 version
                     .and_then(|v| idx.enum_variants_at_version.get(&(name.clone(), v)))
                     .or_else(|| idx.enum_variants.get(&name))
-                    .map(Vec::as_slice).unwrap_or(&[])
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
             } else if idx.union_names.contains(&name) {
                 version
                     .and_then(|v| idx.union_variants_at_version.get(&(name.clone(), v)))
                     .or_else(|| idx.union_variants.get(&name))
-                    .map(Vec::as_slice).unwrap_or(&[])
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
             } else {
                 &[]
             };
 
-            variants.iter()
-                .map(|v| CompletionItem { label: v.clone(), kind: Some(CompletionItemKind::ENUM_MEMBER), ..Default::default() })
+            variants
+                .iter()
+                .map(|v| CompletionItem {
+                    label: v.clone(),
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    ..Default::default()
+                })
                 .collect()
         }
 
@@ -619,39 +791,58 @@ pub fn completions_for_position(
 
         Ctx::ArrayElementType { delta: true, .. } => {
             const NUMBER_PRIMITIVES: &[&str] = &[
-                "u8", "u16", "u32", "u64",
-                "i8", "i16", "i32", "i64",
-                "f32", "f64",
-                "varint32", "varint64",
+                "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "varint32",
+                "varint64",
             ];
-            NUMBER_PRIMITIVES.iter().map(|p| CompletionItem {
-                label: p.to_string(),
-                kind: Some(CompletionItemKind::TYPE_PARAMETER),
-                ..Default::default()
-            }).collect()
+            NUMBER_PRIMITIVES
+                .iter()
+                .map(|p| CompletionItem {
+                    label: p.to_string(),
+                    kind: Some(CompletionItemKind::TYPE_PARAMETER),
+                    ..Default::default()
+                })
+                .collect()
         }
-        Ctx::ArrayElementType { delta: false, version } => type_position_items(idx, version),
+        Ctx::ArrayElementType {
+            delta: false,
+            version,
+        } => type_position_items(idx, version),
 
-        Ctx::VFloatParam => ["min", "max", "step"].iter().map(|p| CompletionItem {
-            label: format!("{p}:"),
-            insert_text: Some(format!("{p}: $0")),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
-            kind: Some(CompletionItemKind::PROPERTY),
-            ..Default::default()
-        }).collect(),
+        Ctx::VFloatParam => ["min", "max", "step"]
+            .iter()
+            .map(|p| CompletionItem {
+                label: format!("{p}:"),
+                insert_text: Some(format!("{p}: $0")),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                kind: Some(CompletionItemKind::PROPERTY),
+                ..Default::default()
+            })
+            .collect(),
 
-        Ctx::BitsetLiteralField { bitset_name, used, version } => {
+        Ctx::BitsetLiteralField {
+            bitset_name,
+            used,
+            version,
+        } => {
             let variants: &[String] = version
-                .and_then(|v| idx.bitset_variants_at_version.get(&(bitset_name.clone(), v)))
+                .and_then(|v| {
+                    idx.bitset_variants_at_version
+                        .get(&(bitset_name.clone(), v))
+                })
                 .or_else(|| idx.bitset_variants.get(&bitset_name))
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
 
-            variants.iter()
+            variants
+                .iter()
                 .filter(|v| !used.contains(*v))
                 .map(|v| {
                     if has_value_after {
-                        CompletionItem { label: v.clone(), kind: Some(CompletionItemKind::PROPERTY), ..Default::default() }
+                        CompletionItem {
+                            label: v.clone(),
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            ..Default::default()
+                        }
                     } else {
                         CompletionItem {
                             label: format!("{v}:"),
@@ -661,7 +852,8 @@ pub fn completions_for_position(
                             ..Default::default()
                         }
                     }
-                }).collect()
+                })
+                .collect()
         }
 
         Ctx::ArraySuffixModifier { delta_eligible } => {
@@ -686,9 +878,11 @@ pub fn completions_for_position(
                 Vec::new()
             }
         }
-        Ctx::FileRoot => vec![
-            snippet("schema", "schema $1 {\n\t$0\n}", "define a new schema"),
-        ],
+        Ctx::FileRoot => vec![snippet(
+            "schema",
+            "schema $1 {\n\t$0\n}",
+            "define a new schema",
+        )],
         Ctx::SchemaBody { next_version } => vec![
             snippet(
                 &format!("version {next_version}"),
@@ -698,11 +892,14 @@ pub fn completions_for_position(
             snippet("import", "import \"$1\" as $2", "import another schema"),
         ],
         Ctx::DefaultValue(kind) => match kind {
-            DefaultKind::Bool => ["true", "false"].iter().map(|v| CompletionItem {
-                label: v.to_string(),
-                kind: Some(CompletionItemKind::VALUE),
-                ..Default::default()
-            }).collect(),
+            DefaultKind::Bool => ["true", "false"]
+                .iter()
+                .map(|v| CompletionItem {
+                    label: v.to_string(),
+                    kind: Some(CompletionItemKind::VALUE),
+                    ..Default::default()
+                })
+                .collect(),
 
             DefaultKind::Str => vec![CompletionItem {
                 label: "\"\"".into(),
@@ -735,16 +932,23 @@ pub fn completions_for_position(
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
 
-                variants.iter()
+                variants
+                    .iter()
                     .map(|v| CompletionItem {
                         label: format!("{name}::{v}"),
                         kind: Some(CompletionItemKind::ENUM_MEMBER),
                         ..Default::default()
-                    }).collect()
+                    })
+                    .collect()
             }
 
             DefaultKind::Bitset(name) => vec![
-                CompletionItem { label: "0".into(), detail: Some("no flags set".into()), kind: Some(CompletionItemKind::VALUE), ..Default::default() },
+                CompletionItem {
+                    label: "0".into(),
+                    detail: Some("no flags set".into()),
+                    kind: Some(CompletionItemKind::VALUE),
+                    ..Default::default()
+                },
                 CompletionItem {
                     label: format!("{name}(...)"),
                     insert_text: Some(format!("{name}($1: $2)")),
@@ -757,14 +961,23 @@ pub fn completions_for_position(
 
             DefaultKind::VFloat(min) => {
                 let v = min.unwrap_or_else(|| "0.0".into());
-                vec![CompletionItem { label: v.clone(), insert_text: Some(v), kind: Some(CompletionItemKind::VALUE), detail: Some("min value".into()), ..Default::default() }]
+                vec![CompletionItem {
+                    label: v.clone(),
+                    insert_text: Some(v),
+                    kind: Some(CompletionItemKind::VALUE),
+                    detail: Some("min value".into()),
+                    ..Default::default()
+                }]
             }
         },
-        Ctx::BitsetLiteralValue => ["true", "false"].iter().map(|v| CompletionItem {
-            label: v.to_string(),
-            kind: Some(CompletionItemKind::VALUE),
-            ..Default::default()
-        }).collect(),
+        Ctx::BitsetLiteralValue => ["true", "false"]
+            .iter()
+            .map(|v| CompletionItem {
+                label: v.to_string(),
+                kind: Some(CompletionItemKind::VALUE),
+                ..Default::default()
+            })
+            .collect(),
         Ctx::Unknown => Vec::new(),
     }
 }
@@ -782,21 +995,28 @@ fn snippet(label: &str, insert: &str, detail: &str) -> CompletionItem {
 
 fn type_position_items(idx: &SchemaIndex, version: Option<i128>) -> Vec<CompletionItem> {
     const PRIMITIVES: &[&str] = &[
-        "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64",
-        "varint32", "varint64", "bool", "string",
+        "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "varint32", "varint64",
+        "bool", "string",
     ];
 
-    let mut items: Vec<CompletionItem> = PRIMITIVES.iter().map(|p| CompletionItem {
-        label: p.to_string(),
-        kind: Some(CompletionItemKind::TYPE_PARAMETER),
-        ..Default::default()
-    }).collect();
+    let mut items: Vec<CompletionItem> = PRIMITIVES
+        .iter()
+        .map(|p| CompletionItem {
+            label: p.to_string(),
+            kind: Some(CompletionItemKind::TYPE_PARAMETER),
+            ..Default::default()
+        })
+        .collect();
 
-    items.extend(idx.type_like_names_at(version).into_iter().map(|n| CompletionItem {
-        label: n.to_string(),
-        kind: Some(CompletionItemKind::CLASS),
-        ..Default::default()
-    }));
+    items.extend(
+        idx.type_like_names_at(version)
+            .into_iter()
+            .map(|n| CompletionItem {
+                label: n.to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..Default::default()
+            }),
+    );
 
     items.extend(idx.import_aliases.iter().map(|n| CompletionItem {
         label: n.clone() + "@",
@@ -805,8 +1025,16 @@ fn type_position_items(idx: &SchemaIndex, version: Option<i128>) -> Vec<Completi
         ..Default::default()
     }));
 
-    items.push(CompletionItem { label: "lazy".into(), kind: Some(CompletionItemKind::KEYWORD), ..Default::default() });
-    items.push(CompletionItem { label: "const".into(), kind: Some(CompletionItemKind::KEYWORD), ..Default::default() });
+    items.push(CompletionItem {
+        label: "lazy".into(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        ..Default::default()
+    });
+    items.push(CompletionItem {
+        label: "const".into(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        ..Default::default()
+    });
     items.push(CompletionItem {
         label: "vfloat(min, max, step)".into(),
         insert_text: Some("vfloat(min: $1, max: $2, step: $3)".into()),
@@ -844,13 +1072,19 @@ fn array_suffix_info(pending: &[Tok]) -> Option<ArraySuffixInfo> {
     for (i, tok) in pending.iter().enumerate() {
         match tok {
             Tok::Punct(c @ ('(' | '[' | '<')) => open_stack.push((i, *c)),
-            Tok::Punct(')' | ']' | '>') => { open_stack.pop(); }
+            Tok::Punct(')' | ']' | '>') => {
+                open_stack.pop();
+            }
             _ => {}
         }
     }
     let &(open_paren_idx, bracket) = open_stack.last()?;
-    if bracket != '(' || open_paren_idx == 0 { return None; }
-    if !matches!(&pending[open_paren_idx - 1], Tok::Punct(']')) { return None; }
+    if bracket != '(' || open_paren_idx == 0 {
+        return None;
+    }
+    if !matches!(&pending[open_paren_idx - 1], Tok::Punct(']')) {
+        return None;
+    }
 
     let mut depth = 0i32;
     let mut open_bracket_idx = None;
@@ -859,7 +1093,10 @@ fn array_suffix_info(pending: &[Tok]) -> Option<ArraySuffixInfo> {
             Tok::Punct(']') => depth += 1,
             Tok::Punct('[') => {
                 depth -= 1;
-                if depth == 0 { open_bracket_idx = Some(i); break; }
+                if depth == 0 {
+                    open_bracket_idx = Some(i);
+                    break;
+                }
             }
             _ => {}
         }
@@ -875,7 +1112,10 @@ fn array_suffix_info(pending: &[Tok]) -> Option<ArraySuffixInfo> {
         .iter()
         .any(|t| matches!(t, Tok::Ident(s) if s == "delta"));
 
-    Some(ArraySuffixInfo { element, already_has_delta })
+    Some(ArraySuffixInfo {
+        element,
+        already_has_delta,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -909,7 +1149,10 @@ fn type_tokens_before_default(pending: &[Tok]) -> Option<&[Tok]> {
         match &pending[i] {
             Tok::Punct(')' | ']' | '>') => depth += 1,
             Tok::Punct('(' | '[' | '<') => depth -= 1,
-            Tok::Punct(':') if depth == 0 => { colon_idx = Some(i); break; }
+            Tok::Punct(':') if depth == 0 => {
+                colon_idx = Some(i);
+                break;
+            }
             _ => {}
         }
     }
@@ -923,10 +1166,18 @@ fn extract_vfloat_min(tokens: &[Tok]) -> Option<String> {
     })
 }
 
-fn classify_default_type(tokens: &[Tok], idx: &SchemaIndex, version: Option<i128>) -> Option<DefaultKind> {
+fn classify_default_type(
+    tokens: &[Tok],
+    idx: &SchemaIndex,
+    version: Option<i128>,
+) -> Option<DefaultKind> {
     let mut tokens = tokens;
     while let Some(Tok::Ident(k)) = tokens.first() {
-        if k == "const" || k == "lazy" { tokens = &tokens[1..]; } else { break; }
+        if k == "const" || k == "lazy" {
+            tokens = &tokens[1..];
+        } else {
+            break;
+        }
     }
 
     match tokens.first()? {
@@ -936,7 +1187,9 @@ fn classify_default_type(tokens: &[Tok], idx: &SchemaIndex, version: Option<i128
             "string" => return Some(DefaultKind::Str),
             "map" => return Some(DefaultKind::Map),
             "vfloat" => return Some(DefaultKind::VFloat(extract_vfloat_min(tokens))),
-            _ if idx.enum_names.contains(name) => return Some(DefaultKind::Enum(name.clone(), version)),
+            _ if idx.enum_names.contains(name) => {
+                return Some(DefaultKind::Enum(name.clone(), version));
+            }
             _ if idx.bitset_names.contains(name) => return Some(DefaultKind::Bitset(name.clone())),
             _ => {}
         },
@@ -959,18 +1212,24 @@ fn bitset_literal_value_info(pending: &[Tok], idx: &SchemaIndex) -> Option<Strin
     } else {
         return None;
     };
-    if colon_idx == 0 || !matches!(pending[colon_idx - 1], Tok::Ident(_)) { return None; }
+    if colon_idx == 0 || !matches!(pending[colon_idx - 1], Tok::Ident(_)) {
+        return None;
+    }
 
     let mut open_stack: Vec<(usize, char)> = Vec::new();
     for (i, tok) in pending[..colon_idx].iter().enumerate() {
         match tok {
             Tok::Punct(c @ ('(' | '[' | '<')) => open_stack.push((i, *c)),
-            Tok::Punct(')' | ']' | '>') => { open_stack.pop(); }
+            Tok::Punct(')' | ']' | '>') => {
+                open_stack.pop();
+            }
             _ => {}
         }
     }
     let &(open_idx, bracket) = open_stack.last()?;
-    if bracket != '(' || open_idx == 0 { return None; }
+    if bracket != '(' || open_idx == 0 {
+        return None;
+    }
 
     match &pending[open_idx - 1] {
         Tok::Ident(name) if idx.bitset_names.contains(name) => Some(name.clone()),
@@ -986,9 +1245,15 @@ fn cursor_already_has_value(text: &str, offset: usize) -> bool {
     let mut i = offset;
     while i < bytes.len() {
         let c = bytes[i] as char;
-        if c.is_alphanumeric() || c == '_' { i += 1; } else { break; }
+        if c.is_alphanumeric() || c == '_' {
+            i += 1;
+        } else {
+            break;
+        }
     }
-    while i < bytes.len() && (bytes[i] as char).is_whitespace() { i += 1; }
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
     i < bytes.len() && bytes[i] as char == ':'
 }
 
@@ -999,7 +1264,9 @@ fn find_enclosing_open_paren(pending: &[Tok]) -> Option<usize> {
         match &pending[i] {
             Tok::Punct(')' | ']' | '>') => depth += 1,
             Tok::Punct('(' | '[' | '<') => {
-                if depth == 0 { return Some(i); }
+                if depth == 0 {
+                    return Some(i);
+                }
                 depth -= 1;
             }
             _ => {}
@@ -1020,7 +1287,9 @@ fn used_bitset_flags(pending: &[Tok], open_idx: usize) -> HashSet<String> {
         {
             used.insert(name.clone());
             i += 3;
-            if matches!(pending.get(i), Some(Tok::Punct(','))) { i += 1; }
+            if matches!(pending.get(i), Some(Tok::Punct(','))) {
+                i += 1;
+            }
             continue;
         }
         i += 1;
@@ -1040,7 +1309,9 @@ fn import_path_ctx(text: &str, offset: usize) -> Option<Ctx> {
         let c = bytes[i] as char;
 
         if open_quote_idx.is_none() && c == '/' && bytes.get(i + 1) == Some(&b'/') {
-            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
             continue;
         }
 
@@ -1054,13 +1325,21 @@ fn import_path_ctx(text: &str, offset: usize) -> Option<Ctx> {
         }
 
         if open_quote_idx.is_some() {
-            if c == '\\' { i += 2; } else { i += 1; }
+            if c == '\\' {
+                i += 2;
+            } else {
+                i += 1;
+            }
             continue;
         }
 
         if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < bytes.len() && ((bytes[i] as char) == '_' || (bytes[i] as char).is_alphanumeric()) { i += 1; }
+            while i < bytes.len()
+                && ((bytes[i] as char) == '_' || (bytes[i] as char).is_alphanumeric())
+            {
+                i += 1;
+            }
             last_ident = Some(&prefix[start..i]);
             continue;
         }
@@ -1072,7 +1351,9 @@ fn import_path_ctx(text: &str, offset: usize) -> Option<Ctx> {
     }
 
     let open_idx = open_quote_idx?;
-    if last_ident != Some("import") { return None; }
+    if last_ident != Some("import") {
+        return None;
+    }
 
     let typed = &prefix[open_idx + 1..];
     let (dir_prefix, partial) = match typed.rfind('/') {
@@ -1080,22 +1361,37 @@ fn import_path_ctx(text: &str, offset: usize) -> Option<Ctx> {
         None => (String::new(), typed.to_string()),
     };
 
-    Some(Ctx::ImportPath { dir_prefix, partial })
+    Some(Ctx::ImportPath {
+        dir_prefix,
+        partial,
+    })
 }
 
-fn import_path_completions(schema_path: &Path, dir_prefix: &str, partial: &str) -> Vec<CompletionItem> {
-    let Some(schema_dir) = schema_path.parent() else { return Vec::new() };
+fn import_path_completions(
+    schema_path: &Path,
+    dir_prefix: &str,
+    partial: &str,
+) -> Vec<CompletionItem> {
+    let Some(schema_dir) = schema_path.parent() else {
+        return Vec::new();
+    };
     let search_dir = schema_dir.join(dir_prefix);
 
-    let Ok(entries) = fs::read_dir(&search_dir) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(&search_dir) else {
+        return Vec::new();
+    };
     let partial_lower = partial.to_lowercase(); // Windows paths are case-insensitive
 
     let mut items: Vec<CompletionItem> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') { return None; }
-            if !name.to_lowercase().starts_with(&partial_lower) { return None; }
+            if name.starts_with('.') {
+                return None;
+            }
+            if !name.to_lowercase().starts_with(&partial_lower) {
+                return None;
+            }
             let file_type = entry.file_type().ok()?;
 
             if file_type.is_dir() {
@@ -1133,7 +1429,10 @@ fn suffix_has_delta(text: &str, offset: usize) -> bool {
         match bytes[i] as char {
             '[' => depth += 1,
             ']' => {
-                if depth == 0 { i += 1; break; }
+                if depth == 0 {
+                    i += 1;
+                    break;
+                }
                 depth -= 1;
             }
             _ => {}
@@ -1142,10 +1441,14 @@ fn suffix_has_delta(text: &str, offset: usize) -> bool {
     }
 
     // skip whitespace
-    while i < bytes.len() && (bytes[i] as char).is_whitespace() { i += 1; }
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
 
     // must be followed by `(`
-    if i >= bytes.len() || bytes[i] as char != '(' { return false; }
+    if i >= bytes.len() || bytes[i] as char != '(' {
+        return false;
+    }
     i += 1;
 
     // find matching `)`, collect inner slice
@@ -1155,7 +1458,9 @@ fn suffix_has_delta(text: &str, offset: usize) -> bool {
         match bytes[i] as char {
             '(' => depth += 1,
             ')' => {
-                if depth == 0 { break; }
+                if depth == 0 {
+                    break;
+                }
                 depth -= 1;
             }
             _ => {}

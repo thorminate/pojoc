@@ -1,4 +1,4 @@
-﻿use pojoc::*;
+use pojoc::*;
 
 pub fn write_envelope(buf: &mut Vec<u8>, version: u64, payload: &[u8]) {
     let len_pos = write_envelope_header(buf, version);

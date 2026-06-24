@@ -3,6 +3,10 @@ name = "pojoc-lsp"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "pojoc-lsp"
+path = "src/main.rs"
+
 [dependencies]
 pojoc-schema = { path = "../schema" }
 pojoc-core = { path = "../core" }

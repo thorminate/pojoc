@@ -5,10 +5,6 @@ use pojoc_schema::ImportOrchestrator;
 use std::path::PathBuf;
 
 fn main() {
-    // Was include_str! — fine for a single file, but import resolution
-    // needs a real path to resolve relative `import "..."` declarations
-    // against. Assumes player.pojoc sits next to this main.rs in src/;
-    // adjust the path if your layout differs.
     let schema_path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/player.pojoc"));
 
     let mut orchestrator = ImportOrchestrator::new();

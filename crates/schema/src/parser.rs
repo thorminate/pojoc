@@ -15,7 +15,10 @@ impl Parser {
     }
 
     fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).map(|t| &t.token).unwrap_or(&Token::Eof)
+        self.tokens
+            .get(self.pos)
+            .map(|t| &t.token)
+            .unwrap_or(&Token::Eof)
     }
 
     fn current_line(&self) -> u32 {
@@ -46,7 +49,11 @@ impl Parser {
     }
 
     fn advance(&mut self) -> Token {
-        let tok = self.tokens.get(self.pos).map(|t| t.token.clone()).unwrap_or(Token::Eof);
+        let tok = self
+            .tokens
+            .get(self.pos)
+            .map(|t| t.token.clone())
+            .unwrap_or(Token::Eof);
         if !matches!(tok, Token::Eof) {
             self.pos += 1;
         }
@@ -60,12 +67,27 @@ impl Parser {
         (self.advance(), span, line)
     }
 
-    fn err_unexpected_at(&self, got: Token, expected: &'static str, span: Span, line: u32) -> ParseError {
-        ParseError::UnexpectedToken { got, expected, span, line }
+    fn err_unexpected_at(
+        &self,
+        got: Token,
+        expected: &'static str,
+        span: Span,
+        line: u32,
+    ) -> ParseError {
+        ParseError::UnexpectedToken {
+            got,
+            expected,
+            span,
+            line,
+        }
     }
 
     fn err_invalid_at(&self, message: impl Into<String>, span: Span, line: u32) -> ParseError {
-        ParseError::InvalidSyntax { message: message.into(), span, line }
+        ParseError::InvalidSyntax {
+            message: message.into(),
+            span,
+            line,
+        }
     }
 
     /// For error sites built straight off `peek()` with no advance yet —
@@ -126,14 +148,21 @@ impl Parser {
 
             let path = match self.advance_spanned() {
                 (Token::StringLiteral(s), _, _) => s.to_string(),
-                (got, span, line) => return Err(self.err_unexpected_at(got, "string path", span, line)),
+                (got, span, line) => {
+                    return Err(self.err_unexpected_at(got, "string path", span, line))
+                }
             };
 
             self.expect_keyword(Keyword::As)?;
             let alias = self.expect_ident()?;
 
             let span = imp_span.join(self.last_consumed_span());
-            imports.push(ImportDeclAst { path, alias, span, line: imp_line });
+            imports.push(ImportDeclAst {
+                path,
+                alias,
+                span,
+                line: imp_line,
+            });
         }
 
         let mut versions = Vec::new();
@@ -149,7 +178,13 @@ impl Parser {
 
         self.expect(Token::RBrace, "'}'")?;
         let span = start_span.join(self.last_consumed_span());
-        Ok(SchemaAst { name, imports, versions, span, line: start_line })
+        Ok(SchemaAst {
+            name,
+            imports,
+            versions,
+            span,
+            line: start_line,
+        })
     }
 
     fn parse_version(&mut self) -> Result<VersionAst, ParseError> {
@@ -172,12 +207,18 @@ impl Parser {
             match &block {
                 VersionBlockAst::Fields(_) => {
                     if !seen_sections.insert("fields") {
-                        return Err(self.err_invalid(format!("version {} has duplicate `fields` block", version)));
+                        return Err(self.err_invalid(format!(
+                            "version {} has duplicate `fields` block",
+                            version
+                        )));
                     }
                 }
                 VersionBlockAst::Diff(_) => {
                     if !seen_sections.insert("diff") {
-                        return Err(self.err_invalid(format!("version {} has duplicate `diff` block", version)));
+                        return Err(self.err_invalid(format!(
+                            "version {} has duplicate `diff` block",
+                            version
+                        )));
                     }
                 }
                 VersionBlockAst::TypeDef(td) => {
@@ -190,7 +231,12 @@ impl Parser {
                     self.check_decl_name_unique(&mut seen_decl_names, ud.name(), "union", version)?;
                 }
                 VersionBlockAst::BitsetDef(bd) => {
-                    self.check_decl_name_unique(&mut seen_decl_names, bd.name(), "bitset", version)?;
+                    self.check_decl_name_unique(
+                        &mut seen_decl_names,
+                        bd.name(),
+                        "bitset",
+                        version,
+                    )?;
                 }
             }
 
@@ -199,7 +245,12 @@ impl Parser {
 
         self.expect(Token::RBrace, "'}'")?;
         let span = start_span.join(self.last_consumed_span());
-        Ok(VersionAst { version, blocks, span, line: start_line })
+        Ok(VersionAst {
+            version,
+            blocks,
+            span,
+            line: start_line,
+        })
     }
 
     /// Records `name` as declared with kind `kind` ("type"/"enum"/"union"/"bitset")
@@ -224,10 +275,16 @@ impl Parser {
     fn parse_version_block(&mut self) -> Result<VersionBlockAst, ParseError> {
         match self.peek().clone() {
             Token::Keyword(Keyword::Enum) => Ok(VersionBlockAst::EnumDef(self.parse_enum_def()?)),
-            Token::Keyword(Keyword::Union) => Ok(VersionBlockAst::UnionDef(self.parse_union_def()?)),
+            Token::Keyword(Keyword::Union) => {
+                Ok(VersionBlockAst::UnionDef(self.parse_union_def()?))
+            }
             Token::Keyword(Keyword::Type) => Ok(VersionBlockAst::TypeDef(self.parse_type_def()?)),
-            Token::Keyword(Keyword::Bitset) => Ok(VersionBlockAst::BitsetDef(self.parse_bitset_def()?)),
-            Token::Keyword(Keyword::Fields) => Ok(VersionBlockAst::Fields(self.parse_fields_block()?)),
+            Token::Keyword(Keyword::Bitset) => {
+                Ok(VersionBlockAst::BitsetDef(self.parse_bitset_def()?))
+            }
+            Token::Keyword(Keyword::Fields) => {
+                Ok(VersionBlockAst::Fields(self.parse_fields_block()?))
+            }
             Token::Keyword(Keyword::Diff) => Ok(VersionBlockAst::Diff(self.parse_diff_block()?)),
             got => Err(self.err_unexpected(got, "enum / union / type / fields / diff")),
         }
@@ -245,7 +302,12 @@ impl Parser {
             self.expect(Token::At, "'@'")?;
             let version = self.expect_number()?;
             let span = ext_span.join(self.last_consumed_span());
-            Some(ExtendsAst { name: parent_name, version, span, line: ext_line })
+            Some(ExtendsAst {
+                name: parent_name,
+                version,
+                span,
+                line: ext_line,
+            })
         } else {
             None
         };
@@ -259,7 +321,13 @@ impl Parser {
         self.expect(Token::RBrace, "'}'")?;
 
         let span = start_span.join(self.last_consumed_span());
-        Ok(TypeDefAst { name, extends, body, span, line: start_line })
+        Ok(TypeDefAst {
+            name,
+            extends,
+            body,
+            span,
+            line: start_line,
+        })
     }
 
     fn parse_enum_def(&mut self) -> Result<EnumDefAst, ParseError> {
@@ -274,14 +342,25 @@ impl Parser {
             self.expect(Token::At, "'@'")?;
             let base_version = self.expect_number()?;
             let base_span = ext_span.join(self.last_consumed_span());
-            let base = ExtendsAst { name: base_name, version: base_version, span: base_span, line: ext_line };
+            let base = ExtendsAst {
+                name: base_name,
+                version: base_version,
+                span: base_span,
+                line: ext_line,
+            };
 
             self.expect(Token::LBrace, "'{'")?;
             let ops = self.parse_enum_ops()?;
             self.expect(Token::RBrace, "'}'")?;
 
             let span = start_span.join(self.last_consumed_span());
-            return Ok(EnumDefAst::Extension { name, base, ops, span, line: start_line });
+            return Ok(EnumDefAst::Extension {
+                name,
+                base,
+                ops,
+                span,
+                line: start_line,
+            });
         }
 
         self.expect(Token::LBrace, "'{'")?;
@@ -293,12 +372,23 @@ impl Parser {
             if !seen.insert(variant.clone()) {
                 return Err(self.err_invalid(format!("duplicate enum variant `{}`", variant)));
             }
-            if matches!(self.peek(), Token::Comma) { self.advance(); }
-            variants.push(EnumVariantNode { name: variant, span: v_span, line: v_line });
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            }
+            variants.push(EnumVariantNode {
+                name: variant,
+                span: v_span,
+                line: v_line,
+            });
         }
         self.expect(Token::RBrace, "'}'")?;
         let span = start_span.join(self.last_consumed_span());
-        Ok(EnumDefAst::Definition { name, variants, span, line: start_line })
+        Ok(EnumDefAst::Definition {
+            name,
+            variants,
+            span,
+            line: start_line,
+        })
     }
 
     fn parse_enum_ops(&mut self) -> Result<Vec<EnumVariantOpAst>, ParseError> {
@@ -332,7 +422,10 @@ impl Parser {
                 EnumVariantOpAst::Rename { from, .. } => from.clone(),
             };
             if !seen.insert(key.clone()) {
-                return Err(self.err_invalid(format!("variant `{}` appears more than once in enum ops", key)));
+                return Err(self.err_invalid(format!(
+                    "variant `{}` appears more than once in enum ops",
+                    key
+                )));
             }
             ops.push(op);
         }
@@ -351,14 +444,25 @@ impl Parser {
             self.expect(Token::At, "'@'")?;
             let base_version = self.expect_number()?;
             let base_span = ext_span.join(self.last_consumed_span());
-            let base = ExtendsAst { name: base_name, version: base_version, span: base_span, line: ext_line };
+            let base = ExtendsAst {
+                name: base_name,
+                version: base_version,
+                span: base_span,
+                line: ext_line,
+            };
 
             self.expect(Token::LBrace, "'{'")?;
             let ops = self.parse_bitset_ops()?;
             self.expect(Token::RBrace, "'}'")?;
 
             let span = start_span.join(self.last_consumed_span());
-            return Ok(BitsetDefAst::Extension { name, base, ops, span, line: start_line });
+            return Ok(BitsetDefAst::Extension {
+                name,
+                base,
+                ops,
+                span,
+                line: start_line,
+            });
         }
 
         self.expect(Token::LBrace, "'{'")?;
@@ -379,14 +483,21 @@ impl Parser {
         self.expect(Token::RBrace, "'}'")?;
 
         if variants.is_empty() {
-            return Err(self.err_invalid(format!("bitset `{}` must have at least one variant", name)));
+            return Err(
+                self.err_invalid(format!("bitset `{}` must have at least one variant", name))
+            );
         }
         if variants.len() > 32 {
             return Err(self.err_invalid(format!("bitset `{}` exceeds 32 variants", name)));
         }
 
         let span = start_span.join(self.last_consumed_span());
-        Ok(BitsetDefAst::Definition { name, variants, span, line: start_line })
+        Ok(BitsetDefAst::Definition {
+            name,
+            variants,
+            span,
+            line: start_line,
+        })
     }
 
     fn parse_bitset_ops(&mut self) -> Result<Vec<BitsetOpAst>, ParseError> {
@@ -402,7 +513,11 @@ impl Parser {
                     if matches!(self.peek(), Token::Comma) {
                         self.advance();
                     }
-                    BitsetOpAst::Add {name, span: op_span.join(self.last_consumed_span()), line: op_line}
+                    BitsetOpAst::Add {
+                        name,
+                        span: op_span.join(self.last_consumed_span()),
+                        line: op_line,
+                    }
                 }
                 Token::Minus => {
                     self.advance();
@@ -410,9 +525,17 @@ impl Parser {
                     if matches!(self.peek(), Token::Comma) {
                         self.advance();
                     }
-                    BitsetOpAst::Remove {name, span: op_span.join(self.last_consumed_span()), line: op_line}
+                    BitsetOpAst::Remove {
+                        name,
+                        span: op_span.join(self.last_consumed_span()),
+                        line: op_line,
+                    }
                 }
-                got => return Err(self.err_unexpected(got, "+ (add) or - (remove) in bitset extension")),
+                got => {
+                    return Err(
+                        self.err_unexpected(got, "+ (add) or - (remove) in bitset extension")
+                    )
+                }
             };
 
             let key = match &op {
@@ -420,7 +543,10 @@ impl Parser {
                 BitsetOpAst::Remove { name, .. } => name.clone(),
             };
             if !seen.insert(key.clone()) {
-                return Err(self.err_invalid(format!("variant `{}` appears more than once in bitset ops", key)));
+                return Err(self.err_invalid(format!(
+                    "variant `{}` appears more than once in bitset ops",
+                    key
+                )));
             }
             ops.push(op);
         }
@@ -439,14 +565,25 @@ impl Parser {
             self.expect(Token::At, "'@'")?;
             let base_version = self.expect_number()?;
             let base_span = ext_span.join(self.last_consumed_span());
-            let base = ExtendsAst { name: base_name, version: base_version, span: base_span, line: ext_line };
+            let base = ExtendsAst {
+                name: base_name,
+                version: base_version,
+                span: base_span,
+                line: ext_line,
+            };
 
             self.expect(Token::LBrace, "'{'")?;
             let ops = self.parse_union_ops()?;
             self.expect(Token::RBrace, "'}'")?;
 
             let span = start_span.join(self.last_consumed_span());
-            return Ok(UnionDefAst::Extension { name, base, ops, span, line: start_line });
+            return Ok(UnionDefAst::Extension {
+                name,
+                base,
+                ops,
+                span,
+                line: start_line,
+            });
         }
 
         self.expect(Token::LBrace, "'{'")?;
@@ -468,17 +605,29 @@ impl Parser {
             }
 
             let span = v_span.join(self.last_consumed_span());
-            variants.push(UnionVariantAst { name: variant_name, payload_ty, span, line: v_line });
+            variants.push(UnionVariantAst {
+                name: variant_name,
+                payload_ty,
+                span,
+                line: v_line,
+            });
         }
 
         self.expect(Token::RBrace, "'}'")?;
 
         if variants.is_empty() {
-            return Err(self.err_invalid(format!("union `{}` must have at least one variant", name)));
+            return Err(
+                self.err_invalid(format!("union `{}` must have at least one variant", name))
+            );
         }
 
         let span = start_span.join(self.last_consumed_span());
-        Ok(UnionDefAst::Definition { name, variants, span, line: start_line })
+        Ok(UnionDefAst::Definition {
+            name,
+            variants,
+            span,
+            line: start_line,
+        })
     }
 
     fn parse_union_ops(&mut self) -> Result<Vec<UnionVariantOpAst>, ParseError> {
@@ -499,10 +648,18 @@ impl Parser {
                     }
 
                     if !seen.insert(name.clone()) {
-                        return Err(self.err_invalid(format!("variant `{}` appears more than once in union ops", name)));
+                        return Err(self.err_invalid(format!(
+                            "variant `{}` appears more than once in union ops",
+                            name
+                        )));
                     }
 
-                    ops.push(UnionVariantOpAst::Add { name, payload_ty, span: op_span.join(self.last_consumed_span()), line: op_line });
+                    ops.push(UnionVariantOpAst::Add {
+                        name,
+                        payload_ty,
+                        span: op_span.join(self.last_consumed_span()),
+                        line: op_line,
+                    });
                 }
                 Token::Minus => {
                     return Err(self.err_invalid("union variants cannot be removed"));
@@ -547,19 +704,42 @@ impl Parser {
                 self.expect(Token::Equals, "'='")?;
                 let value = self.parse_default()?;
                 let span = start_span.join(self.last_consumed_span());
-                const_fields.push(ConstFieldAst { name, ty, value, span, line: start_line });
+                const_fields.push(ConstFieldAst {
+                    name,
+                    ty,
+                    value,
+                    span,
+                    line: start_line,
+                });
             } else {
-                let lazy = if is_lazy { self.advance(); true } else { false };
+                let lazy = if is_lazy {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
                 let ty = self.parse_type()?;
                 let default = if matches!(self.peek(), Token::Equals) {
                     self.advance();
                     Some(self.parse_default()?)
-                } else { None };
+                } else {
+                    None
+                };
                 let span = start_span.join(self.last_consumed_span());
-                fields.push(FieldAst { name, ty, default, lazy, span, line: start_line });
+                fields.push(FieldAst {
+                    name,
+                    ty,
+                    default,
+                    lazy,
+                    span,
+                    line: start_line,
+                });
             }
         }
-        Ok(FieldsAst { fields, const_fields })
+        Ok(FieldsAst {
+            fields,
+            const_fields,
+        })
     }
 
     fn parse_type(&mut self) -> Result<TypeAst, ParseError> {
@@ -576,7 +756,10 @@ impl Parser {
                 if matches!(self.peek(), Token::At) {
                     self.advance(); // consume @
                     let version = self.expect_number()?;
-                    TypeAst::Imported { alias: name, version }
+                    TypeAst::Imported {
+                        alias: name,
+                        version,
+                    }
                 } else if name == "vfloat" {
                     self.parse_vfloat_params()?
                 } else if name == "map" {
@@ -597,8 +780,13 @@ impl Parser {
                 loop {
                     elements.push(self.parse_type()?);
                     match self.peek().clone() {
-                        Token::Comma => { self.advance(); }
-                        Token::RParen => { self.advance(); break; }
+                        Token::Comma => {
+                            self.advance();
+                        }
+                        Token::RParen => {
+                            self.advance();
+                            break;
+                        }
                         got => return Err(self.err_unexpected(got, "',' or ')'")),
                     }
                 }
@@ -644,14 +832,18 @@ impl Parser {
                 let n = self.expect_number()? as usize;
 
                 if matches!(self.peek(), Token::Comma) {
-                    return Err(self.err_invalid("unexpected `,` after size; did you mean `(delta, N)`?"));
+                    return Err(
+                        self.err_invalid("unexpected `,` after size; did you mean `(delta, N)`?")
+                    );
                 }
 
                 self.expect(Token::RParen, "')'")?;
 
                 base = match base {
                     TypeAst::Array(inner) => TypeAst::FixedArray(inner, n),
-                    TypeAst::Named(ref name) if name == "string" || name == "str" => TypeAst::FixedString(n),
+                    TypeAst::Named(ref name) if name == "string" || name == "str" => {
+                        TypeAst::FixedString(n)
+                    }
                     TypeAst::Map(k, v) => TypeAst::FixedMap(k, v, n),
                     other => {
                         return Err(self.err_invalid(format!(
@@ -694,7 +886,10 @@ impl Parser {
                         _ => unreachable!(),
                     };
                     if !seen.insert(name.clone()) {
-                        return Err(self.err_invalid(format!("field `{}` has multiple diff operations", name)));
+                        return Err(self.err_invalid(format!(
+                            "field `{}` has multiple diff operations",
+                            name
+                        )));
                     }
                     ops.push(op);
                 }
@@ -705,7 +900,10 @@ impl Parser {
                         _ => unreachable!(),
                     };
                     if !seen.insert(name.clone()) {
-                        return Err(self.err_invalid(format!("field `{}` has multiple diff operations", name)));
+                        return Err(self.err_invalid(format!(
+                            "field `{}` has multiple diff operations",
+                            name
+                        )));
                     }
                     ops.push(op);
                 }
@@ -718,7 +916,10 @@ impl Parser {
                         _ => unreachable!(),
                     };
                     if !seen.insert(name.clone()) {
-                        return Err(self.err_invalid(format!("field `{}` has multiple diff operations", name)));
+                        return Err(self.err_invalid(format!(
+                            "field `{}` has multiple diff operations",
+                            name
+                        )));
                     }
                     ops.push(op);
                 }
@@ -747,9 +948,22 @@ impl Parser {
             let ty = self.parse_type()?;
             self.expect(Token::Equals, "'='")?;
             let value = self.parse_default()?;
-            Ok(DiffAst::AddConst { field: ConstFieldAst { name, ty, value, span: start_span.join(self.last_consumed_span()), line: start_line } })
+            Ok(DiffAst::AddConst {
+                field: ConstFieldAst {
+                    name,
+                    ty,
+                    value,
+                    span: start_span.join(self.last_consumed_span()),
+                    line: start_line,
+                },
+            })
         } else {
-            let lazy = if is_lazy { self.advance(); true } else { false };
+            let lazy = if is_lazy {
+                self.advance();
+                true
+            } else {
+                false
+            };
             let ty = self.parse_type()?;
             let default = if matches!(self.peek(), Token::Equals) {
                 self.advance();
@@ -757,7 +971,16 @@ impl Parser {
             } else {
                 None
             };
-            Ok(DiffAst::Add { field: FieldAst { name, ty, default, lazy, span: start_span.join(self.last_consumed_span()), line: start_line } })
+            Ok(DiffAst::Add {
+                field: FieldAst {
+                    name,
+                    ty,
+                    default,
+                    lazy,
+                    span: start_span.join(self.last_consumed_span()),
+                    line: start_line,
+                },
+            })
         }
     }
 
@@ -765,7 +988,11 @@ impl Parser {
         let (start_span, start_line) = self.here();
         self.advance();
         let name = self.expect_ident()?;
-        Ok(DiffAst::Remove { name, span: start_span.join(self.last_consumed_span()), line: start_line })
+        Ok(DiffAst::Remove {
+            name,
+            span: start_span.join(self.last_consumed_span()),
+            line: start_line,
+        })
     }
 
     fn parse_diff_tilde(&mut self) -> Result<DiffAst, ParseError> {
@@ -792,8 +1019,21 @@ impl Parser {
                 self.expect(Token::Equals, "'='")?;
                 let value = self.parse_default()?;
                 return Ok(match rename_to {
-                    Some(to) => DiffAst::TransformConst { from, to, ty, value, span: start_span.join(self.last_consumed_span()), line: start_line },
-                    None => DiffAst::UpdateConst { name: from, ty, value, span: start_span.join(self.last_consumed_span()), line: start_line },
+                    Some(to) => DiffAst::TransformConst {
+                        from,
+                        to,
+                        ty,
+                        value,
+                        span: start_span.join(self.last_consumed_span()),
+                        line: start_line,
+                    },
+                    None => DiffAst::UpdateConst {
+                        name: from,
+                        ty,
+                        value,
+                        span: start_span.join(self.last_consumed_span()),
+                        line: start_line,
+                    },
                 });
             }
 
@@ -805,9 +1045,27 @@ impl Parser {
         }
 
         match (rename_to, ty) {
-            (Some(to), Some(ty)) => Ok(DiffAst::Transform { from, to, ty: Some(ty), lazy, span: start_span.join(self.last_consumed_span()), line: start_line }),
-            (Some(to), None) => Ok(DiffAst::Rename { from, to, span: start_span.join(self.last_consumed_span()), line: start_line }),
-            (None, Some(ty)) => Ok(DiffAst::UpdateType { name: from, ty, lazy, span: start_span.join(self.last_consumed_span()), line: start_line }),
+            (Some(to), Some(ty)) => Ok(DiffAst::Transform {
+                from,
+                to,
+                ty: Some(ty),
+                lazy,
+                span: start_span.join(self.last_consumed_span()),
+                line: start_line,
+            }),
+            (Some(to), None) => Ok(DiffAst::Rename {
+                from,
+                to,
+                span: start_span.join(self.last_consumed_span()),
+                line: start_line,
+            }),
+            (None, Some(ty)) => Ok(DiffAst::UpdateType {
+                name: from,
+                ty,
+                lazy,
+                span: start_span.join(self.last_consumed_span()),
+                line: start_line,
+            }),
             (None, None) => Err(self.err_unexpected(self.peek().clone(), "->, : or combination")),
         }
     }
@@ -867,7 +1125,11 @@ impl Parser {
                 self.err_invalid_at(format!("Invalid float literal context: {}", f), span, line)
             })?,
             Token::IntLiteral(n) => n.parse::<f64>().map_err(|_| {
-                self.err_invalid_at(format!("Invalid number context for float translation: {}", n), span, line)
+                self.err_invalid_at(
+                    format!("Invalid number context for float translation: {}", n),
+                    span,
+                    line,
+                )
             })?,
             got => return Err(self.err_unexpected_at(got, "number", span, line)),
         };
@@ -892,7 +1154,9 @@ impl Parser {
             Token::FloatLiteral(f) => {
                 let (span, line) = self.here();
                 self.advance();
-                let val = f.parse::<f64>().map_err(|_| self.err_invalid_at(format!("Invalid float: {}", f), span, line))?;
+                let val = f.parse::<f64>().map_err(|_| {
+                    self.err_invalid_at(format!("Invalid float: {}", f), span, line)
+                })?;
                 Ok(DefaultValueAst::Float(val))
             }
             Token::IntLiteral(n) => {
@@ -944,13 +1208,19 @@ impl Parser {
                 match self.peek().clone() {
                     Token::FloatLiteral(f) => {
                         self.advance();
-                        let val = f.parse::<f64>().map_err(|_| self.err_invalid_at(format!("Invalid float: {}", f), span, line))?;
+                        let val = f.parse::<f64>().map_err(|_| {
+                            self.err_invalid_at(format!("Invalid float: {}", f), span, line)
+                        })?;
                         Ok(DefaultValueAst::Float(-val))
                     }
                     Token::IntLiteral(n) => {
                         self.advance();
                         let val = n.parse::<i128>().map_err(|_| {
-                            self.err_invalid_at(format!("Invalid integer (exceeds i64): {}", n), span, line)
+                            self.err_invalid_at(
+                                format!("Invalid integer (exceeds i64): {}", n),
+                                span,
+                                line,
+                            )
                         })?;
                         Ok(DefaultValueAst::Int(-val))
                     }
@@ -964,8 +1234,13 @@ impl Parser {
                 loop {
                     elements.push(self.parse_default()?);
                     match self.peek().clone() {
-                        Token::Comma => { self.advance(); }
-                        Token::RParen => { self.advance(); break; }
+                        Token::Comma => {
+                            self.advance();
+                        }
+                        Token::RParen => {
+                            self.advance();
+                            break;
+                        }
                         got => return Err(self.err_unexpected(got, "',' or ')'")),
                     }
                 }
@@ -988,11 +1263,21 @@ impl Parser {
                         let val = match self.advance() {
                             Token::Keyword(Keyword::True) => true,
                             Token::Keyword(Keyword::False) => false,
-                            got => return Err(self.err_unexpected_at(got, "true or false", span, line)),
+                            got => {
+                                return Err(self.err_unexpected_at(
+                                    got,
+                                    "true or false",
+                                    span,
+                                    line,
+                                ))
+                            }
                         };
 
                         if !seen.insert(flag_name.clone()) {
-                            return Err(self.err_invalid(format!("duplicate default assignment for flag `{}`", flag_name)));
+                            return Err(self.err_invalid(format!(
+                                "duplicate default assignment for flag `{}`",
+                                flag_name
+                            )));
                         }
 
                         kvs.push((flag_name, val));
@@ -1002,11 +1287,17 @@ impl Parser {
                         }
                     }
                     self.expect(Token::RParen, "')'")?;
-                    Ok(DefaultValueAst::BitsetLiteral { ty: ty.to_string(), kvs })
+                    Ok(DefaultValueAst::BitsetLiteral {
+                        ty: ty.to_string(),
+                        kvs,
+                    })
                 } else {
                     self.expect(Token::ColonColon, "'::'")?;
                     let variant = self.expect_ident()?;
-                    Ok(DefaultValueAst::EnumVariant { ty: ty.to_string(), variant })
+                    Ok(DefaultValueAst::EnumVariant {
+                        ty: ty.to_string(),
+                        variant,
+                    })
                 }
             }
             got => Err(self.err_unexpected(got, "default value")),

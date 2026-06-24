@@ -1,4 +1,4 @@
-﻿/// A byte-offset range into the original source string. This is the
+/// A byte-offset range into the original source string. This is the
 /// canonical, precise location used for LSP diagnostics, hover ranges,
 /// go-to-definition, and exact source slicing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,10 @@ impl LineIndex {
 
     /// Converts a byte offset into a 0-indexed (line, character) position.
     pub fn position(&self, source: &str, offset: usize) -> Position {
-        let line_idx = self.line_starts.binary_search(&offset).unwrap_or_else(|insert_at| insert_at - 1);
+        let line_idx = self
+            .line_starts
+            .binary_search(&offset)
+            .unwrap_or_else(|insert_at| insert_at - 1);
         let line_start = self.line_starts[line_idx];
         let clamped_end = offset.min(source.len());
 

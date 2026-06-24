@@ -1,4 +1,4 @@
-use crate::{read_varint64, Error, PojocString, PojocResult};
+use crate::{Error, PojocResult, PojocString, read_varint64};
 
 /// Read a single `u8`.
 pub fn read_u8(buf: &[u8], pos: &mut usize) -> PojocResult<u8> {
