@@ -1,4 +1,4 @@
-schema Player {
+﻿schema Player {
 
   version 1 {
     enum Status {
