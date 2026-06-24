@@ -10,7 +10,8 @@ use crate::ir::ir_types::ResolvedSchema;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::span::Span;
-use crate::{SchemaAst, SchemaError};
+use crate::{IndexableError, SchemaAst};
+
 pub struct ImportOrchestrator {
     cache: HashMap<PathBuf, Arc<ResolvedSchema>>,
     in_progress: Vec<PathBuf>,
@@ -25,7 +26,7 @@ impl ImportOrchestrator {
     }
 
     #[allow(clippy::result_large_err)]
-    pub fn resolve_root(&mut self, path: &Path) -> Result<Arc<ResolvedSchema>, SchemaError> {
+    pub fn resolve_root(&mut self, path: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let canonical = self.canonicalize(path, Span::new(0, 0), 0)?;
         self.resolve_canonical(canonical, Span::new(0, 0), 0)
     }
@@ -35,7 +36,7 @@ impl ImportOrchestrator {
         &mut self,
         ast: &SchemaAst,
         own_path: &Path,
-    ) -> Result<HashMap<String, Arc<ResolvedSchema>>, SchemaError> {
+    ) -> Result<HashMap<String, Arc<ResolvedSchema>>, AnalysisError> {
         let canonical_self = fs::canonicalize(own_path).unwrap_or_else(|_| own_path.to_path_buf());
         self.in_progress.push(canonical_self.clone());
 
@@ -63,7 +64,7 @@ impl ImportOrchestrator {
         &mut self,
         base_dir: &Path,
         decl: &ImportDeclAst,
-    ) -> Result<Arc<ResolvedSchema>, SchemaError> {
+    ) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let target = base_dir.join(&decl.path);
         let canonical = self.canonicalize(&target, decl.span, decl.line)?;
         self.resolve_canonical(canonical, decl.span, decl.line)
@@ -84,17 +85,17 @@ impl ImportOrchestrator {
         canonical: PathBuf,
         span: Span,
         line: u32,
-    ) -> Result<Arc<ResolvedSchema>, SchemaError> {
+    ) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         if let Some(cached) = self.cache.get(&canonical) {
             return Ok(cached.clone());
         }
 
         if self.in_progress.contains(&canonical) {
-            return Err(SchemaError::Analysis(AnalysisError::CircularImport {
+            return Err(AnalysisError::CircularImport {
                 path: canonical.display().to_string(),
                 span,
                 line,
-            }));
+            });
         }
 
         self.in_progress.push(canonical.clone());
@@ -107,23 +108,35 @@ impl ImportOrchestrator {
     }
 
     #[allow(clippy::result_large_err)]
-    fn load_and_analyze(&mut self, canonical: &Path) -> Result<Arc<ResolvedSchema>, SchemaError> {
+    fn load_and_analyze(&mut self, canonical: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let path_str = canonical.display().to_string();
 
-        let raw = fs::read_to_string(canonical).map_err(|_| {
-            SchemaError::Analysis(AnalysisError::ImportNotFound {
-                path: path_str.clone(),
-                span: Span::new(0, 0),
-                line: 0,
-            })
+        let raw = fs::read_to_string(canonical).map_err(|_| AnalysisError::ImportNotFound {
+            path: path_str.clone(),
+            span: Span::new(0, 0),
+            line: 0,
         })?;
         let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
 
-        let tokens = Lexer::new(source).tokenize().map_err(SchemaError::Lex)?;
+        let tokens =
+            Lexer::new(source)
+                .tokenize()
+                .map_err(|e| AnalysisError::ImportParseFailed {
+                    path: path_str.clone(),
+                    src: e.to_string(),
+                    span: e.span(),
+                    line: e.line(),
+                })?;
 
-        let ast = Parser::new(tokens)
-            .parse_schema()
-            .map_err(SchemaError::Parse)?;
+        let ast =
+            Parser::new(tokens)
+                .parse_schema()
+                .map_err(|e| AnalysisError::ImportParseFailed {
+                    path: path_str.clone(),
+                    src: e.to_string(),
+                    span: e.span(),
+                    line: e.line(),
+                })?;
 
         let base_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
         let mut imports = HashMap::new();
