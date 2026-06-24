@@ -134,7 +134,7 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [build, package-vsix]
+    needs: [ build, package-vsix ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -149,11 +149,12 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS.txt
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-          files: |
-            dist/**
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete ${{ github.ref_name }} --yes 2>/dev/null || true
+          gh release create ${{ github.ref_name }} dist/** \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
