@@ -149,14 +149,14 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
         &format!("codegen in {:.1}ms", t.elapsed().as_secs_f64() * 1000.0),
     );
 
-    if !out_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(&out_dir) {
-            eprintln!(
-                "error: could not create output dir `{}`: {e}",
-                out_dir.display()
-            );
-            return 1;
-        }
+    if !out_dir.exists()
+        && let Err(e) = std::fs::create_dir_all(&out_dir)
+    {
+        eprintln!(
+            "error: could not create output dir `{}`: {e}",
+            out_dir.display()
+        );
+        return 1;
     }
 
     let stem = input.file_stem().unwrap().to_string_lossy();
