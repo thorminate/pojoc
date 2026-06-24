@@ -49,18 +49,23 @@ pub trait DeltaElement: Copy + Default {
 macro_rules! impl_delta_unsigned32 {
     ($t:ty) => {
         impl DeltaElement for $t {
+            #[inline]
             fn write_first(out: &mut Vec<u8>, value: Self) {
                 write_varint32(out, value as u32);
             }
+            #[inline]
             fn read_first(buf: &[u8], pos: &mut usize) -> Result<Self, Error> {
                 Ok(read_varint32(buf, pos)? as $t)
             }
+            #[inline]
             fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
                 skip_varint32(buf, pos)
             }
+            #[inline]
             fn delta_to(self, prev: Self) -> i64 {
                 self as i64 - prev as i64
             }
+            #[inline]
             fn apply_delta(prev: Self, delta: i64) -> Self {
                 (prev as i64 + delta) as $t
             }
@@ -74,18 +79,23 @@ impl_delta_unsigned32!(u32);
 macro_rules! impl_delta_signed32 {
     ($t:ty) => {
         impl DeltaElement for $t {
+            #[inline]
             fn write_first(out: &mut Vec<u8>, value: Self) {
                 write_signed_varint(out, value as i64);
             }
+            #[inline]
             fn read_first(buf: &[u8], pos: &mut usize) -> Result<Self, Error> {
                 Ok(read_signed_varint(buf, pos)? as $t)
             }
+            #[inline]
             fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
                 skip_signed_varint(buf, pos)
             }
+            #[inline]
             fn delta_to(self, prev: Self) -> i64 {
                 self as i64 - prev as i64
             }
+            #[inline]
             fn apply_delta(prev: Self, delta: i64) -> Self {
                 (prev as i64 + delta) as $t
             }
@@ -188,6 +198,7 @@ pub fn write_fixed_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) 
     }
 }
 
+#[inline]
 pub fn read_fixed_delta_array<T: DeltaElement, const N: usize>(
     buf: &[u8],
     pos: &mut usize,
@@ -204,6 +215,7 @@ pub fn read_fixed_delta_array<T: DeltaElement, const N: usize>(
     Ok(out)
 }
 
+#[inline]
 pub fn skip_fixed_delta_array<T: DeltaElement, const N: usize>(
     buf: &[u8],
     pos: &mut usize,

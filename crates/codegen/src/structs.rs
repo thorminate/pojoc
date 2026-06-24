@@ -1,7 +1,7 @@
 use super::writer::CodeWriter;
 use crate::get_latest_versions;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
-use pojoc_core::types::{type_info, ResolvedTypeRef};
+use pojoc_core::types::{ResolvedTypeRef, type_info};
 use pojoc_schema::ir::ir_types::*;
 use std::collections::{HashMap, HashSet};
 
@@ -262,10 +262,8 @@ fn emit_bitset_struct(
     let mut default_bytes = vec![0u8; computed_len];
     if let Some(DefaultValue::BitsetLiteral { kvs, .. }) = find_bitset_default(name, schema) {
         for (flag_name, flag_val) in kvs {
-            if *flag_val {
-                if let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
-                    default_bytes[idx / 8] |= 1 << (idx % 8);
-                }
+            if *flag_val && let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
+                default_bytes[idx / 8] |= 1 << (idx % 8);
             }
         }
     }
@@ -370,10 +368,10 @@ fn emit_bitset_struct(
 fn find_bitset_default<'a>(name: &str, schema: &'a ResolvedSchema) -> Option<&'a DefaultValue> {
     for version in &schema.versions {
         for field in &version.fields {
-            if let Some(DefaultValue::BitsetLiteral { ty_name, .. }) = &field.default {
-                if ty_name == name {
-                    return field.default.as_ref();
-                }
+            if let Some(DefaultValue::BitsetLiteral { ty_name, .. }) = &field.default
+                && ty_name == name
+            {
+                return field.default.as_ref();
             }
         }
     }

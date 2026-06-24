@@ -6,6 +6,7 @@ const MAX_VARINT64_LEN: usize = 10;
 /// Maximum bytes a u32 varint can occupy (ceil(32/7) = 5).
 const MAX_VARINT32_LEN: usize = 5;
 
+#[inline]
 pub fn write_varint64(buf: &mut Vec<u8>, mut value: u64) {
     while value > 0x7F {
         buf.push((value as u8) | 0x80);
@@ -14,16 +15,11 @@ pub fn write_varint64(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(value as u8);
 }
 
-pub fn read_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
-    let first = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
-    *pos += 1;
-    if first & 0x80 == 0 {
-        return Ok(first as u64);
-    }
-
+#[cold]
+#[inline(never)]
+fn read_varint64_slow(first: u8, buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
     let mut result = (first & 0x7F) as u64;
     let mut shift = 7u32;
-
     for _ in 1..MAX_VARINT64_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
         *pos += 1;
@@ -33,10 +29,20 @@ pub fn read_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
         }
         shift += 7;
     }
-
     Err(Error::VarIntOverflow)
 }
 
+#[inline]
+pub fn read_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
+    let first = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
+    *pos += 1;
+    if first & 0x80 != 0 {
+        return read_varint64_slow(first, buf, pos);
+    }
+    Ok(first as u64)
+}
+
+#[inline]
 pub fn skip_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
     for _ in 0..MAX_VARINT64_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
@@ -48,20 +54,16 @@ pub fn skip_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
     Err(Error::VarIntOverflow)
 }
 
+#[inline]
 pub fn write_varint32(buf: &mut Vec<u8>, value: u32) {
     write_varint64(buf, value as u64);
 }
 
-pub fn read_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
-    let first = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
-    *pos += 1;
-    if first & 0x80 == 0 {
-        return Ok(first as u32);
-    }
-
+#[cold]
+#[inline(never)]
+fn read_varint32_slow(first: u8, buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
     let mut result = (first & 0x7F) as u64;
     let mut shift = 7u32;
-
     for _ in 1..MAX_VARINT32_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
         *pos += 1;
@@ -71,10 +73,20 @@ pub fn read_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
         }
         shift += 7;
     }
-
     Err(Error::VarIntOverflow)
 }
 
+#[inline]
+pub fn read_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
+    let first = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
+    *pos += 1;
+    if first & 0x80 != 0 {
+        return read_varint32_slow(first, buf, pos);
+    }
+    Ok(first as u32)
+}
+
+#[inline]
 pub fn skip_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
     for _ in 0..MAX_VARINT32_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
@@ -86,6 +98,7 @@ pub fn skip_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
     Err(Error::VarIntOverflow)
 }
 
+#[inline]
 pub fn varint_size(n: usize) -> usize {
     match n {
         0..=0x7F => 1,

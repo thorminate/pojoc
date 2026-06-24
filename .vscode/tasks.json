@@ -2,12 +2,28 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "build-pojoc-bin",
+      "type": "shell",
+      "command": "cargo build -p pojoc-lsp --release && cp target/release/pojoc-lsp vscode-extension/bin/pojoc-lsp && exit 0",
+      "windows": {
+        "command": "cargo build -p pojoc-lsp --release; Copy-Item target\\release\\pojoc-lsp.exe vscode-extension\\bin\\pojoc-lsp.exe; exit 0"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build"
+    },
+    {
       "label": "compile-extension",
       "type": "shell",
-      "command": "pnpm run compile",
+      "command": "pnpm run compile && exit 0",
+      "windows": {
+        "command": "pnpm run compile; exit 0"
+      },
       "options": {
         "cwd": "${workspaceFolder}/vscode-extension"
       },
+      "dependsOn": "build-pojoc-bin",
       "group": "build",
       "presentation": { "reveal": "silent" }
     }

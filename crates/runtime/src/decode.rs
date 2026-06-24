@@ -1,6 +1,7 @@
 use crate::{Error, PojocResult, PojocString, read_varint64};
 
 /// Read a single `u8`.
+#[inline]
 pub fn read_u8(buf: &[u8], pos: &mut usize) -> PojocResult<u8> {
     let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
     *pos += 1;
@@ -8,11 +9,13 @@ pub fn read_u8(buf: &[u8], pos: &mut usize) -> PojocResult<u8> {
 }
 
 /// Read a `bool` (0 = false, anything else = true).
+#[inline]
 pub fn read_bool(buf: &[u8], pos: &mut usize) -> PojocResult<bool> {
     Ok(read_u8(buf, pos)? != 0)
 }
 
 /// Read a fixed 2-byte little-endian `u16`.
+#[inline]
 pub fn read_u16(buf: &[u8], pos: &mut usize) -> PojocResult<u16> {
     let end = pos.checked_add(2).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -21,6 +24,7 @@ pub fn read_u16(buf: &[u8], pos: &mut usize) -> PojocResult<u16> {
 }
 
 /// Read a fixed 4-byte little-endian `u32`.
+#[inline]
 pub fn read_u32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
     let end = pos.checked_add(4).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -29,6 +33,7 @@ pub fn read_u32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
 }
 
 /// Read a fixed 8-byte little-endian `u64`.
+#[inline]
 pub fn read_u64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
     let end = pos.checked_add(8).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -37,6 +42,7 @@ pub fn read_u64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
 }
 
 /// Read a fixed 4-byte little-endian `f32`.
+#[inline]
 pub fn read_f32(buf: &[u8], pos: &mut usize) -> PojocResult<f32> {
     let end = pos.checked_add(4).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -45,6 +51,7 @@ pub fn read_f32(buf: &[u8], pos: &mut usize) -> PojocResult<f32> {
 }
 
 /// Read a fixed 8-byte little-endian `f64`.
+#[inline]
 pub fn read_f64(buf: &[u8], pos: &mut usize) -> PojocResult<f64> {
     let end = pos.checked_add(8).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -53,11 +60,13 @@ pub fn read_f64(buf: &[u8], pos: &mut usize) -> PojocResult<f64> {
 }
 
 /// Read a fixed 1-byte little-endian `i8`.
+#[inline]
 pub fn read_i8(buf: &[u8], pos: &mut usize) -> PojocResult<i8> {
     Ok(read_u8(buf, pos)? as i8)
 }
 
 /// Read a fixed 2-byte little-endian `i16`.
+#[inline]
 pub fn read_i16(buf: &[u8], pos: &mut usize) -> PojocResult<i16> {
     let end = pos.checked_add(2).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -66,6 +75,7 @@ pub fn read_i16(buf: &[u8], pos: &mut usize) -> PojocResult<i16> {
 }
 
 /// Read a fixed 4-byte little-endian `i32`.
+#[inline]
 pub fn read_i32(buf: &[u8], pos: &mut usize) -> PojocResult<i32> {
     let end = pos.checked_add(4).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -74,6 +84,7 @@ pub fn read_i32(buf: &[u8], pos: &mut usize) -> PojocResult<i32> {
 }
 
 /// Read a fixed 8-byte little-endian `i64`.
+#[inline]
 pub fn read_i64(buf: &[u8], pos: &mut usize) -> PojocResult<i64> {
     let end = pos.checked_add(8).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -82,6 +93,7 @@ pub fn read_i64(buf: &[u8], pos: &mut usize) -> PojocResult<i64> {
 }
 
 /// Read a length-prefixed byte slice. Returns a slice into the original buffer.
+#[inline]
 pub fn read_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a [u8]> {
     let len = read_varint64(buf, pos)? as usize;
     let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
@@ -91,6 +103,7 @@ pub fn read_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a [u8]> {
 }
 
 /// Read a fixed-length byte array.
+#[inline]
 pub fn read_fixed_bytes<const N: usize>(buf: &[u8], pos: &mut usize) -> PojocResult<[u8; N]> {
     let end = pos.checked_add(N).ok_or(Error::UnexpectedEof)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
@@ -99,6 +112,7 @@ pub fn read_fixed_bytes<const N: usize>(buf: &[u8], pos: &mut usize) -> PojocRes
 }
 
 /// Read a fixed-length array of values.
+#[inline]
 pub fn read_fixed_array<
     T: Copy + Default,
     F: Fn(&[u8], &mut usize) -> PojocResult<T>,
@@ -116,17 +130,20 @@ pub fn read_fixed_array<
 }
 
 /// Read a length-prefixed UTF-8 string.
+#[inline]
 pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
     let bytes = read_bytes(buf, pos)?;
     std::str::from_utf8(bytes).map_err(|_| Error::InvalidLength)
 }
 
 /// Read a length prefix for an array.
+#[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
     Ok(read_varint64(buf, pos)? as usize)
 }
 
 /// Read a length-prefixed UTF-8 string from `buf` at `*pos` and return it as a [`PojocString`].
+#[inline]
 pub fn read_pojoc_string(buf: &[u8], pos: &mut usize) -> PojocResult<PojocString> {
     Ok(PojocString::from(read_string(buf, pos)?))
 }
@@ -168,9 +185,7 @@ where
 pub fn skip_string(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
     let len = read_varint64(buf, pos)? as usize;
     let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
-    if end > buf.len() {
-        return Err(Error::InvalidLength);
-    }
+    buf.get(*pos..end).ok_or(Error::InvalidLength)?;
     *pos = end;
     Ok(())
 }
