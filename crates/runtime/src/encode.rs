@@ -121,7 +121,7 @@ pub fn write_envelope_header(buf: &mut Vec<u8>, version: u64) -> usize {
 
 /// Patch the `u32` length placeholder at `len_pos` with the actual payload length.
 #[inline]
-pub fn patch_envelope_length(buf: &mut Vec<u8>, len_pos: usize, payload_len: usize) {
+pub fn patch_envelope_length(buf: &mut [u8], len_pos: usize, payload_len: usize) {
     debug_assert!(
         payload_len <= u32::MAX as usize,
         "envelope payload too large for u32 length"

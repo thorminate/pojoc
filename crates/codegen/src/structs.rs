@@ -48,28 +48,24 @@ pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
-    w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]");
+    let has_default = !resolved.variants.is_empty();
+    if has_default {
+        w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]");
+    } else {
+        w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]");
+    }
     w.line("#[repr(u32)]");
     w.line(&format!("pub enum {name} {{"));
     w.indent();
-    for (_, variant) in resolved.variants.iter().enumerate() {
+    for (i, variant) in resolved.variants.iter().enumerate() {
+        if i == 0 && has_default {
+            w.line("#[default]");
+        }
         w.line(&format!("{} = {},", variant.name, variant.wire_value));
     }
     w.dedent();
     w.line("}");
     w.blank();
-
-    if let Some(first) = resolved.variants.first() {
-        w.line(&format!("impl Default for {name} {{"));
-        w.indent();
-        w.line(&format!(
-            "fn default() -> Self {{ {name}::{} }}",
-            first.name
-        ));
-        w.dedent();
-        w.line("}");
-        w.blank();
-    }
 
     w.line(&format!("impl TryFrom<u32> for {name} {{"));
     w.indent();
@@ -185,7 +181,7 @@ fn emit_bitset_struct(
     schema: &ResolvedSchema,
     w: &mut CodeWriter,
 ) {
-    let computed_len = (bs.variants.len() + 7) / 8;
+    let computed_len = bs.variants.len().div_ceil(8);
 
     // Added PartialOrd, Ord, and Hash so these can be sorted or used as keys in a HashMap/HashSet
     w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]");
@@ -222,7 +218,7 @@ fn emit_bitset_struct(
         .map(|i| format!("self.0[{i}] == 0"))
         .collect::<Vec<_>>()
         .join(" && ");
-    w.line(&format!("{empty_checks}"));
+    w.line(empty_checks.as_str());
     w.dedent();
     w.line("}");
     w.blank();
@@ -395,6 +391,7 @@ fn emit_named_struct(
     let struct_lt = if needs_lifetime { "<'buf>" } else { "" };
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
+    w.line("#[allow(clippy::type_complexity)]");
     if needs_lifetime {
         w.line("#[derive(Debug, Clone)]");
     } else {
@@ -450,6 +447,7 @@ fn emit_named_struct(
 
     if !consts.is_empty() {
         w.blank();
+        w.line("#[allow(clippy::approx_constant)]");
         w.line(&format!("impl{impl_lt_param} {name}{struct_lt} {{"));
         w.indent();
         for c in consts {

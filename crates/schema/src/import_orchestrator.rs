@@ -25,11 +25,13 @@ impl ImportOrchestrator {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn resolve_root(&mut self, path: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let canonical = self.canonicalize(path, Span::new(0, 0), 0)?;
         self.resolve_canonical(canonical, Span::new(0, 0), 0)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn resolve_imports_for(
         &mut self,
         ast: &SchemaAst,
@@ -57,6 +59,7 @@ impl ImportOrchestrator {
         Ok(imports)
     }
 
+    #[allow(clippy::result_large_err)]
     fn resolve_import(
         &mut self,
         base_dir: &Path,
@@ -67,6 +70,7 @@ impl ImportOrchestrator {
         self.resolve_canonical(canonical, decl.span, decl.line)
     }
 
+    #[allow(clippy::result_large_err)]
     fn canonicalize(&self, path: &Path, span: Span, line: u32) -> Result<PathBuf, AnalysisError> {
         fs::canonicalize(path).map_err(|_| AnalysisError::ImportNotFound {
             path: path.display().to_string(),
@@ -75,6 +79,7 @@ impl ImportOrchestrator {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn resolve_canonical(
         &mut self,
         canonical: PathBuf,
@@ -102,6 +107,7 @@ impl ImportOrchestrator {
         Ok(resolved)
     }
 
+    #[allow(clippy::result_large_err)]
     fn load_and_analyze(&mut self, canonical: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let path_str = canonical.display().to_string();
 

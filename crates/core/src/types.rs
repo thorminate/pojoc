@@ -145,7 +145,7 @@ pub struct TypeInfo {
 }
 
 impl TypeInfo {
-    pub fn size_expr(&self, accessor: &str) -> String {
+    pub fn size_expr(&self, is_ref: bool, accessor: &str) -> String {
         match self.wire_size {
             WireSize::Fixed(n) => n.to_string(),
             WireSize::Variable => {
@@ -154,7 +154,11 @@ impl TypeInfo {
                 } else if let Some(ref f) = self.size_fn {
                     format!("{f}({accessor} as usize)")
                 } else {
-                    format!("size_hint_{}(&{accessor})", self.rust_type.to_snake_case())
+                    let borrow_symbol = if is_ref { "" } else { "&" };
+                    format!(
+                        "size_hint_{}({borrow_symbol}{accessor})",
+                        self.rust_type.to_snake_case()
+                    )
                 }
             }
         }
@@ -296,7 +300,15 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         ResolvedTypeRef::FixedMap(k, v, n) => {
             let (ki, vi) = (type_info(k), type_info(v));
             TypeInfo {
-                wire_size: WireSize::Variable,
+                wire_size: if let WireSize::Fixed(k) = ki.wire_size {
+                    if let WireSize::Fixed(v) = vi.wire_size {
+                        WireSize::Fixed(k * v * n)
+                    } else {
+                        WireSize::Variable
+                    }
+                } else {
+                    WireSize::Variable
+                },
                 rust_type: format!("PojocFixedMap<{}, {}, {n}>", ki.rust_type, vi.rust_type),
                 skip_stmt: format!("for _ in 0..{n} {{ {} {} }}", ki.skip_stmt, vi.skip_stmt),
                 read_fn: format!("read_fixed_map::<{n}>"),

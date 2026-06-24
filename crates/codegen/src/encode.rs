@@ -164,7 +164,7 @@ fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
         .iter()
         .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
         .collect();
-    let header_bytes = (opt.len() + 7) / 8;
+    let header_bytes = opt.len().div_ceil(8);
     if header_bytes == 0 {
         return;
     }
@@ -389,7 +389,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
         .iter()
         .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
         .collect();
-    let header_bytes = (opt_fields.len() + 7) / 8;
+    let header_bytes = opt_fields.len().div_ceil(8);
     if header_bytes > 0 {
         w.line(&format!("let mut __header = [0u8; {header_bytes}];"));
         for (idx, fl) in opt_fields.iter().enumerate() {
@@ -646,9 +646,7 @@ fn emit_vn_cast_value(
         (Scalar(f), Scalar(t)) if is_primitive(&f.name) && is_primitive(&t.name) => {
             let f_norm = normalize_type(&f.name);
             let t_norm = normalize_type(&t.name);
-            if f_norm == t_norm {
-                emit_write_expr(from, accessor, Some(schema), is_ref, w);
-            } else if f_norm == "string" || t_norm == "string" {
+            if f_norm == t_norm || f_norm == "string" || t_norm == "string" {
                 emit_write_expr(from, accessor, Some(schema), is_ref, w);
             } else {
                 let f_info = type_info(from);
@@ -675,7 +673,7 @@ fn emit_vn_cast_value(
                     .iter()
                     .filter(|f| matches!(f.ty, Optional(_)))
                     .collect();
-                let header_bytes = (historical_opts.len() + 7) / 8;
+                let header_bytes = historical_opts.len().div_ceil(8);
                 if header_bytes > 0 {
                     w.line(&format!("let mut __nested_header = [0u8; {header_bytes}];"));
                     for (idx, f) in historical_opts.iter().enumerate() {
@@ -933,7 +931,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
                     .iter()
                     .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
                     .count();
-                let header_bytes = (historical_opts_count + 7) / 8;
+                let header_bytes = historical_opts_count.div_ceil(8);
                 if header_bytes > 0 {
                     w.line(&format!("write_fixed_bytes(buf, &[0u8; {header_bytes}]);"));
                 }
@@ -974,11 +972,13 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line("write_varint32(buf, 0u32);");
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
-            w.line(&format!("for _ in 0..{n} {{"));
-            w.indent();
-            emit_vn_default_write(inner, schema, w);
-            w.dedent();
-            w.line("}");
+            if *n > 0 {
+                w.line(&format!("for _ in 0..{n} {{"));
+                w.indent();
+                emit_vn_default_write(inner, schema, w);
+                w.dedent();
+                w.line("}");
+            }
         }
         ResolvedTypeRef::FixedDeltaArray(inner, n) => {
             let inner_rust = type_info(inner).rust_type;
@@ -995,12 +995,14 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line("write_array_len(buf, 0);");
         }
         ResolvedTypeRef::FixedMap(k, v, n) => {
-            w.line(&format!("for _ in 0..{n} {{"));
-            w.indent();
-            emit_vn_default_write(k, schema, w);
-            emit_vn_default_write(v, schema, w);
-            w.dedent();
-            w.line("}");
+            if *n > 0 {
+                w.line(&format!("for _ in 0..{n} {{"));
+                w.indent();
+                emit_vn_default_write(k, schema, w);
+                emit_vn_default_write(v, schema, w);
+                w.dedent();
+                w.line("}");
+            }
         }
         ResolvedTypeRef::Tuple(elements) => {
             for elem in elements {
@@ -1038,13 +1040,13 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
         ));
         w.indent();
         if resolved.fields.is_empty() {
-            w.line("let size = 0usize;");
+            w.line("0usize");
         } else {
             w.line("let mut size = 0usize;");
+            emit_optional_header_size(&resolved.fields, w);
+            emit_fields_size_loop(&resolved.fields, w, schema);
+            w.line("size");
         }
-        emit_optional_header_size(&resolved.fields, w);
-        emit_fields_size_loop(&resolved.fields, w, schema);
-        w.line("size");
         w.dedent();
         w.line("}");
         w.blank();
@@ -1077,7 +1079,7 @@ fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
                 _ => {
                     // use emit_size_expr with its own `size` accumulator, then rename
                     w.line("let mut size = 0usize;");
-                    emit_size_expr(&variant.payload, "__p", w, schema);
+                    emit_size_expr(&variant.payload, "__p", true, w, schema);
                     w.line("let __plen = size;");
                 }
             }
@@ -1105,7 +1107,7 @@ fn emit_optional_header_size(fields: &[FieldIR], w: &mut CodeWriter) {
         .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
         .count();
     if n > 0 {
-        w.line(&format!("size += {};", (n + 7) / 8));
+        w.line(&format!("size += {};", n.div_ceil(8)));
     }
 }
 
@@ -1128,11 +1130,11 @@ fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &Resolv
             ResolvedTypeRef::Optional(inner) => {
                 w.line(&format!("if let Some(__val) = &{accessor} {{"));
                 w.indent();
-                emit_size_expr(inner, "__val", w, schema);
+                emit_size_expr(inner, "__val", true, w, schema);
                 w.dedent();
                 w.line("}");
             }
-            _ => emit_size_expr(&field.ty, &accessor, w, schema),
+            _ => emit_size_expr(&field.ty, &accessor, false, w, schema),
         }
     }
 }
@@ -1140,50 +1142,49 @@ fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &Resolv
 fn emit_size_expr(
     ty: &ResolvedTypeRef,
     accessor: &str,
+    is_ref: bool,
     w: &mut CodeWriter,
     schema: &ResolvedSchema,
 ) {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(_) => {
-            w.line(&format!("size += {};", info.size_expr(accessor)));
+            w.line(&format!("size += {};", info.size_expr(is_ref, accessor)));
         }
         ResolvedTypeRef::Enum(_) => {
             w.line(&format!("size += varint_size({accessor} as usize);"));
         }
         ResolvedTypeRef::Union(_) => {
-            w.line(&format!("size += {};", info.size_expr(accessor)));
+            w.line(&format!("size += {};", info.size_expr(is_ref, accessor)));
         }
         ResolvedTypeRef::Bitset(id, _) => {
             let computed_len = schema
                 .bitsets
                 .bitsets
                 .get(id)
-                .map(|bs| (bs.variants.len() + 7) / 8)
+                .map(|bs| bs.variants.len().div_ceil(8))
                 .unwrap_or(1);
             w.line(&format!("size += {computed_len};"));
         }
         ResolvedTypeRef::Array(inner) => {
-            let inner_info = type_info(inner);
             w.line(&format!("size += varint_size({accessor}.len());"));
-            if let WireSize::Fixed(elem_size) = inner_info.wire_size {
-                w.line(&format!("size += {accessor}.len() * {elem_size};"));
-            } else {
-                w.line(&format!("for item in {accessor}.iter() {{"));
-                w.indent();
-                emit_size_expr(inner, "item", w, schema);
-                w.dedent();
-                w.line("}");
-            }
+            // ...
+            w.line(&format!("for __item in {accessor}.iter() {{"));
+            w.indent();
+            emit_size_expr(inner, "__item", true, w, schema);
+            w.dedent();
+            w.line("}");
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
             let inner_info = type_info(inner);
             if let WireSize::Fixed(elem_size) = inner_info.wire_size {
-                w.line(&format!("size += {n} * {elem_size};"));
-            } else {
+                if *n > 0 {
+                    w.line(&format!("size += {n} * {elem_size};"));
+                }
+            } else if *n > 0 {
                 w.line(&format!("for __item in {accessor}.iter() {{"));
                 w.indent();
-                emit_size_expr(inner, "__item", w, schema);
+                emit_size_expr(inner, "__item", true, w, schema);
                 w.dedent();
                 w.line("}");
             }
@@ -1202,11 +1203,10 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            w.line(&format!("size += varint_size({accessor}.len());"));
             w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
             w.indent();
-            emit_size_expr(k_ty, "__k", w, schema);
-            emit_size_expr(v_ty, "__v", w, schema);
+            emit_size_expr(k_ty, "__k", true, w, schema);
+            emit_size_expr(v_ty, "__v", true, w, schema);
             w.dedent();
             w.line("}");
         }
@@ -1216,7 +1216,9 @@ fn emit_size_expr(
             if let (WireSize::Fixed(ks), WireSize::Fixed(vs)) =
                 (&k_info.wire_size, &v_info.wire_size)
             {
-                w.line(&format!("size += {n} * ({ks} + {vs});"));
+                if *n > 0 {
+                    w.line(&format!("size += {n} * ({ks} + {vs});"));
+                }
             } else {
                 let k_rust = k_info.rust_type;
                 let v_rust = v_info.rust_type;
@@ -1228,31 +1230,34 @@ fn emit_size_expr(
                 w.line(&format!(
                     "let (__k, __v) = {accessor}.inner.get(__i).unwrap_or(&__default);"
                 ));
-                emit_size_expr(k_ty, "__k", w, schema);
-                emit_size_expr(v_ty, "__v", w, schema);
+                emit_size_expr(k_ty, "__k", true, w, schema);
+                emit_size_expr(v_ty, "__v", true, w, schema);
                 w.dedent();
                 w.line("}");
             }
         }
         ResolvedTypeRef::Tuple(elements) => {
             for (i, elem) in elements.iter().enumerate() {
-                emit_size_expr(elem, &format!("{accessor}.{i}"), w, schema);
+                emit_size_expr(elem, &format!("{accessor}.{i}"), is_ref, w, schema);
             }
         }
         ResolvedTypeRef::VFloat { .. } => {
-            w.line(&format!("size += {};", info.size_expr(accessor)));
+            w.line(&format!("size += {};", info.size_expr(is_ref, accessor)));
         }
         ResolvedTypeRef::Optional(inner) => {
             w.line("size += 1;");
-            w.line(&format!("{accessor}.as_ref().map(|__val| {{"));
+            w.line(&format!("if let Some(__val) = {accessor}.as_ref() {{"));
             w.indent();
-            emit_size_expr(inner, "__val", w, schema);
+            emit_size_expr(inner, "__val", true, w, schema);
             w.dedent();
-            w.line("});");
+            w.line("}");
         }
         ResolvedTypeRef::ImportedSchema { alias, .. } => {
             let module = alias.to_snake_case();
-            w.line(&format!("size += {module}::size_hint(&{accessor});"));
+            let ref_prefix = if is_ref { "" } else { "&" };
+            w.line(&format!(
+                "size += {module}::size_hint({ref_prefix}{accessor});"
+            ));
         }
     }
 }

@@ -26,8 +26,10 @@ pub struct SchemaIndex {
 
 impl SchemaIndex {
     pub fn build(ast: &SchemaAst) -> Self {
-        let mut idx = SchemaIndex::default();
-        idx.import_aliases = ast.imports.iter().map(|i| i.alias.clone()).collect();
+        let mut idx = SchemaIndex {
+            import_aliases: ast.imports.iter().map(|i| i.alias.clone()).collect(),
+            ..Default::default()
+        };
         let mut running_fields: Vec<String> = Vec::new();
         let mut type_running: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -122,7 +124,7 @@ impl SchemaIndex {
                 Some(ver) => self
                     .declared_versions
                     .get(*name)
-                    .map_or(false, |vs| vs.iter().any(|&dv| dv <= ver)),
+                    .is_some_and(|vs| vs.iter().any(|&dv| dv <= ver)),
             })
             .collect()
     }
@@ -340,12 +342,11 @@ fn scan(tokens: &[Tok]) -> ScanState {
             }
             Tok::Newline => {
                 if depth == 0 {
-                    if matches!(stack.last(), Some(BlockKind::Diff)) {
-                        if let [Tok::Punct(op), Tok::Ident(name), ..] = pending.as_slice() {
-                            if matches!(op, '-' | '~') {
-                                consumed.last_mut().unwrap().insert(name.clone());
-                            }
-                        }
+                    if matches!(stack.last(), Some(BlockKind::Diff))
+                        && let [Tok::Punct(op), Tok::Ident(name), ..] = pending.as_slice()
+                        && matches!(op, '-' | '~')
+                    {
+                        consumed.last_mut().unwrap().insert(name.clone());
                     }
                     pending.clear();
                 }
@@ -480,10 +481,10 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     let pending = &state.pending;
     let stack = &state.stack;
 
-    if let Some(type_tokens) = type_tokens_before_default(pending) {
-        if let Some(kind) = classify_default_type(type_tokens, idx, current_version(stack)) {
-            return Ctx::DefaultValue(kind);
-        }
+    if let Some(type_tokens) = type_tokens_before_default(pending)
+        && let Some(kind) = classify_default_type(type_tokens, idx, current_version(stack))
+    {
+        return Ctx::DefaultValue(kind);
     }
 
     if let [.., Tok::Ident(name), Tok::Punct('@')] = pending.as_slice() {
@@ -561,39 +562,36 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     if matches!(pending.last(), Some(Tok::Ident(k)) if k == "extends") {
         return Ctx::ExtendsName(current_version(stack));
     }
-    if pending.len() >= 2 {
-        if let (Tok::Ident(k), Tok::Ident(_)) =
+    if pending.len() >= 2
+        && let (Tok::Ident(k), Tok::Ident(_)) =
             (&pending[pending.len() - 2], &pending[pending.len() - 1])
-        {
-            if k == "extends" {
-                return Ctx::ExtendsName(current_version(stack));
-            }
-        }
+        && k == "extends"
+    {
+        return Ctx::ExtendsName(current_version(stack));
     }
 
     if matches!(pending.last(), Some(Tok::Punct(':'))) {
         return Ctx::TypePosition(current_version(stack));
     }
 
-    if pending.len() >= 2 {
-        if let (Tok::Punct(':'), Tok::Ident(_)) =
+    if pending.len() >= 2
+        && let (Tok::Punct(':'), Tok::Ident(_)) =
             (&pending[pending.len() - 2], &pending[pending.len() - 1])
-        {
-            return Ctx::TypePosition(current_version(stack));
-        }
+    {
+        return Ctx::TypePosition(current_version(stack));
     }
 
     if let Some((owner, version)) = find_diff_context(stack) {
         match pending.as_slice() {
             [] => return Ctx::DiffLineStart,
-            [Tok::Punct(op)] if matches!(op, '-' | '~') => {
+            [Tok::Punct('-' | '~')] => {
                 return Ctx::DiffOldFieldName {
                     owner_type: owner,
                     version,
                     already_used: state.consumed.last().cloned().unwrap_or_default(),
                 };
             }
-            [Tok::Punct(op), Tok::Ident(_)] if matches!(op, '-' | '~') => {
+            [Tok::Punct('-' | '~'), Tok::Ident(_)] => {
                 return Ctx::DiffOldFieldName {
                     owner_type: owner,
                     version,
@@ -615,10 +613,10 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
         return Ctx::SchemaBody { next_version };
     }
 
-    if let Some(BlockKind::Version(version)) = stack.last() {
-        if pending.is_empty() {
-            return Ctx::VersionBody(*version);
-        }
+    if let Some(BlockKind::Version(version)) = stack.last()
+        && pending.is_empty()
+    {
+        return Ctx::VersionBody(*version);
     }
 
     if matches!(stack.last(), Some(BlockKind::Root)) && pending.is_empty() {
@@ -733,7 +731,7 @@ pub fn completions_for_position(
         } => idx
             .versions_for(&name)
             .iter()
-            .filter(|v| before_version.map_or(true, |bv| **v < bv))
+            .filter(|v| before_version.is_none_or(|bv| **v < bv))
             .map(|v| CompletionItem {
                 label: v.to_string(),
                 kind: Some(CompletionItemKind::CONSTANT),

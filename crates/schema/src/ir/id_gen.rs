@@ -10,9 +10,15 @@ impl IdGen {
         Self { next: 1 }
     }
 
-    pub fn next(&mut self) -> FieldId {
+    pub fn next_id(&mut self) -> FieldId {
         let id = self.next;
         self.next += 1;
         FieldId(id)
+    }
+}
+
+impl Default for IdGen {
+    fn default() -> Self {
+        Self::new()
     }
 }

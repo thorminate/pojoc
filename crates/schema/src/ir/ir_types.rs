@@ -91,7 +91,6 @@ impl EnumRegistry {
             .iter()
             .filter(|(id, _)| id.name == name && id.version < before_version)
             .max_by_key(|(id, _)| id.version)
-            .map(|(id, e)| (id, e))
     }
 }
 
@@ -149,7 +148,6 @@ impl UnionRegistry {
             .iter()
             .filter(|(id, _)| id.name == name && id.version < before_version)
             .max_by_key(|(id, _)| id.version)
-            .map(|(id, u)| (id, u))
     }
 }
 

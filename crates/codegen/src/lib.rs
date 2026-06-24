@@ -200,7 +200,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 .filter(|(id, _)| id.name == *ty_name)
                 .max_by_key(|(id, _)| id.version)
             {
-                let computed_len = (resolved_bitset.variants.len() + 7) / 8;
+                let computed_len = resolved_bitset.variants.len().div_ceil(8);
                 let mut default_bytes = vec![0u8; computed_len];
                 for (flag_name, flag_val) in kvs {
                     if *flag_val {

@@ -116,12 +116,11 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     match serde_json::from_value::<DidChangeTextDocumentParams>(notif.params) {
                         Ok(params) => {
                             let uri = params.text_document.uri;
-                            if let Some(change) = params.content_changes.into_iter().last() {
-                                if let Err(e) =
+                            if let Some(change) = params.content_changes.into_iter().last()
+                                && let Err(e) =
                                     handle_text_update(&mut store, uri, change.text, &connection)
-                                {
-                                    eprintln!("failed to handle didChange: {e}");
-                                }
+                            {
+                                eprintln!("failed to handle didChange: {e}");
                             }
                         }
                         Err(e) => eprintln!("malformed didChange params: {e}"),
@@ -199,6 +198,7 @@ fn to_lsp_position(pos: SchemaPosition) -> Position {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_ast(source: &str) -> Result<SchemaAst, SchemaError> {
     let tokens = Lexer::new(source).tokenize()?;
     Parser::new(tokens)
@@ -206,6 +206,7 @@ fn parse_ast(source: &str) -> Result<SchemaAst, SchemaError> {
         .map_err(SchemaError::from)
 }
 
+#[allow(clippy::result_large_err)]
 fn analyze(
     ast: &SchemaAst,
     own_path: &Path,

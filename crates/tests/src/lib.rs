@@ -1,12 +1,15 @@
 pub mod proto_player {
+    #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/proto_player.rs"));
 }
 
 pub mod player_capnp {
+    #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/schemas/player_capnp.rs"));
 }
 
 pub mod flatbuf {
+    #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/flatbuf.rs"));
 }
 
