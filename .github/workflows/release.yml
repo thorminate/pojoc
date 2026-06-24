@@ -38,22 +38,28 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} --package pojoc-cli
+          cargo build --release --target ${{ matrix.target }} --package pojoc-lsp
 
-      - name: Stage artifact (Unix)
+      - name: Stage artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/pojoc \
              dist/pojoc-${{ github.ref_name }}-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/pojoc-lsp \
+             dist/pojoc-lsp-${{ github.ref_name }}-${{ matrix.target }}
 
-      - name: Stage artifact (Windows)
+      - name: Stage artifacts (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/pojoc.exe \
              dist/pojoc-${{ github.ref_name }}-${{ matrix.target }}.exe
+          cp target/${{ matrix.target }}/release/pojoc-lsp.exe \
+             dist/pojoc-lsp-${{ github.ref_name }}-${{ matrix.target }}.exe
 
       - uses: actions/upload-artifact@v4
         with:
