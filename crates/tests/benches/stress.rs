@@ -1,17 +1,17 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
 
 use pojoc_tests::{
     fb_player, player_capnp as capnp_player,
-    pojoc_player::{self, runtime::*, Player, Status, Vector3},
+    pojoc_player::{self, Player, Status, Vector3, runtime::*},
     proto_player,
 };
 
 use capnp::message::ReaderOptions;
 use flatbuffers::FlatBufferBuilder;
 use pojoc_tests::fb_player::StatsArgs;
-use pojoc_tests::pojoc_player::{Class, Flags, Perks, Region, Stats, Transform, AABB};
+use pojoc_tests::pojoc_player::{AABB, Class, Flags, Perks, Region, Stats, Transform};
 use prost::Message;
 
 static WORDS: &[&str] = &[

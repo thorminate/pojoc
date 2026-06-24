@@ -172,7 +172,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         ResolvedTypeRef::Enum(id) => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: id.name.clone(),
-            skip_stmt: "{ let _ = read_varint32(buf, pos)?; }".into(),
+            skip_stmt: "{ let _ = read_varint32(__buf, __pos)?; }".into(),
             read_fn: format!("read_enum::<{}>", id.name),
             write_fn: "encode_varint".into(),
             default_expr: format!("{}::default()", id.name),
@@ -184,7 +184,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: id.name.clone(),
-                skip_stmt: format!("skip_{lower}(buf, pos)?;"),
+                skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: format!("{}::default()", id.name),
@@ -195,9 +195,9 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         ResolvedTypeRef::Bitset(id, width) => {
             let lower = id.name.to_snake_case();
             let (skip, wire) = match width {
-                1 => ("let _ = read_u8(buf, pos)?;", WireSize::Fixed(1)),
-                2 => ("let _ = read_u16(buf, pos)?;", WireSize::Fixed(2)),
-                _ => ("let _ = read_u32(buf, pos)?;", WireSize::Fixed(4)),
+                1 => ("let _ = read_u8(__buf, __pos)?;", WireSize::Fixed(1)),
+                2 => ("let _ = read_u16(__buf, __pos)?;", WireSize::Fixed(2)),
+                _ => ("let _ = read_u32(__buf, __pos)?;", WireSize::Fixed(4)),
             };
             TypeInfo {
                 wire_size: wire,
@@ -214,8 +214,8 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             wire_size: WireSize::Fixed(*n),
             rust_type: format!("[u8; {n}]"),
             skip_stmt: format!(
-                "{{ let __end = pos.checked_add({n}).ok_or(Error::InvalidLength)?; \
-                 if __end > buf.len() {{ return Err(Error::InvalidLength); }} *pos = __end; }}"
+                "{{ let __end = __pos.checked_add({n}).ok_or(Error::InvalidLength)?; \
+                 if __end > __buf.len() {{ return Err(Error::InvalidLength); }} *__pos = __end; }}"
             ),
             read_fn: format!("read_fixed_bytes::<{n}>"),
             write_fn: format!("write_fixed_bytes::<{n}>"),
@@ -245,7 +245,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocVec<{}>", i.rust_type),
                 skip_stmt: format!(
-                    "{{ let __n = read_array_len(buf, pos)?; for _ in 0..__n {{ {} }} }}",
+                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
                     i.skip_stmt
                 ),
                 read_fn: "read_array".into(),
@@ -260,7 +260,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocVec<{}>", i.rust_type),
-                skip_stmt: format!("skip_delta_array::<{}>(buf, pos)?;", i.rust_type),
+                skip_stmt: format!("skip_delta_array::<{}>(__buf, __pos)?;", i.rust_type),
                 read_fn: format!("read_delta_array::<{}>", i.rust_type),
                 write_fn: format!("write_delta_array::<{}>", i.rust_type),
                 default_expr: "PojocVec::new()".into(),
@@ -273,7 +273,10 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("[{}; {n}]", i.rust_type),
-                skip_stmt: format!("skip_fixed_delta_array::<{}, {n}>(buf, pos)?;", i.rust_type),
+                skip_stmt: format!(
+                    "skip_fixed_delta_array::<{}, {n}>(__buf, __pos)?;",
+                    i.rust_type
+                ),
                 read_fn: format!("read_fixed_delta_array::<{}, {n}>", i.rust_type),
                 write_fn: format!("write_fixed_delta_array::<{}, {n}>", i.rust_type),
                 default_expr: "std::array::from_fn(|_| Default::default())".into(),
@@ -287,7 +290,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocMap<{}, {}>", ki.rust_type, vi.rust_type),
                 skip_stmt: format!(
-                    "{{ let __n = read_array_len(buf, pos)?; for _ in 0..__n {{ {} {} }} }}",
+                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} {} }} }}",
                     ki.skip_stmt, vi.skip_stmt
                 ),
                 read_fn: "/* map expressions are inlined */".into(),
@@ -352,7 +355,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         ResolvedTypeRef::VFloat { min, backing, .. } => TypeInfo {
             wire_size: WireSize::Fixed(backing.wire_size()),
             rust_type: "f32".into(),
-            skip_stmt: format!("let _ = {}(buf, pos)?;", backing.read_fn()),
+            skip_stmt: format!("let _ = {}(__buf, __pos)?;", backing.read_fn()),
             read_fn: backing.read_fn().into(),
             write_fn: backing.write_fn().into(),
             default_expr: format!("{}f32", *min as f32),
@@ -365,7 +368,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("Option<{}>", i.rust_type),
-                skip_stmt: format!("if read_u8(buf, pos)? != 0 {{ {inner_stmt} }}"),
+                skip_stmt: format!("if read_u8(__buf, __pos)? != 0 {{ {inner_stmt} }}"),
                 read_fn: "/* optional expressions are handled inline */".into(),
                 write_fn: "/* optional expressions are handled inline */".into(),
                 default_expr: "None".into(),
@@ -383,7 +386,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: rust_type.clone(),
-                skip_stmt: format!("{module}::skip_v{version}(buf, pos)?;"),
+                skip_stmt: format!("{module}::skip_v{version}(__buf, __pos)?;"),
                 read_fn: format!("{module}::decode_v{version}"),
                 write_fn: format!("{module}::encode_v{version}"),
                 default_expr: format!("{rust_type}::default()"),
@@ -399,7 +402,7 @@ fn scalar_info(name: &str) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Fixed($size),
                 rust_type: $rust.into(),
-                skip_stmt: format!("let _ = {}(buf, pos)?;", $read),
+                skip_stmt: format!("let _ = {}(__buf, __pos)?;", $read),
                 read_fn: $read.into(),
                 write_fn: $write.into(),
                 default_expr: $default.into(),
@@ -423,7 +426,7 @@ fn scalar_info(name: &str) -> TypeInfo {
         "varint32" => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: "u32".into(),
-            skip_stmt: "skip_varint32(buf, pos)?;".into(),
+            skip_stmt: "skip_varint32(__buf, __pos)?;".into(),
             read_fn: "read_varint32".into(),
             write_fn: "write_varint32".into(),
             default_expr: "0u32".into(),
@@ -432,7 +435,7 @@ fn scalar_info(name: &str) -> TypeInfo {
         "varint64" => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: "u64".into(),
-            skip_stmt: "skip_varint64(buf, pos)?;".into(),
+            skip_stmt: "skip_varint64(__buf, __pos)?;".into(),
             read_fn: "read_varint64".into(),
             write_fn: "write_varint64".into(),
             default_expr: "0u64".into(),
@@ -441,7 +444,7 @@ fn scalar_info(name: &str) -> TypeInfo {
         "string" => TypeInfo {
             wire_size: WireSize::Variable,
             rust_type: "PojocString".into(),
-            skip_stmt: "skip_string(buf, pos)?;".into(),
+            skip_stmt: "skip_string(__buf, __pos)?;".into(),
             read_fn: "read_pojoc_string".into(),
             write_fn: "write_pojoc_string".into(),
             default_expr: "PojocString::default()".into(),
@@ -452,7 +455,7 @@ fn scalar_info(name: &str) -> TypeInfo {
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: other.into(),
-                skip_stmt: format!("skip_{lower}(buf, pos)?;"),
+                skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: "Default::default()".into(),
