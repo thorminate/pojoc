@@ -1,12 +1,12 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
 
 use pojoc_tests::{
     fb_player, player_capnp as capnp_player,
     pojoc_player::{
-        self, runtime::*, Class, Flags, Perks, Player, Region, Stats, Status, Transform, Vector3,
-        AABB,
+        self, AABB, Class, Flags, Perks, Player, Region, Stats, Status, Transform, Vector3,
+        runtime::*,
     },
     proto_player,
 };

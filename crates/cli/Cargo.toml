@@ -1,7 +1,7 @@
 [package]
 name = "pojoc-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "pojoc"
@@ -10,3 +10,4 @@ path = "src/main.rs"
 [dependencies]
 pojoc-schema   = { path = "../schema" }
 pojoc-codegen = { path = "../codegen" }
+clap = { workspace = true, features = ["derive"] }

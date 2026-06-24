@@ -5,7 +5,7 @@ mod structs;
 pub mod writer;
 
 use heck::ToSnakeCase;
-use pojoc_core::types::{is_primitive, ResolvedTypeRef};
+use pojoc_core::types::{ResolvedTypeRef, is_primitive};
 use pojoc_schema::ir::ir_types::{DefaultValue, ResolvedSchema};
 use std::collections::{HashMap, HashSet};
 use writer::CodeWriter;
@@ -203,12 +203,11 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 let computed_len = resolved_bitset.variants.len().div_ceil(8);
                 let mut default_bytes = vec![0u8; computed_len];
                 for (flag_name, flag_val) in kvs {
-                    if *flag_val {
-                        if let Some(idx) =
+                    if *flag_val
+                        && let Some(idx) =
                             resolved_bitset.variants.iter().position(|v| v == flag_name)
-                        {
-                            default_bytes[idx / 8] |= 1 << (idx % 8);
-                        }
+                    {
+                        default_bytes[idx / 8] |= 1 << (idx % 8);
                     }
                 }
                 let inner = default_bytes

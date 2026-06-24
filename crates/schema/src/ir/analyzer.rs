@@ -1702,7 +1702,7 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
                     version,
                     span,
                     line,
-                })
+                });
             }
             other => {
                 return Err(AnalysisError::TypeMismatch {
@@ -1711,7 +1711,7 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
                     version,
                     span,
                     line,
-                })
+                });
             }
         },
         _ => {
@@ -1721,7 +1721,7 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
                 version,
                 span,
                 line,
-            })
+            });
         }
     };
 
@@ -1738,7 +1738,7 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
                 version,
                 span,
                 line,
-            })
+            });
         }
     }
 

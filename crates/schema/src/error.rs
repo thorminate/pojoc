@@ -102,7 +102,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("diff op '{op}' references unknown field '{field}' in type '{type_name}' version {version}, line {line}")]
+    #[error(
+        "diff op '{op}' references unknown field '{field}' in type '{type_name}' version {version}, line {line}"
+    )]
     FieldNotFound {
         op: &'static str,
         field: String,
@@ -120,7 +122,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("field '{field}' in version {version} has a fixed {kind} of {expected} entries but default value has {got} entries, line {line}")]
+    #[error(
+        "field '{field}' in version {version} has a fixed {kind} of {expected} entries but default value has {got} entries, line {line}"
+    )]
     FixedSizeDefaultLengthMismatch {
         field: String,
         kind: &'static str,
@@ -139,7 +143,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("field '{field}' in version {version} has a fixed string of {expected} bytes but default value is {got} bytes, line {line}")]
+    #[error(
+        "field '{field}' in version {version} has a fixed string of {expected} bytes but default value is {got} bytes, line {line}"
+    )]
     FixedStringDefaultLengthMismatch {
         field: String,
         expected: usize,
@@ -149,7 +155,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("version {version}: {kind} fixed size {n} is too large, consider not using a fixed size, line {line}")]
+    #[error(
+        "version {version}: {kind} fixed size {n} is too large, consider not using a fixed size, line {line}"
+    )]
     FixedSizeTooLarge {
         kind: &'static str,
         n: usize,
@@ -190,7 +198,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}")]
+    #[error(
+        "field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}"
+    )]
     VFloatDefaultOutOfRange {
         field: String,
         value: f64,
@@ -201,7 +211,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}")]
+    #[error(
+        "field '{field}' in version {version}'s default value {value} is out of range (min: {min}, max: {max}), line {line}"
+    )]
     IntDefaultOutOfRange {
         field: String,
         value: i128,
@@ -213,7 +225,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("version {version}: `(delta)` can only be applied to integer array elements (u8/u16/u32/u64/i8/i16/i32/i64), not `{type_desc}`, line {line}")]
+    #[error(
+        "version {version}: `(delta)` can only be applied to integer array elements (u8/u16/u32/u64/i8/i16/i32/i64), not `{type_desc}`, line {line}"
+    )]
     InvalidDeltaElementType {
         type_desc: String,
         version: i128,
@@ -221,7 +235,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("version {version}: reserved variant name `{name}` cannot be used in type `{type_name}`, line {line}")]
+    #[error(
+        "version {version}: reserved variant name `{name}` cannot be used in type `{type_name}`, line {line}"
+    )]
     ReservedVariantName {
         name: String,
         type_name: String,
@@ -230,7 +246,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("version {version}: lazy field '{field}' added via diff must be optional (`lazy T?`) so older messages can default to None, line {line}")]
+    #[error(
+        "version {version}: lazy field '{field}' added via diff must be optional (`lazy T?`) so older messages can default to None, line {line}"
+    )]
     LazyDiffFieldMustBeOptional {
         field: String,
         version: i128,
@@ -245,7 +263,9 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("import '{alias}' references version {version} but schema only has versions up to {max}, line {line}")]
+    #[error(
+        "import '{alias}' references version {version} but schema only has versions up to {max}, line {line}"
+    )]
     ImportVersionOutOfRange {
         alias: String,
         version: i128,
