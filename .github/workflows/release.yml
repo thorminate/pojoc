@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'   # also catches v1.0.0-beta.1 etc.
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
   contents: write
@@ -19,12 +19,20 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            vsix_target: linux-x64
+            lsp_bin: pojoc-lsp
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            vsix_target: win32-x64
+            lsp_bin: pojoc-lsp.exe
           - target: x86_64-apple-darwin
             os: macos-latest
+            vsix_target: darwin-x64
+            lsp_bin: pojoc-lsp
           - target: aarch64-apple-darwin
             os: macos-latest
+            vsix_target: darwin-arm64
+            lsp_bin: pojoc-lsp
 
     steps:
       - uses: actions/checkout@v4
@@ -63,12 +71,68 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: bin-${{ matrix.vsix_target }}
           path: dist/
+
+  package-vsix:
+    name: Package VSIX (${{ matrix.vsix_target }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - vsix_target: linux-x64
+            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+          - vsix_target: win32-x64
+            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
+          - vsix_target: darwin-x64
+            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-apple-darwin
+          - vsix_target: darwin-arm64
+            lsp_bin: pojoc-lsp-${{ github.ref_name }}-aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-${{ matrix.vsix_target }}
+          path: lsp-bin/
+
+      - name: Copy LSP binary into extension
+        shell: bash
+        run: |
+          mkdir -p vscode-extension/bin
+          cp lsp-bin/${{ matrix.lsp_bin }} vscode-extension/bin/pojoc-lsp
+          chmod +x vscode-extension/bin/pojoc-lsp
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: latest
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: vscode-extension
+
+      - name: Compile extension
+        run: pnpm run compile
+        working-directory: vscode-extension
+
+      - name: Package VSIX
+        run: pnpm vsce package --target ${{ matrix.vsix_target }} --no-dependencies -o pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
+        working-directory: vscode-extension
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vsix_target }}
+          path: vscode-extension/pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
 
   release:
     name: Publish Release
-    needs: build
+    needs: [build, package-vsix]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

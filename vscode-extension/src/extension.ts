@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as path from "path";
+import * as fs from "fs";
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -8,9 +10,18 @@ import {
 
 let client: LanguageClient;
 
-export function activate(context: vscode.ExtensionContext) {
+function getBinaryPath(context: vscode.ExtensionContext): string {
+  const ext = process.platform === "win32" ? ".exe" : "";
+  const bundled = path.join(context.extensionPath, "bin", `pojoc-lsp${ext}`);
+  if (fs.existsSync(bundled)) {
+    return bundled;
+  }
   const config = vscode.workspace.getConfiguration("pojoc");
-  const serverPath = config.get<string>("serverPath", "pojoc-lsp");
+  return config.get<string>("serverPath", "pojoc-lsp");
+}
+
+export function activate(context: vscode.ExtensionContext) {
+  const serverPath = getBinaryPath(context);
 
   const serverOptions: ServerOptions = {
     command: serverPath,

@@ -72,7 +72,10 @@ fn render_error(err: &AnalysisError, root: &Path) {
     let span    = err.span();
     let message = err.to_string();
 
-    let display_path = source_path.display().to_string();
+    let display_path = source_path
+        .canonicalize()
+        .unwrap_or_else(|_| source_path.to_path_buf());
+    let display_path = display_path.display().to_string();
     let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
 
     let line_idx  = line.saturating_sub(1);
