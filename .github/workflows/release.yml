@@ -124,7 +124,7 @@ jobs:
         working-directory: vscode-extension
 
       - name: Package VSIX
-        run: pnpm vsce package --target ${{ matrix.vsix_target }} -o pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
+        run: pnpm vsce package --target ${{ matrix.vsix_target }} --no-dependencies -o pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
         working-directory: vscode-extension
 
       - uses: actions/upload-artifact@v4
