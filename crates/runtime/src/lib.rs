@@ -22,45 +22,56 @@ pub struct PojocFixedMap<K, V, const N: usize = 0> {
 }
 
 impl<K, V, const N: usize> PojocFixedMap<K, V, N> {
+    #[inline]
     pub const fn new() -> Self {
         Self {
             inner: PojocVec::new_const(),
         }
     }
 
+    #[inline]
     pub fn with_capacity(n: usize) -> Self {
         Self {
             inner: PojocVec::with_capacity(n),
         }
     }
 
+    #[inline]
     pub fn push(&mut self, val: (K, V)) {
         self.inner.push(val);
     }
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &(K, V)> {
         self.inner.iter()
     }
+    #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+    #[inline]
     pub fn clear(&mut self) {
         self.inner.clear();
     }
+    #[inline]
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.inner.iter().map(|(k, _)| k)
     }
+    #[inline]
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.inner.iter().map(|(_, v)| v)
     }
+    #[inline]
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
         self.inner.iter_mut().map(|(_, v)| v)
     }
 }
 
 impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
+    #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -72,6 +83,7 @@ impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
             .map(|(_, v)| v)
     }
 
+    #[inline]
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
@@ -83,6 +95,7 @@ impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
             .map(|(_, v)| v)
     }
 
+    #[inline]
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -91,6 +104,7 @@ impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
         self.get(key).is_some()
     }
 
+    #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if let Some((_, v)) = self.inner.iter_mut().find(|(k, _)| *k == key) {
             Some(std::mem::replace(v, value))
@@ -100,6 +114,7 @@ impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
         }
     }
 
+    #[inline]
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
@@ -111,6 +126,7 @@ impl<K: Eq, V, const N: usize> PojocFixedMap<K, V, N> {
 }
 
 impl<K: Default, V: Default, const N: usize> Default for PojocFixedMap<K, V, N> {
+    #[inline]
     fn default() -> Self {
         let mut map = Self::with_capacity(N);
         for _ in 0..N {
@@ -123,6 +139,7 @@ impl<K: Default, V: Default, const N: usize> Default for PojocFixedMap<K, V, N> 
 impl<K, V, const N: usize> IntoIterator for PojocFixedMap<K, V, N> {
     type Item = (K, V);
     type IntoIter = smallvec::IntoIter<[(K, V); 8]>;
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.inner.into_iter()
     }
@@ -131,6 +148,7 @@ impl<K, V, const N: usize> IntoIterator for PojocFixedMap<K, V, N> {
 impl<'a, K, V, const N: usize> IntoIterator for &'a PojocFixedMap<K, V, N> {
     type Item = &'a (K, V);
     type IntoIter = std::slice::Iter<'a, (K, V)>;
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter()
     }
@@ -139,12 +157,14 @@ impl<'a, K, V, const N: usize> IntoIterator for &'a PojocFixedMap<K, V, N> {
 impl<'a, K, V, const N: usize> IntoIterator for &'a mut PojocFixedMap<K, V, N> {
     type Item = &'a mut (K, V);
     type IntoIter = std::slice::IterMut<'a, (K, V)>;
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter_mut()
     }
 }
 
 impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
+    #[inline]
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut map = Self::new();
         for (k, v) in iter {
@@ -164,14 +184,17 @@ pub struct LazyView<'buf, T> {
 }
 
 impl<'buf, T> LazyView<'buf, T> {
+    #[inline]
     pub fn new(buf: &'buf [u8], decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>) -> Self {
         Self { buf, decode_fn }
     }
 
+    #[inline]
     pub fn get(&self) -> PojocResult<T> {
         (self.decode_fn)(self.buf, &mut 0)
     }
 
+    #[inline]
     pub fn raw_bytes(&self) -> &'buf [u8] {
         self.buf
     }

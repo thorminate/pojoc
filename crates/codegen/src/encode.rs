@@ -25,12 +25,16 @@ pub fn emit_size_hint(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let ordered = lineage_ordered_fields(schema);
 
-    w.line(&format!("pub fn size_hint(value: &{name}) -> usize {{"));
+    w.line(&format!("pub fn size_hint(__value: &{name}) -> usize {{"));
     w.indent();
-    w.line("let mut size = 5usize;");
-    emit_optional_header_size(&ordered, w);
-    emit_fields_size_loop(&ordered, w, schema);
-    w.line("size");
+    if ordered.is_empty() {
+        w.line("5usize");
+    } else {
+        w.line("let mut size = 5usize;");
+        emit_optional_header_size(&ordered, w);
+        emit_fields_size_loop(&ordered, w, schema);
+        w.line("size");
+    }
     w.dedent();
     w.line("}");
     w.blank();
@@ -80,28 +84,28 @@ fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let (_, resolved) = latest[name];
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}(buf: &mut Vec<u8>, value: &{name}) {{",
+            "fn write_{}(__buf: &mut Vec<u8>, __value: &{name}) {{",
             name.to_snake_case()
         ));
         w.indent();
-        w.line("match value {");
+        w.line("match __value {");
         w.indent();
         for variant in &resolved.variants {
             w.line(&format!("{name}::{}(__payload) => {{", variant.name));
             w.indent();
-            w.line(&format!("write_varint64(buf, {});", variant.discriminant));
+            w.line(&format!("write_varint64(__buf, {});", variant.discriminant));
             w.line("let mut __tmp = Vec::new();");
             emit_union_payload_write(&variant.payload, w);
-            w.line("write_varint32(buf, __tmp.len() as u32);");
-            w.line("buf.extend_from_slice(&__tmp);");
+            w.line("write_varint32(__buf, __tmp.len() as u32);");
+            w.line("__buf.extend_from_slice(&__tmp);");
             w.dedent();
             w.line("}");
         }
         w.line(&format!("{name}::Unknown {{ discriminant, data }} => {{"));
         w.indent();
-        w.line("write_varint64(buf, *discriminant);");
-        w.line("write_varint32(buf, data.len() as u32);");
-        w.line("buf.extend_from_slice(data);");
+        w.line("write_varint64(__buf, *discriminant);");
+        w.line("write_varint32(__buf, data.len() as u32);");
+        w.line("__buf.extend_from_slice(data);");
         w.dedent();
         w.line("}");
         w.dedent();
@@ -123,11 +127,11 @@ fn emit_bitset_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     for name in names {
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}(buf: &mut Vec<u8>, value: &{name}) {{",
+            "fn write_{}(__buf: &mut Vec<u8>, __value: &{name}) {{",
             name.to_snake_case()
         ));
         w.indent();
-        w.line("write_fixed_bytes(buf, &value.0);");
+        w.line("write_fixed_bytes(__buf, &__value.0);");
         w.dedent();
         w.line("}");
         w.blank();
@@ -140,14 +144,14 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     names.sort();
     for name in names {
         let (_, resolved) = latest[name];
-        let (buf, val) = if resolved.fields.is_empty() {
+        let (__buf, val) = if resolved.fields.is_empty() {
             ("_buf", "_value")
         } else {
-            ("buf", "value")
+            ("__buf", "__value")
         };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}({buf}: &mut Vec<u8>, {val}: &{name}) {{",
+            "fn write_{}({__buf}: &mut Vec<u8>, {val}: &{name}) {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -171,13 +175,13 @@ fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
     w.line(&format!("let mut __header = [0u8; {header_bytes}];"));
     for (idx, f) in opt.iter().enumerate() {
         w.line(&format!(
-            "if value.{}.is_some() {{ __header[{}] |= 1 << {}; }}",
+            "if __value.{}.is_some() {{ __header[{}] |= 1 << {}; }}",
             f.name,
             idx / 8,
             idx % 8
         ));
     }
-    w.line("write_fixed_bytes(buf, &__header);");
+    w.line("write_fixed_bytes(__buf, &__header);");
 }
 
 fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut CodeWriter) {
@@ -186,17 +190,17 @@ fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut C
             let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
             if is_optional {
                 w.line(&format!(
-                    "buf.extend_from_slice(value.{}.raw_bytes());",
+                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
                     field.name
                 ));
             } else {
                 w.line(&format!(
-                    "if !value.{}.raw_bytes().is_empty() {{",
+                    "if !__value.{}.raw_bytes().is_empty() {{",
                     field.name
                 ));
                 w.indent();
                 w.line(&format!(
-                    "buf.extend_from_slice(value.{}.raw_bytes());",
+                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
                     field.name
                 ));
                 w.dedent();
@@ -208,7 +212,7 @@ fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut C
             }
             continue;
         }
-        let accessor = format!("value.{}", field.name);
+        let accessor = format!("__value.{}", field.name);
         match &field.ty {
             ResolvedTypeRef::Optional(inner) => {
                 w.line(&format!("if let Some(__val) = &{accessor} {{"));
@@ -234,12 +238,12 @@ fn emit_write_expr(
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
                 w.line(&format!(
-                    "{}(buf, {}{accessor});",
+                    "{}(__buf, {}{accessor});",
                     info.write_fn,
                     if is_ref { "" } else { "&" }
                 ));
             } else {
-                w.line(&format!("{}(buf, {accessor});", info.write_fn));
+                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             }
         }
 
@@ -253,16 +257,16 @@ fn emit_write_expr(
                     .unwrap_or(0);
                 w.line(&format!(
                     "{{ let __disc = {accessor} as u32; \
-                     write_varint64(buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                     write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
                 ));
             } else {
-                w.line(&format!("write_varint64(buf, {accessor} as u64);"));
+                w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
             }
         }
 
         ResolvedTypeRef::Union(id) => {
             w.line(&format!(
-                "write_{}(buf, {}{accessor});",
+                "write_{}(__buf, {}{accessor});",
                 id.name.to_snake_case(),
                 if is_ref { "" } else { "&" }
             ));
@@ -270,7 +274,7 @@ fn emit_write_expr(
 
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!(
-                "write_{}(buf, {}{accessor});",
+                "write_{}(__buf, {}{accessor});",
                 id.name.to_snake_case(),
                 if is_ref { "" } else { "&" }
             ));
@@ -278,14 +282,14 @@ fn emit_write_expr(
 
         ResolvedTypeRef::Scalar(_) => {
             w.line(&format!(
-                "{}(buf, {}{accessor});",
+                "{}(__buf, {}{accessor});",
                 info.write_fn,
                 if is_ref { "" } else { "&" }
             ));
         }
 
         ResolvedTypeRef::Array(inner) => {
-            w.line(&format!("write_array_len(buf, {accessor}.len());"));
+            w.line(&format!("write_array_len(__buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, true, w);
@@ -302,23 +306,23 @@ fn emit_write_expr(
         }
 
         ResolvedTypeRef::DeltaArray(_) => {
-            w.line(&format!("write_delta_array(buf, {accessor}.as_slice());"));
+            w.line(&format!("write_delta_array(__buf, {accessor}.as_slice());"));
         }
 
         ResolvedTypeRef::FixedDeltaArray(_, _) => {
-            w.line(&format!("write_fixed_delta_array(buf, &{accessor}[..]);"));
+            w.line(&format!("write_fixed_delta_array(__buf, &{accessor}[..]);"));
         }
 
         ResolvedTypeRef::FixedString(_) => {
             w.line(&format!(
-                "{}(buf, {}{accessor});",
+                "{}(__buf, {}{accessor});",
                 info.write_fn,
                 if is_ref { "" } else { "&" }
             ));
         }
 
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            w.line(&format!("write_array_len(buf, {accessor}.len());"));
+            w.line(&format!("write_array_len(__buf, {accessor}.len());"));
             w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
             w.indent();
             emit_write_expr(k_ty, &deref_if_copy(k_ty, "__k"), vn, true, w);
@@ -349,7 +353,7 @@ fn emit_write_expr(
             min, step, backing, ..
         } => {
             w.line(&format!(
-                "{}(buf, (({accessor} as f64 - {min}f64) / {step}f64).round() as {});",
+                "{}(__buf, (({accessor} as f64 - {min}f64) / {step}f64).round() as {});",
                 info.write_fn,
                 backing.rust_int_type()
             ));
@@ -360,17 +364,17 @@ fn emit_write_expr(
             w.indent();
             w.line("Some(__val) => {");
             w.indent();
-            w.line("write_u8(buf, 1);");
+            w.line("write_u8(__buf, 1);");
             emit_write_expr(inner, &deref_if_copy(inner, "__val"), vn, true, w);
             w.dedent();
             w.line("}");
-            w.line("None => write_u8(buf, 0),");
+            w.line("None => write_u8(__buf, 0),");
             w.dedent();
             w.line("}");
         }
 
         ResolvedTypeRef::ImportedSchema { .. } => {
-            w.line(&format!("{}(buf, &{accessor});", info.write_fn));
+            w.line(&format!("{}(__buf, &{accessor});", info.write_fn));
         }
     }
 }
@@ -380,7 +384,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
     let v = vl.version;
 
     w.line(&format!(
-        "pub fn encode_v{v}(buf: &mut Vec<u8>, value: &{name}) {{"
+        "pub fn encode_v{v}(__buf: &mut Vec<u8>, __value: &{name}) {{"
     ));
     w.indent();
 
@@ -395,7 +399,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
         for (idx, fl) in opt_fields.iter().enumerate() {
             emit_vn_optional_header_bit(schema, fl, idx / 8, idx % 8, w);
         }
-        w.line("write_fixed_bytes(buf, &__header);");
+        w.line("write_fixed_bytes(__buf, &__header);");
     }
 
     for fl in &vl.fields {
@@ -431,11 +435,11 @@ fn emit_vn_optional_header_bit(
                 .lazy;
             if target_is_lazy {
                 w.line(&format!(
-                    "if !value.{target_name}.raw_bytes().is_empty() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    "if !__value.{target_name}.raw_bytes().is_empty() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
             } else {
                 w.line(&format!(
-                    "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    "if __value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
             }
         }
@@ -454,7 +458,7 @@ fn emit_vn_optional_header_bit(
             if !target_is_lazy {
                 if matches!(to, ResolvedTypeRef::Optional(_)) {
                     w.line(&format!(
-                        "if value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                        "if __value.{target_name}.is_some() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                     ));
                 } else {
                     w.line(&format!("__header[{byte_idx}] |= 1 << {bit_idx};"));
@@ -484,16 +488,16 @@ fn emit_vn_optional_body(
                 .lazy;
             if target_is_lazy {
                 w.line(&format!(
-                    "if !value.{target_name}.raw_bytes().is_empty() {{"
+                    "if !__value.{target_name}.raw_bytes().is_empty() {{"
                 ));
                 w.indent();
                 w.line(&format!(
-                    "buf.extend_from_slice(value.{target_name}.raw_bytes());"
+                    "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
                 ));
                 w.dedent();
                 w.line("}");
             } else {
-                w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                 w.indent();
                 emit_write_expr(
                     inner_src,
@@ -523,7 +527,7 @@ fn emit_vn_optional_body(
             if !target_is_lazy {
                 match (from, to) {
                     (ResolvedTypeRef::Optional(f_inner), ResolvedTypeRef::Optional(t_inner)) => {
-                        w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                        w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                         w.indent();
                         emit_vn_cast_value(
                             schema,
@@ -541,13 +545,13 @@ fn emit_vn_optional_body(
                             schema,
                             f_inner,
                             t_inner,
-                            &format!("value.{target_name}"),
+                            &format!("__value.{target_name}"),
                             false,
                             w,
                         );
                     }
                     _ => {
-                        w.line(&format!("if let Some(__val) = &value.{target_name} {{"));
+                        w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                         w.indent();
                         emit_write_expr(
                             inner_src,
@@ -583,15 +587,15 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
                 let is_optional = matches!(fl.source_ty, ResolvedTypeRef::Optional(_));
                 if is_optional {
                     w.line(&format!(
-                        "buf.extend_from_slice(value.{target_name}.raw_bytes());"
+                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
                     ));
                 } else {
                     w.line(&format!(
-                        "if !value.{target_name}.raw_bytes().is_empty() {{"
+                        "if !__value.{target_name}.raw_bytes().is_empty() {{"
                     ));
                     w.indent();
                     w.line(&format!(
-                        "buf.extend_from_slice(value.{target_name}.raw_bytes());"
+                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
                     ));
                     w.dedent();
                     w.line("} else {");
@@ -603,7 +607,7 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
             } else {
                 emit_write_expr(
                     &fl.source_ty,
-                    &format!("value.{target_name}"),
+                    &format!("__value.{target_name}"),
                     Some(schema),
                     false,
                     w,
@@ -627,7 +631,14 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
             if target_is_lazy {
                 emit_vn_default_write(from, schema, w);
             } else {
-                emit_vn_cast_value(schema, from, to, &format!("value.{target_name}"), false, w);
+                emit_vn_cast_value(
+                    schema,
+                    from,
+                    to,
+                    &format!("__value.{target_name}"),
+                    false,
+                    w,
+                );
             }
         }
     }
@@ -651,7 +662,7 @@ fn emit_vn_cast_value(
             } else {
                 let f_info = type_info(from);
                 w.line(&format!(
-                    "{}(buf, {accessor} as {});",
+                    "{}(__buf, {accessor} as {});",
                     f_info.write_fn, f_info.rust_type
                 ));
             }
@@ -684,7 +695,7 @@ fn emit_vn_cast_value(
                             idx % 8
                         ));
                     }
-                    w.line("write_fixed_bytes(buf, &__nested_header);");
+                    w.line("write_fixed_bytes(__buf, &__nested_header);");
                 }
 
                 let current_type_version = schema
@@ -745,7 +756,7 @@ fn emit_vn_cast_value(
                 .unwrap_or(0);
             w.line(&format!(
                 "{{ let __disc = {accessor} as u32; \
-                 write_varint64(buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                 write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
             ));
         }
 
@@ -759,7 +770,7 @@ fn emit_vn_cast_value(
             VFloat { .. },
         ) => {
             w.line(&format!(
-                "{wfn}(buf, (({accessor} as f64 - {f_min}f64) / {f_step}f64).round() as {ri});",
+                "{wfn}(__buf, (({accessor} as f64 - {f_min}f64) / {f_step}f64).round() as {ri});",
                 wfn = f_backing.write_fn(),
                 ri = f_backing.rust_int_type(),
             ));
@@ -770,7 +781,7 @@ fn emit_vn_cast_value(
             w.line(&format!(
                 "{{ let mut __tmp = [0u8; {f_n}]; \
                  __tmp[..{copy_n}].copy_from_slice(&{accessor}[..{copy_n}]); \
-                 write_fixed_bytes::<{f_n}>(buf, &__tmp); }}"
+                 write_fixed_bytes::<{f_n}>(__buf, &__tmp); }}"
             ));
         }
 
@@ -817,7 +828,7 @@ fn emit_vn_cast_value(
         (FixedDeltaArray(elem_ty, f_n), FixedDeltaArray(_, t_n)) => {
             if f_n <= t_n {
                 w.line(&format!(
-                    "write_fixed_delta_array(buf, &{accessor}[..{f_n}]);"
+                    "write_fixed_delta_array(__buf, &{accessor}[..{f_n}]);"
                 ));
             } else {
                 let elem_rust = type_info(elem_ty).rust_type;
@@ -828,14 +839,14 @@ fn emit_vn_cast_value(
                     "let mut __tmp: [{elem_rust}; {f_n}] = [{elem_default}; {f_n}];"
                 ));
                 w.line(&format!("__tmp[..{t_n}].copy_from_slice(&{accessor}[..]);"));
-                w.line("write_fixed_delta_array(buf, &__tmp[..]);");
+                w.line("write_fixed_delta_array(__buf, &__tmp[..]);");
                 w.dedent();
                 w.line("}");
             }
         }
 
         (Array(f_elem), DeltaArray(_)) => {
-            w.line(&format!("write_array_len(buf, {accessor}.len());"));
+            w.line(&format!("write_array_len(__buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_write_expr(f_elem, &deref_if_copy(f_elem, "__item"), None, true, w);
@@ -844,7 +855,7 @@ fn emit_vn_cast_value(
         }
 
         (DeltaArray(_), Array(_)) => {
-            w.line(&format!("write_delta_array(buf, {accessor}.as_slice());"));
+            w.line(&format!("write_delta_array(__buf, {accessor}.as_slice());"));
         }
 
         (FixedMap(fk, fv, f_n), FixedMap(_, _, _)) => {
@@ -868,18 +879,18 @@ fn emit_vn_cast_value(
         }
 
         (Bitset(_, width), Scalar(_)) => match width {
-            1 => w.line(&format!("write_u8(buf, {accessor} as u8);")),
-            2 => w.line(&format!("write_u16(buf, {accessor} as u16);")),
-            _ => w.line(&format!("write_u32(buf, {accessor} as u32);")),
+            1 => w.line(&format!("write_u8(__buf, {accessor} as u8);")),
+            2 => w.line(&format!("write_u16(__buf, {accessor} as u16);")),
+            _ => w.line(&format!("write_u32(__buf, {accessor} as u32);")),
         },
 
         (Scalar(f), Bitset(_, width)) if is_primitive(&f.name) => match width {
-            1 => w.line(&format!("write_u8(buf, {accessor}.0[0]);")),
+            1 => w.line(&format!("write_u8(__buf, {accessor}.0[0]);")),
             2 => w.line(&format!(
-                "write_u16(buf, u16::from_le_bytes([{accessor}.0[0], {accessor}.0[1]]));"
+                "write_u16(__buf, u16::from_le_bytes([{accessor}.0[0], {accessor}.0[1]]));"
             )),
             _ => w.line(&format!(
-                "write_u32(buf, u32::from_le_bytes(\
+                "write_u32(__buf, u32::from_le_bytes(\
                      [{accessor}.0[0], {accessor}.0[1], {accessor}.0[2], {accessor}.0[3]]));"
             )),
         },
@@ -917,9 +928,12 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
-                w.line(&format!("{}(buf, &{});", info.write_fn, info.default_expr));
+                w.line(&format!(
+                    "{}(__buf, &{});",
+                    info.write_fn, info.default_expr
+                ));
             } else {
-                w.line(&format!("{}(buf, {});", info.write_fn, info.default_expr));
+                w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
             }
         }
         ResolvedTypeRef::Scalar(id) => {
@@ -933,7 +947,9 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
                     .count();
                 let header_bytes = historical_opts_count.div_ceil(8);
                 if header_bytes > 0 {
-                    w.line(&format!("write_fixed_bytes(buf, &[0u8; {header_bytes}]);"));
+                    w.line(&format!(
+                        "write_fixed_bytes(__buf, &[0u8; {header_bytes}]);"
+                    ));
                 }
 
                 for field in &historical_struct.fields {
@@ -943,7 +959,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
                 }
             } else {
                 w.line(&format!(
-                    "write_{}(buf, &{}::default());",
+                    "write_{}(__buf, &{}::default());",
                     id.name.to_snake_case(),
                     id.name
                 ));
@@ -952,24 +968,24 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.line("}");
         }
         ResolvedTypeRef::Enum(_) => {
-            w.line("write_varint64(buf, 0u64);");
+            w.line("write_varint64(__buf, 0u64);");
         }
         ResolvedTypeRef::Union(_) => {
-            w.line("write_varint64(buf, 0u64);");
-            w.line("write_varint32(buf, 0u32);");
+            w.line("write_varint64(__buf, 0u64);");
+            w.line("write_varint32(__buf, 0u32);");
         }
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!(
-                "write_{}(buf, &{}::default());",
+                "write_{}(__buf, &{}::default());",
                 id.name.to_snake_case(),
                 id.name
             ));
         }
         ResolvedTypeRef::Array(_) => {
-            w.line("write_array_len(buf, 0);");
+            w.line("write_array_len(__buf, 0);");
         }
         ResolvedTypeRef::DeltaArray(_) => {
-            w.line("write_varint32(buf, 0u32);");
+            w.line("write_varint32(__buf, 0u32);");
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
             if *n > 0 {
@@ -984,15 +1000,15 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             let inner_rust = type_info(inner).rust_type;
             let inner_default = type_info(inner).default_expr;
             w.line(&format!(
-                "write_fixed_delta_array(buf, &[{inner_rust}::default(); {n}][..]);"
+                "write_fixed_delta_array(__buf, &[{inner_rust}::default(); {n}][..]);"
             ));
             let _ = inner_default;
         }
         ResolvedTypeRef::FixedString(n) => {
-            w.line(&format!("write_fixed_bytes::<{n}>(buf, &[0u8; {n}]);"));
+            w.line(&format!("write_fixed_bytes::<{n}>(__buf, &[0u8; {n}]);"));
         }
         ResolvedTypeRef::Map(_, _) => {
-            w.line("write_array_len(buf, 0);");
+            w.line("write_array_len(__buf, 0);");
         }
         ResolvedTypeRef::FixedMap(k, v, n) => {
             if *n > 0 {
@@ -1011,7 +1027,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
         }
         ResolvedTypeRef::VFloat { backing, .. } => {
             w.line(&format!(
-                "{}(buf, 0{});",
+                "{}(__buf, 0{});",
                 backing.write_fn(),
                 backing.rust_int_type()
             ));
@@ -1019,7 +1035,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
         ResolvedTypeRef::Optional(_) => {}
         ResolvedTypeRef::ImportedSchema { .. } => {
             w.line(&format!(
-                "{}(buf, &{}::default());",
+                "{}(__buf, &{}::default());",
                 info.write_fn, info.rust_type
             ));
         }
@@ -1035,7 +1051,7 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line("#[allow(dead_code)]");
         w.line("#[allow(unused_variables)]");
         w.line(&format!(
-            "fn size_hint_{}(value: &{name}) -> usize {{",
+            "fn size_hint_{}(__value: &{name}) -> usize {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -1062,11 +1078,11 @@ fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let (_, resolved) = latest[name];
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn size_hint_{}(value: &{name}) -> usize {{",
+            "fn size_hint_{}(__value: &{name}) -> usize {{",
             name.to_snake_case()
         ));
         w.indent();
-        w.line("match value {");
+        w.line("match __value {");
         w.indent();
         for variant in &resolved.variants {
             w.line(&format!("{name}::{}(__p) => {{", variant.name));
@@ -1116,16 +1132,19 @@ fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &Resolv
         if field.lazy {
             let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
             if is_optional {
-                w.line(&format!("size += value.{}.raw_bytes().len();", field.name));
+                w.line(&format!(
+                    "size += __value.{}.raw_bytes().len();",
+                    field.name
+                ));
             } else {
                 w.line(&format!(
-                    "size += if value.{name}.raw_bytes().is_empty() {{ 16 }} else {{ value.{name}.raw_bytes().len() }};",
+                    "size += if __value.{name}.raw_bytes().is_empty() {{ 16 }} else {{ __value.{name}.raw_bytes().len() }};",
                     name = field.name
                 ));
             }
             continue;
         }
-        let accessor = format!("value.{}", field.name);
+        let accessor = format!("__value.{}", field.name);
         match &field.ty {
             ResolvedTypeRef::Optional(inner) => {
                 w.line(&format!("if let Some(__val) = &{accessor} {{"));
@@ -1274,7 +1293,7 @@ fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
         _ => {
             w.line("{");
             w.indent();
-            w.line("let buf = &mut __tmp;");
+            w.line("let __buf = &mut __tmp;");
             let accessor = deref_if_copy(payload, "__payload");
             emit_write_expr(payload, &accessor, None, true, w);
             w.dedent();

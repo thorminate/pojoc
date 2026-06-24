@@ -149,7 +149,7 @@ impl Parser {
             let path = match self.advance_spanned() {
                 (Token::StringLiteral(s), _, _) => s.to_string(),
                 (got, span, line) => {
-                    return Err(self.err_unexpected_at(got, "string path", span, line))
+                    return Err(self.err_unexpected_at(got, "string path", span, line));
                 }
             };
 
@@ -534,7 +534,7 @@ impl Parser {
                 got => {
                     return Err(
                         self.err_unexpected(got, "+ (add) or - (remove) in bitset extension")
-                    )
+                    );
                 }
             };
 
@@ -825,7 +825,7 @@ impl Parser {
                         return Err(self.err_invalid(format!(
                             "`(delta)` is only valid on integer arrays, not `{:?}`",
                             other
-                        )))
+                        )));
                     }
                 };
             } else {
@@ -839,19 +839,18 @@ impl Parser {
 
                 self.expect(Token::RParen, "')'")?;
 
-                base = match base {
-                    TypeAst::Array(inner) => TypeAst::FixedArray(inner, n),
-                    TypeAst::Named(ref name) if name == "string" || name == "str" => {
-                        TypeAst::FixedString(n)
-                    }
-                    TypeAst::Map(k, v) => TypeAst::FixedMap(k, v, n),
-                    other => {
-                        return Err(self.err_invalid(format!(
+                base =
+                    match base {
+                        TypeAst::Array(inner) => TypeAst::FixedArray(inner, n),
+                        TypeAst::Named(ref name) if name == "string" || name == "str" => {
+                            TypeAst::FixedString(n)
+                        }
+                        TypeAst::Map(k, v) => TypeAst::FixedMap(k, v, n),
+                        other => return Err(self.err_invalid(format!(
                             "`(N)` suffix is only valid on arrays, maps and `string`, not `{:?}`",
                             other
-                        )))
-                    }
-                };
+                        ))),
+                    };
             }
         }
 
@@ -1090,7 +1089,7 @@ impl Parser {
                     return Err(self.err_invalid(format!(
                         "unknown vfloat parameter `{}` (expected `min`, `max`, or `step`)",
                         other
-                    )))
+                    )));
                 }
             };
 
@@ -1269,7 +1268,7 @@ impl Parser {
                                     "true or false",
                                     span,
                                     line,
-                                ))
+                                ));
                             }
                         };
 

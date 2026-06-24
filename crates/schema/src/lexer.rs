@@ -261,7 +261,7 @@ impl Lexer {
                         ch: '"',
                         span: Span::new(start_byte, self.byte_pos),
                         line: start_line,
-                    })
+                    });
                 }
             }
         }
@@ -381,7 +381,7 @@ impl Lexer {
                                 ch: c,
                                 span: Span::new(start_byte, start_byte + c.len_utf8()),
                                 line: start_line,
-                            })
+                            });
                         }
                     };
 

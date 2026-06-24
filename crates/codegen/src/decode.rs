@@ -33,20 +33,10 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
     for name in names {
         let (_, resolved) = latest[name];
-        let buf_param = if resolved.fields.is_empty() {
-            "_buf"
-        } else {
-            "buf"
-        };
-        let pos_param = if resolved.fields.is_empty() {
-            "_pos"
-        } else {
-            "pos"
-        };
         let fn_name = format!("read_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<{name}> {{"
+            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
         ));
         w.indent();
 
@@ -98,20 +88,10 @@ fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
     for name in names {
         let (_, resolved) = latest[name];
-        let buf_param = if resolved.fields.is_empty() {
-            "_buf"
-        } else {
-            "buf"
-        };
-        let pos_param = if resolved.fields.is_empty() {
-            "_pos"
-        } else {
-            "pos"
-        };
         let fn_name = format!("skip_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<()> {{"
+            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<()> {{"
         ));
         w.indent();
 
@@ -180,16 +160,16 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
         let fn_name = format!("read_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{name}> {{"
+            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
         ));
         w.indent();
-        w.line("let __discriminant = read_varint64(buf, pos)?;");
-        w.line("let __len = read_varint32(buf, pos)? as usize;");
-        w.line("let __payload_start = *pos;");
+        w.line("let __discriminant = read_varint64(__buf, __pos)?;");
+        w.line("let __len = read_varint32(__buf, __pos)? as usize;");
+        w.line("let __payload_start = *__pos;");
         w.line(
             "let __payload_end = __payload_start.checked_add(__len).ok_or(Error::InvalidLength)?;",
         );
-        w.line("if __payload_end > buf.len() { return Err(Error::InvalidLength); }");
+        w.line("if __payload_end > __buf.len() { return Err(Error::InvalidLength); }");
         w.line("let __result = match __discriminant {");
         w.indent();
         for variant in &resolved.variants {
@@ -201,14 +181,14 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
         }
         w.line("other => {");
         w.indent();
-        w.line("let data = buf[__payload_start..__payload_end].to_vec();");
-        w.line("*pos = __payload_end;");
+        w.line("let data = __buf[__payload_start..__payload_end].to_vec();");
+        w.line("*__pos = __payload_end;");
         w.line(&format!("{name}::Unknown {{ discriminant: other, data }}"));
         w.dedent();
         w.line("}");
         w.dedent();
         w.line("};");
-        w.line("if *pos != __payload_end { return Err(Error::InvalidLength); }");
+        w.line("if *__pos != __payload_end { return Err(Error::InvalidLength); }");
         w.line("Ok(__result)");
         w.dedent();
         w.line("}");
@@ -225,14 +205,14 @@ fn emit_union_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let fn_name = format!("skip_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<()> {{"
+            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<()> {{"
         ));
         w.indent();
-        w.line("let _ = read_varint64(buf, pos)?;");
-        w.line("let __len = read_varint32(buf, pos)? as usize;");
-        w.line("let __end = pos.checked_add(__len).ok_or(Error::InvalidLength)?;");
-        w.line("if __end > buf.len() { return Err(Error::InvalidLength); }");
-        w.line("*pos = __end;");
+        w.line("let _ = read_varint64(__buf, __pos)?;");
+        w.line("let __len = read_varint32(__buf, __pos)? as usize;");
+        w.line("let __end = __pos.checked_add(__len).ok_or(Error::InvalidLength)?;");
+        w.line("if __end > __buf.len() { return Err(Error::InvalidLength); }");
+        w.line("*__pos = __end;");
         w.line("Ok(())");
         w.dedent();
         w.line("}");
@@ -256,11 +236,11 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let fn_name = format!("read_{}", name.to_snake_case());
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{name}> {{"
+            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
         ));
         w.indent();
         w.line(&format!(
-            "let bytes = read_fixed_bytes::<{computed_len}>(buf, pos)?;"
+            "let bytes = read_fixed_bytes::<{computed_len}>(__buf, __pos)?;"
         ));
         w.line(&format!("Ok({name}(bytes))"));
         w.dedent();
@@ -271,34 +251,34 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
     let info = type_info(ty);
-    if let WireSize::Fixed(n) = info.wire_size {
-        if n > 0 {
-            return Some(format!(
-                "{{ let __end = pos.checked_add({n}).ok_or(Error::UnexpectedEof)?; \
-                 if __end > buf.len() {{ return Err(Error::UnexpectedEof); }} \
-                 *pos = __end; }}"
-            ));
-        }
+    if let WireSize::Fixed(n) = info.wire_size
+        && n > 0
+    {
+        return Some(format!(
+            "{{ let __end = __pos.checked_add({n}).ok_or(Error::UnexpectedEof)?; \
+             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
+             *__pos = __end; }}"
+        ));
     }
-    if let ResolvedTypeRef::FixedArray(_, n) = ty {
-        if *n == 0 {
-            return None;
-        }
+    if let ResolvedTypeRef::FixedArray(_, n) = ty
+        && *n == 0
+    {
+        return None;
     }
-    if let ResolvedTypeRef::FixedMap(_, _, n) = ty {
-        if *n == 0 {
-            return None;
-        }
+    if let ResolvedTypeRef::FixedMap(_, _, n) = ty
+        && *n == 0
+    {
+        return None;
     }
-    if let ResolvedTypeRef::FixedDeltaArray(_, n) = ty {
-        if *n == 0 {
-            return None;
-        }
+    if let ResolvedTypeRef::FixedDeltaArray(_, n) = ty
+        && *n == 0
+    {
+        return None;
     }
-    if let ResolvedTypeRef::FixedString(n) = ty {
-        if *n == 0 {
-            return None;
-        }
+    if let ResolvedTypeRef::FixedString(n) = ty
+        && *n == 0
+    {
+        return None;
     }
 
     Some(info.skip_stmt)
@@ -313,15 +293,15 @@ fn emit_decode_fn(
     let name = &schema.name_hint;
     let v = vl.version;
     let needs_lifetime = infected.contains(name.as_str());
-    let lifetime = if needs_lifetime { "<'buf>" } else { "" };
+    let lifetime = if needs_lifetime { "<'__buf>" } else { "" };
     let buf_ty = if needs_lifetime {
-        "&'buf [u8]"
+        "&'__buf [u8]"
     } else {
         "&[u8]"
     };
 
     w.line(&format!(
-        "pub fn decode_v{v}{lifetime}(buf: {buf_ty}, pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
+        "pub fn decode_v{v}{lifetime}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
     ));
 
     w.indent();
@@ -383,16 +363,16 @@ fn emit_decode_fn(
 fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
     match &fl.mapping {
         FieldMapping::Discard => {
-            if let ResolvedTypeRef::Array(inner) = &fl.source_ty {
-                if let WireSize::Fixed(stride) = type_info(inner).wire_size {
-                    w.line(&format!(
-                        "{{ let __n = read_array_len(buf, pos)? as usize; \
-                 let __end = pos.checked_add(__n * {stride}).ok_or(Error::UnexpectedEof)?; \
-                 if __end > buf.len() {{ return Err(Error::UnexpectedEof); }} \
-                 *pos = __end; }}"
-                    ));
-                    return;
-                }
+            if let ResolvedTypeRef::Array(inner) = &fl.source_ty
+                && let WireSize::Fixed(stride) = type_info(inner).wire_size
+            {
+                w.line(&format!(
+                    "{{ let __n = read_array_len(__buf, __pos)? as usize; \
+                     let __end = __pos.checked_add(__n * {stride}).ok_or(Error::UnexpectedEof)?; \
+                     if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                     *__pos = __end; }}"
+                ));
+                return;
             }
             if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
                 w.line(&stmt);
@@ -410,11 +390,11 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
                 .lazy;
             if target_is_lazy {
                 let some_fn = format!("{target_name}_some");
-                w.line(&format!("let __{target_name}_start = *pos;"));
+                w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
                     w.line(&stmt);
                 }
-                w.line(&format!("let {target_name} = LazyView::new(&buf[__{target_name}_start..*pos], {some_fn});"));
+                w.line(&format!("let {target_name} = LazyView::new(&__buf[__{target_name}_start..*__pos], {some_fn});"));
                 return;
             }
             let expr = emit_read_expr(&fl.source_ty);
@@ -455,23 +435,28 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
 fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
-        ResolvedTypeRef::Scalar(_) => format!("{}(buf, pos)?", info.read_fn),
+        ResolvedTypeRef::Scalar(_) => format!("{}(__buf, __pos)?", info.read_fn),
         ResolvedTypeRef::Enum(id) => {
-            format!("{{ let __raw = read_varint64(buf, pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}", id.name)
+            format!(
+                "{{ let __raw = read_varint64(__buf, __pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}",
+                id.name
+            )
         }
-        ResolvedTypeRef::Union(_) => format!("{}(buf, pos)?", info.read_fn),
+        ResolvedTypeRef::Union(_) => format!("{}(__buf, __pos)?", info.read_fn),
         ResolvedTypeRef::Bitset(id, _) => {
-            format!("read_{}(buf, pos)?", id.name.to_snake_case())
+            format!("read_{}(__buf, __pos)?", id.name.to_snake_case())
         }
         ResolvedTypeRef::FixedString(n) => {
             if *n == 0 {
                 return "&[]".to_string();
             }
-            format!("{}(buf, pos)?", info.read_fn)
+            format!("{}(__buf, __pos)?", info.read_fn)
         }
         ResolvedTypeRef::Array(inner) => {
             let inner_expr = emit_read_expr(inner);
-            format!("{{ let __n = read_array_len(buf, pos)?; let mut __v = PojocVec::with_capacity(__n); for _ in 0..__n {{ __v.push({inner_expr}); }} __v }}")
+            format!(
+                "{{ let __n = read_array_len(__buf, __pos)?; let mut __v = PojocVec::with_capacity(__n); for _ in 0..__n {{ __v.push({inner_expr}); }} __v }}"
+            )
         }
         ResolvedTypeRef::FixedArray(inner, n) => {
             if *n == 0 {
@@ -484,23 +469,27 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             } else {
                 "std::array::from_fn(|_| Default::default())".to_string()
             };
-            format!("{{ let mut __arr: [_; {n}] = {init}; for __slot in __arr.iter_mut() {{ *__slot = {inner_expr}; }} __arr }}")
+            format!(
+                "{{ let mut __arr: [_; {n}] = {init}; for __slot in __arr.iter_mut() {{ *__slot = {inner_expr}; }} __arr }}"
+            )
         }
         ResolvedTypeRef::DeltaArray(inner) => {
             let inner_rust = type_info(inner).rust_type;
-            format!("read_delta_array::<{inner_rust}>(buf, pos)?")
+            format!("read_delta_array::<{inner_rust}>(__buf, __pos)?")
         }
         ResolvedTypeRef::FixedDeltaArray(inner, n) => {
             if *n == 0 {
                 return "[]".to_string();
             }
             let inner_rust = type_info(inner).rust_type;
-            format!("read_fixed_delta_array::<{inner_rust}, {n}>(buf, pos)?")
+            format!("read_fixed_delta_array::<{inner_rust}, {n}>(__buf, __pos)?")
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
             let ke = emit_read_expr(k_ty);
             let ve = emit_read_expr(v_ty);
-            format!("{{ let __n = read_array_len(buf, pos)?; let mut __m = PojocMap::with_capacity(__n); for _ in 0..__n {{ let __k = {ke}; let __v = {ve}; __m.insert(__k, __v); }} __m }}")
+            format!(
+                "{{ let __n = read_array_len(__buf, __pos)?; let mut __m = PojocMap::with_capacity(__n); for _ in 0..__n {{ let __k = {ke}; let __v = {ve}; __m.insert(__k, __v); }} __m }}"
+            )
         }
         ResolvedTypeRef::FixedMap(k_ty, v_ty, n) => {
             if *n == 0 {
@@ -526,7 +515,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             min, step, backing, ..
         } => {
             format!(
-                "(({}(buf, pos)? as f64) * {}f64 + {}f64) as f32",
+                "(({}(__buf, __pos)? as f64) * {}f64 + {}f64) as f32",
                 backing.read_fn(),
                 step,
                 min
@@ -534,10 +523,10 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         }
         ResolvedTypeRef::Optional(inner) => {
             let inner_expr = emit_read_expr(inner);
-            format!("if read_u8(buf, pos)? != 0 {{ Some({inner_expr}) }} else {{ None }}")
+            format!("if read_u8(__buf, __pos)? != 0 {{ Some({inner_expr}) }} else {{ None }}")
         }
         ResolvedTypeRef::ImportedSchema { .. } => {
-            format!("{}(buf, pos)?", info.read_fn)
+            format!("{}(__buf, __pos)?", info.read_fn)
         }
     }
 }
@@ -546,7 +535,7 @@ fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
     let header_bytes = optional_count.div_ceil(8);
     if header_bytes > 0 {
         w.line(&format!(
-            "let __header = read_fixed_bytes::<{header_bytes}>(buf, pos)?;"
+            "let __header = read_fixed_bytes::<{header_bytes}>(__buf, __pos)?;"
         ));
     }
 }
@@ -581,7 +570,7 @@ fn emit_field_mapping_arm(
             if target_is_lazy {
                 let some_fn = format!("{target_name}_some");
                 let none_fn = format!("{target_name}_none");
-                w.line(&format!("let __{target_name}_start = *pos;"));
+                w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(inner) {
                     w.line(&format!("if {__present} {{"));
                     w.indent();
@@ -590,7 +579,7 @@ fn emit_field_mapping_arm(
                     w.line("}");
                     w.line(&format!(
                         "let {target_name} = if {__present} {{ \
-                     LazyView::new(&buf[__{target_name}_start..*pos], {some_fn}) \
+                     LazyView::new(&__buf[__{target_name}_start..*__pos], {some_fn}) \
                      }} else {{ \
                      LazyView::new(&[], {none_fn}) \
                      }};"
@@ -737,10 +726,8 @@ fn compute_bitset_literal_value(
     let mut value: u64 = 0;
     if let Some(bs) = bs {
         for (flag_name, set) in kvs {
-            if *set {
-                if let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
-                    value |= 1u64 << idx;
-                }
+            if *set && let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
+                value |= 1u64 << idx;
             }
         }
     }
@@ -764,9 +751,9 @@ fn emit_cast_value(
             let fi = type_info(from);
             let ti = type_info(to);
             if f.name == t.name {
-                CastExpr::Inline(format!("{}(buf, pos)?", fi.read_fn))
+                CastExpr::Inline(format!("{}(__buf, __pos)?", fi.read_fn))
             } else {
-                CastExpr::Inline(format!("{}(buf, pos)? as {}", fi.read_fn, ti.rust_type))
+                CastExpr::Inline(format!("{}(__buf, __pos)? as {}", fi.read_fn, ti.rust_type))
             }
         }
 
@@ -775,7 +762,7 @@ fn emit_cast_value(
         (FixedString(from_n), FixedString(to_n)) => {
             let copy_n = (*from_n).min(*to_n);
             CastExpr::Block(format!(
-                "{{ let __src = read_fixed_bytes::<{from_n}>(buf, pos)?; \
+                "{{ let __src = read_fixed_bytes::<{from_n}>(__buf, __pos)?; \
                  let mut __dst = [0u8; {to_n}]; \
                  __dst[..{copy_n}].copy_from_slice(&__src[..{copy_n}]); \
                  __dst }}"
@@ -820,9 +807,9 @@ fn emit_cast_value(
             let to_rust = type_info(to).rust_type;
             let read_fn = format!("read_{}", id.name.to_snake_case());
             let expr = match width {
-                1 => format!("{read_fn}(buf, pos)?.0[0] as {to_rust}"),
-                2 => format!("u16::from_le_bytes({read_fn}(buf, pos)?.0) as {to_rust}"),
-                _ => format!("u32::from_le_bytes({read_fn}(buf, pos)?.0) as {to_rust}"),
+                1 => format!("{read_fn}(__buf, __pos)?.0[0] as {to_rust}"),
+                2 => format!("u16::from_le_bytes({read_fn}(__buf, __pos)?.0) as {to_rust}"),
+                _ => format!("u32::from_le_bytes({read_fn}(__buf, __pos)?.0) as {to_rust}"),
             };
             CastExpr::Inline(expr)
         }
@@ -832,7 +819,7 @@ fn emit_cast_value(
             let elem_default = type_info(from_elem).default_expr;
             let copy_n = (*from_n).min(*to_n);
             CastExpr::Block(format!(
-                "{{ let __src = read_fixed_delta_array::<{elem_rust}, {from_n}>(buf, pos)?; \
+                "{{ let __src = read_fixed_delta_array::<{elem_rust}, {from_n}>(__buf, __pos)?; \
                 let mut __dst = [{elem_default}; {to_n}]; \
                 __dst[..{copy_n}].copy_from_slice(&__src[..{copy_n}]); \
                 __dst }}"
@@ -970,7 +957,7 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         if emitted.insert(some_name.clone()) {
             w.line("#[allow(dead_code)]");
             w.line(&format!(
-                "fn {some_name}(buf: &[u8], pos: &mut usize) -> PojocResult<{rust_ty}> {{"
+                "fn {some_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{rust_ty}> {{"
             ));
             w.indent();
             if is_optional {
@@ -1022,12 +1009,10 @@ pub fn emit_skip_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_skip_vn_fn(vl: &VersionLineage, w: &mut CodeWriter) {
     let v = vl.version;
-    let buf_param = if vl.fields.is_empty() { "_buf" } else { "buf" };
-    let pos_param = if vl.fields.is_empty() { "_pos" } else { "pos" };
 
     w.line("#[allow(dead_code)]");
     w.line(&format!(
-        "pub fn skip_v{v}({buf_param}: &[u8], {pos_param}: &mut usize) -> PojocResult<()> {{"
+        "pub fn skip_v{v}(__buf: &[u8], __pos: &mut usize) -> PojocResult<()> {{"
     ));
     w.indent();
 
