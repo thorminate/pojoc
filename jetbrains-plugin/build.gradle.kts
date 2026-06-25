@@ -1,18 +1,72 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
-    id("org.jetbrains.kotlin.jvm")
-    id("org.jetbrains.intellij.platform")
-    id("org.jetbrains.changelog")
+    id("java")
+    id("org.jetbrains.kotlin.jvm") version "2.0.21"
+    id("org.jetbrains.intellij.platform") version "2.3.0"
+}
+
+group = providers.gradleProperty("pluginGroup").get()
+version = providers.gradleProperty("pluginVersion").get()
+
+kotlin {
+    jvmToolchain(21)
+}
+
+repositories {
+    mavenCentral()
+    intellijPlatform {
+        defaultRepositories()
+    }
 }
 
 dependencies {
-    testImplementation("junit:junit:4.13.2")
-
     intellijPlatform {
-        intellijIdea("2025.2.6.2")
-        testFramework(TestFrameworkType.Platform)
+        intellijIdeaCommunity(providers.gradleProperty("platformVersion").get())
+
+        bundledPlugin("org.jetbrains.plugins.textmate")
+        plugin("com.redhat.devtools.lsp4ij:0.20.1")
+
+        pluginVerifier()
+        zipSigner()
+        instrumentationTools()
+    }
+}
+
+intellijPlatform {
+    pluginConfiguration {
+        name = providers.gradleProperty("pluginName")
+        version = providers.gradleProperty("pluginVersion")
+
+        ideaVersion {
+            sinceBuild = providers.gradleProperty("pluginSinceBuild")
+            untilBuild = providers.gradleProperty("pluginUntilBuild")
+        }
     }
 
-    implementation("com.redhat.devtools.lsp4ij:lsp4ij:0.0")
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
+
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
+}
+
+tasks.named<Jar>("jar") {
+    exclude("textmate/**")
+}
+
+tasks.named<org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask>("prepareSandbox") {
+    from(layout.projectDirectory.dir("src/main/resources/textmate")) {
+        into("${providers.gradleProperty("pluginName").get()}/textmate")
+    }
 }
