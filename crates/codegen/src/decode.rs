@@ -293,9 +293,9 @@ fn emit_decode_fn(
     let name = &schema.name_hint;
     let v = vl.version;
     let needs_lifetime = infected.contains(name.as_str());
-    let lifetime = if needs_lifetime { "<'__buf>" } else { "" };
+    let lifetime = if needs_lifetime { "<'buf>" } else { "" };
     let buf_ty = if needs_lifetime {
-        "&'__buf [u8]"
+        "&'buf [u8]"
     } else {
         "&[u8]"
     };

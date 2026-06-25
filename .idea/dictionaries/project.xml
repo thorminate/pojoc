@@ -8,6 +8,7 @@
       <w>capnp</w>
       <w>capnproto</w>
       <w>coords</w>
+      <w>decl</w>
       <w>flatbuf</w>
       <w>flatbuffers</w>
       <w>languageclient</w>
@@ -28,7 +29,9 @@
       <w>varint</w>
       <w>varints</w>
       <w>vfloat</w>
+      <w>vsce</w>
       <w>vscode</w>
+      <w>vsix</w>
     </words>
   </dictionary>
 </component>
