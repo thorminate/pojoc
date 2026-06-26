@@ -132,9 +132,57 @@ jobs:
           name: vsix-${{ matrix.vsix_target }}
           path: vscode-extension/pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
 
+  package-jetbrains:
+    name: Package JetBrains Plugin
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - lsp_target: x86_64-unknown-linux-gnu
+            lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+          - lsp_target: x86_64-pc-windows-msvc
+            lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
+          - lsp_target: x86_64-apple-darwin
+            lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-apple-darwin
+          - lsp_target: aarch64-apple-darwin
+            lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: bin-${{ matrix.lsp_target == 'x86_64-unknown-linux-gnu' && 'linux-x64' || matrix.lsp_target == 'x86_64-pc-windows-msvc' && 'win32-x64' || matrix.lsp_target == 'x86_64-apple-darwin' && 'darwin-x64' || 'darwin-arm64' }}
+          path: lsp-bin/
+
+      - name: Stage LSP binary into plugin
+        shell: bash
+        run: |
+          mkdir -p jetbrains-plugin/src/main/resources/bin
+          cp "lsp-bin/${{ matrix.lsp_bin_src }}" \
+             "jetbrains-plugin/src/main/resources/bin/pojoc-lsp-${{ matrix.lsp_target }}"
+          chmod +x "jetbrains-plugin/src/main/resources/bin/pojoc-lsp-${{ matrix.lsp_target }}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        working-directory: jetbrains-plugin
+        run: ./gradlew buildPlugin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jetbrains-plugin-${{ matrix.lsp_target }}
+          path: jetbrains-plugin/build/distributions/*.zip
+
   release:
     name: Publish Release
-    needs: [build, package-vsix]
+    needs: [build, package-vsix, package-jetbrains]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
