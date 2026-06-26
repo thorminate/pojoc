@@ -57,8 +57,6 @@ jobs:
           java-version: 21
 
       - uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-provider: basic
 
       - name: Typecheck plugin
         working-directory: jetbrains-plugin
