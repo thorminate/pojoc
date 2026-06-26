@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "compact_str",
  "serde",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "pojoc-codegen",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-codegen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heck",
  "pojoc-core",
@@ -805,14 +805,14 @@ dependencies = [
 
 [[package]]
 name = "pojoc-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heck",
 ]
 
 [[package]]
 name = "pojoc-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-schema"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "compact_str",
  "pojoc-core",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "capnp",
  "capnpc",
