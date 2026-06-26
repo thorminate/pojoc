@@ -3,3 +3,9 @@
 /vscode-extension/out/
 /vscode-extension/bin/
 /vscode-extension/*.vsix
+/jetbrains-plugin/.DS_Store
+/jetbrains-plugin/.gradle
+/jetbrains-plugin/.idea
+/jetbrains-plugin/.intellijPlatform
+/jetbrains-plugin/.kotlin
+/jetbrains-plugin/build
