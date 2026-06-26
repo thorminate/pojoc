@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,9 +37,9 @@ jobs:
         with:
           package_json_file: vscode-extension/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version-file: vscode-extension/.node-version
+          node-version: 24
           cache: pnpm
           cache-dependency-path: vscode-extension/pnpm-lock.yaml
 
@@ -51,10 +51,10 @@ jobs:
         working-directory: vscode-extension
         run: pnpm exec tsc --noEmit
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: 21
 
       - uses: gradle/actions/setup-gradle@v4
 
