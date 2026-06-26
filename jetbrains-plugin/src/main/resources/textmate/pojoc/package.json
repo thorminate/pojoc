@@ -1,0 +1,24 @@
+{
+  "name": "pojoc",
+  "displayName": "Pojoc Schema Language",
+  "description": "Syntax highlighting for .pojoc schema files",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.60.0" },
+  "contributes": {
+    "languages": [
+      {
+        "id": "pojoc",
+        "aliases": ["Pojoc", "pojoc"],
+        "extensions": [".pojoc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "pojoc",
+        "scopeName": "source.pojoc",
+        "path": "./syntaxes/pojoc.tmLanguage.json"
+      }
+    ]
+  }
+}
