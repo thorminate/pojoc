@@ -19,19 +19,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            vsix_target: linux-x64
+            artifact_target: linux-x64
             lsp_bin: pojoc-lsp
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            vsix_target: win32-x64
+            artifact_target: win32-x64
             lsp_bin: pojoc-lsp.exe
           - target: x86_64-apple-darwin
             os: macos-latest
-            vsix_target: darwin-x64
+            artifact_target: darwin-x64
             lsp_bin: pojoc-lsp
           - target: aarch64-apple-darwin
             os: macos-latest
-            vsix_target: darwin-arm64
+            artifact_target: darwin-arm64
             lsp_bin: pojoc-lsp
 
     steps:
@@ -71,23 +71,23 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: bin-${{ matrix.vsix_target }}
+          name: bin-${{ matrix.artifact_target }}
           path: dist/
 
   package-vsix:
-    name: Package VSIX (${{ matrix.vsix_target }})
+    name: Package VSIX (${{ matrix.artifact_target }})
     needs: build
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - vsix_target: linux-x64
+          - artifact: linux-x64
             lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-unknown-linux-gnu
-          - vsix_target: win32-x64
+          - artifact: win32-x64
             lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
-          - vsix_target: darwin-x64
+          - artifact: darwin-x64
             lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-apple-darwin
-          - vsix_target: darwin-arm64
+          - artifact: darwin-arm64
             lsp_bin: pojoc-lsp-${{ github.ref_name }}-aarch64-apple-darwin
 
     steps:
@@ -95,7 +95,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: bin-${{ matrix.vsix_target }}
+          name: bin-${{ matrix.artifact }}
           path: lsp-bin/
 
       - name: Copy LSP binary into extension
@@ -103,7 +103,7 @@ jobs:
         run: |
           mkdir -p vscode-extension/bin
           EXT=""
-          [[ "${{ matrix.vsix_target }}" == "win32-x64" ]] && EXT=".exe"
+          [[ "${{ matrix.artifact }}" == "win32-x64" ]] && EXT=".exe"
           cp "lsp-bin/${{ matrix.lsp_bin }}" "vscode-extension/bin/pojoc-lsp${EXT}"
           chmod +x "vscode-extension/bin/pojoc-lsp${EXT}"
 
@@ -124,13 +124,13 @@ jobs:
         working-directory: vscode-extension
 
       - name: Package VSIX
-        run: pnpm vsce package --target ${{ matrix.vsix_target }} --no-dependencies -o pojoc-vscode-extension-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
+        run: pnpm vsce package --target ${{ matrix.artifact }} --no-dependencies -o pojoc-vscode-extension-${{ github.ref_name }}-${{ matrix.artifact }}.vsix
         working-directory: vscode-extension
 
       - uses: actions/upload-artifact@v7
         with:
-          name: vsix-${{ matrix.vsix_target }}
-          path: vscode-extension/pojoc-${{ github.ref_name }}-${{ matrix.vsix_target }}.vsix
+          name: vsix-${{ matrix.artifact }}
+          path: vscode-extension/pojoc-${{ github.ref_name }}-${{ matrix.artifact }}.vsix
 
   package-jetbrains:
     name: Package JetBrains Plugin
@@ -140,12 +140,16 @@ jobs:
       matrix:
         include:
           - lsp_target: x86_64-unknown-linux-gnu
+            artifact: linux-x64
             lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-unknown-linux-gnu
           - lsp_target: x86_64-pc-windows-msvc
+            artifact: win32-x64
             lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
           - lsp_target: x86_64-apple-darwin
+            artifact: darwin-x64
             lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-x86_64-apple-darwin
           - lsp_target: aarch64-apple-darwin
+            artifact: darwin-arm64
             lsp_bin_src: pojoc-lsp-${{ github.ref_name }}-aarch64-apple-darwin
 
     steps:
@@ -153,7 +157,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: bin-${{ matrix.lsp_target == 'x86_64-unknown-linux-gnu' && 'linux-x64' || matrix.lsp_target == 'x86_64-pc-windows-msvc' && 'win32-x64' || matrix.lsp_target == 'x86_64-apple-darwin' && 'darwin-x64' || 'darwin-arm64' }}
+          name: bin-${{ matrix.artifact }}
           path: lsp-bin/
 
       - name: Stage LSP binary into plugin
