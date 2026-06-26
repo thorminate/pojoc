@@ -6,7 +6,6 @@ on:
       - dev
       - "feature/**"
       - "fix/**"
-      - "release/**"
   pull_request:
     branches: [main]
 
@@ -33,3 +32,32 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: vscode-extension/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vscode-extension/.node-version
+          cache: pnpm
+          cache-dependency-path: vscode-extension/pnpm-lock.yaml
+
+      - name: Install extension dependencies
+        working-directory: vscode-extension
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck extension
+        working-directory: vscode-extension
+        run: pnpm exec tsc --noEmit
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Typecheck plugin
+        working-directory: jetbrains-plugin
+        run: ./gradlew compileKotlin
