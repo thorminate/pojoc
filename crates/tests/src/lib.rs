@@ -1,24 +1,25 @@
-pub mod proto_player {
-    #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/proto_player.rs"));
+macro_rules! generated {
+    ($vis:vis $name:ident, $path:literal) => {
+        $vis mod $name {
+            #![allow(warnings, clippy::all)]
+            include!(concat!(env!("OUT_DIR"), $path));
+        }
+    };
 }
 
-pub mod player_capnp {
-    #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/schemas/player_capnp.rs"));
+macro_rules! generated_strict {
+    ($vis:vis $name:ident, $path:literal) => {
+        $vis mod $name {
+            include!(concat!(env!("OUT_DIR"), $path));
+        }
+    };
 }
 
-pub mod flatbuf {
-    #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/flatbuf.rs"));
-}
-
-pub mod pojoc_player {
-    include!(concat!(env!("OUT_DIR"), "/pojoc_player.rs"));
-}
-
-pub mod pojoc_edge {
-    include!(concat!(env!("OUT_DIR"), "/pojoc_edge.rs"));
-}
+generated!(pub proto_player,  "/proto_player.rs");
+generated!(pub player_capnp,  "/schemas/player_capnp.rs");
+generated!(flatbuf, "/flatbuf.rs");
+generated!(pub player_bebop,  "/bebop-schema/player.rs");
+generated_strict!(pub pojoc_player, "/pojoc_player.rs");
+generated_strict!(pub pojoc_edge,   "/pojoc_edge.rs");
 
 pub use flatbuf::fb_player;

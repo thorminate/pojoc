@@ -33,7 +33,6 @@ schema Edge {
        target_id: u32 = 0
        damage: f32 = 0.0
        knockback: vfloat(min: 0, max: 50, step: 0.1) = 0
-
     }
 
     union Payload {
