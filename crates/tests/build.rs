@@ -1,3 +1,4 @@
+use bebop_tools as bebop;
 use pojoc_codegen::generate;
 use pojoc_schema::ImportOrchestrator;
 use std::env;
@@ -57,6 +58,23 @@ fn main() {
         out_dir.join("flatbuf.rs"),
     )
     .expect("rename failed");
+
+    // bebop
+    bebop::download_bebopc(out_dir.join("bebop"));
+
+    bebop::build_schema_dir(
+        "schemas",
+        out_dir.join("bebop-schema"),
+        &bebop::BuildConfig {
+            format_files: true,
+            generate_module_file: false,
+            skip_generated_notice: false,
+        },
+    );
+
+    let bebop_out = out_dir.join("bebop-schema/player.rs");
+    let src = fs::read_to_string(&bebop_out).unwrap();
+    fs::write(&bebop_out, src.replace("#![allow(warnings)]", "")).unwrap();
 
     println!("cargo:rerun-if-changed=schemas/player.fbs");
     println!("cargo:rerun-if-changed=schemas/player.capnp");
