@@ -389,7 +389,7 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
                 .unwrap()
                 .lazy;
             if target_is_lazy {
-                let some_fn = format!("{target_name}_some");
+                let some_fn = format!("{target_name}_read");
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
                     w.line(&stmt);
@@ -566,7 +566,7 @@ fn emit_field_mapping_arm(
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                let some_fn = format!("{target_name}_some");
+                let some_fn = format!("{target_name}_read");
                 let default_expr = type_info(&target_field.ty).default_expr;
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(inner) {
@@ -950,7 +950,7 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let is_optional = matches!(ty, ResolvedTypeRef::Optional(_));
         let rust_ty = type_info(ty).rust_type;
 
-        let some_name = format!("{target_name}_some");
+        let some_name = format!("{target_name}_read");
         if emitted.insert(some_name.clone()) {
             w.line("#[allow(dead_code)]");
             w.line(&format!(

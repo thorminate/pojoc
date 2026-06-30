@@ -589,7 +589,7 @@ fn emit_lazy_struct_serde(
     w.indent();
     for f in fields {
         if f.lazy {
-            w.line(&format!("{n}: LazyView::new(__{n}, {n}_some),", n = f.name));
+            w.line(&format!("{n}: LazyView::new(__{n}, {n}_read),", n = f.name));
         } else {
             w.line(&format!("{n},", n = f.name));
         }
