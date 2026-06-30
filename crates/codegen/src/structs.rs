@@ -1,4 +1,5 @@
 use super::writer::CodeWriter;
+use crate::encode::emit_write_expr;
 use crate::get_latest_versions;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use pojoc_core::types::{ResolvedTypeRef, type_info};
@@ -19,7 +20,14 @@ pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut
 
     for name in names {
         let (_, resolved) = latest[name];
-        emit_named_struct(name, &resolved.fields, &resolved.const_fields, infected, w);
+        emit_named_struct(
+            name,
+            &resolved.fields,
+            &resolved.const_fields,
+            infected,
+            schema,
+            w,
+        );
         w.blank();
     }
 
@@ -29,6 +37,7 @@ pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut
         &latest_version.fields,
         &latest_version.const_fields,
         infected,
+        schema,
         w,
     );
     w.blank();
@@ -383,6 +392,7 @@ fn emit_named_struct(
     fields: &[FieldIR],
     consts: &[ResolvedConst],
     infected: &HashSet<String>,
+    schema: &ResolvedSchema,
     w: &mut CodeWriter,
 ) {
     let needs_lifetime = infected.contains(name);
@@ -429,8 +439,8 @@ fn emit_named_struct(
         w.indent();
         for field in fields {
             if field.lazy {
-                let none_fn = format!("{}_none", field.name);
-                w.line(&format!("{}: LazyView::new(&[], {none_fn}),", field.name));
+                let default_expr = type_info(&field.ty).default_expr;
+                w.line(&format!("{}: LazyView::Owned({default_expr}),", field.name));
             } else {
                 w.line(&format!("{}: Default::default(),", field.name));
             }
@@ -461,7 +471,7 @@ fn emit_named_struct(
     }
 
     if needs_lifetime {
-        emit_lazy_struct_serde(name, fields, w);
+        emit_lazy_struct_serde(name, fields, schema, w);
     }
 }
 
@@ -481,7 +491,12 @@ fn render_const_value(value: &DefaultValue) -> String {
     }
 }
 
-fn emit_lazy_struct_serde(name: &str, fields: &[FieldIR], w: &mut CodeWriter) {
+fn emit_lazy_struct_serde(
+    name: &str,
+    fields: &[FieldIR],
+    schema: &ResolvedSchema,
+    w: &mut CodeWriter,
+) {
     w.blank();
 
     // Serialize
@@ -496,10 +511,25 @@ fn emit_lazy_struct_serde(name: &str, fields: &[FieldIR], w: &mut CodeWriter) {
     ));
     for f in fields {
         if f.lazy {
+            w.line(&format!("match &self.{n} {{", n = f.name));
+            w.indent();
             w.line(&format!(
-                "__s.serialize_field(\"{n}\", SerdeBytes::new(self.{n}.raw_bytes()))?;",
+                "LazyView::Raw {{ buf, .. }} => __s.serialize_field(\"{n}\", SerdeBytes::new(buf))?,",
                 n = f.name
             ));
+            w.line("LazyView::Owned(__val) => {");
+            w.indent();
+            w.line("let mut __buf = Vec::new();");
+            w.line("let __buf = &mut __buf;");
+            emit_write_expr(&f.ty, "__val", Some(schema), true, w);
+            w.line(&format!(
+                "__s.serialize_field(\"{}\", SerdeBytes::new(__buf))?;",
+                f.name
+            ));
+            w.dedent();
+            w.line("}");
+            w.dedent();
+            w.line("}");
         } else {
             w.line(&format!(
                 "__s.serialize_field(\"{n}\", &self.{n})?;",
@@ -559,10 +589,7 @@ fn emit_lazy_struct_serde(name: &str, fields: &[FieldIR], w: &mut CodeWriter) {
     w.indent();
     for f in fields {
         if f.lazy {
-            w.line(&format!(
-                "{n}: if __{n}.is_empty() {{ LazyView::new(__{n}, {n}_none) }} else {{ LazyView::new(__{n}, {n}_some) }},",
-                n = f.name
-            ));
+            w.line(&format!("{n}: LazyView::new(__{n}, {n}_some),", n = f.name));
         } else {
             w.line(&format!("{n},", n = f.name));
         }

@@ -37,12 +37,14 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.empty_arr.push(pojstr!("FirstElement"));
     e.empty_arr.push(pojstr!("SecondElement"));
     e.array_to_map.insert(5, 25);
+    e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
     // Delta sequences
     e.delta_positions.push(1000);
     e.delta_positions.push(1010);
     e.delta_i64_seq.push(-50);
     e.delta_i64_seq.push(-45);
+    e.lazy_delta_log = LazyView::Owned(Some(pojvec!(100, 150, 120)));
 
     // Nested struct
     e.root_struct.leaf.leaf_val = "LeafNode".into();
@@ -440,6 +442,30 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
             .expect("control_map key missing after roundtrip");
         assert_payload_eq(v, other);
     }
+
+    let a_audit = a
+        .lazy_audit_log
+        .clone()
+        .get()
+        .expect("a.lazy_audit_log decode failed");
+    let b_audit = b
+        .lazy_audit_log
+        .clone()
+        .get()
+        .expect("b.lazy_audit_log decode failed");
+    assert_eq!(a_audit, b_audit, "lazy_audit_log mismatch");
+
+    let a_delta = a
+        .lazy_delta_log
+        .clone()
+        .get()
+        .expect("a.lazy_delta_log decode failed");
+    let b_delta = b
+        .lazy_delta_log
+        .clone()
+        .get()
+        .expect("b.lazy_delta_log decode failed");
+    assert_eq!(a_delta, b_delta, "lazy_delta_log mismatch");
 }
 
 pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {
