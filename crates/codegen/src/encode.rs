@@ -175,29 +175,7 @@ fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
 fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut CodeWriter) {
     for field in fields {
         if field.lazy {
-            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
-            if is_optional {
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
-                    field.name
-                ));
-            } else {
-                w.line(&format!(
-                    "if !__value.{}.raw_bytes().is_empty() {{",
-                    field.name
-                ));
-                w.indent();
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
-                    field.name
-                ));
-                w.dedent();
-                w.line("} else {");
-                w.indent();
-                emit_vn_default_write(&field.ty, schema, w);
-                w.dedent();
-                w.line("}");
-            }
+            emit_lazy_encode(&field.name, &field.ty, schema, w);
             continue;
         }
         let accessor = format!("__value.{}", field.name);
@@ -214,7 +192,7 @@ fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut C
     }
 }
 
-fn emit_write_expr(
+pub(crate) fn emit_write_expr(
     ty: &ResolvedTypeRef,
     accessor: &str,
     vn: Option<&ResolvedSchema>,
@@ -423,7 +401,10 @@ fn emit_vn_optional_header_bit(
                 .lazy;
             if target_is_lazy {
                 w.line(&format!(
-                    "if !__value.{target_name}.raw_bytes().is_empty() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    "if match &__value.{target_name} {{ \
+                         LazyView::Raw {{ buf, .. }} => !buf.is_empty(), \
+                         LazyView::Owned(__val) => __val.is_some(), \
+                     }} {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
             } else {
                 w.line(&format!(
@@ -475,15 +456,7 @@ fn emit_vn_optional_body(
                 .unwrap()
                 .lazy;
             if target_is_lazy {
-                w.line(&format!(
-                    "if !__value.{target_name}.raw_bytes().is_empty() {{"
-                ));
-                w.indent();
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                ));
-                w.dedent();
-                w.line("}");
+                emit_lazy_encode(target_name, &fl.source_ty, schema, w);
             } else {
                 w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                 w.indent();
@@ -572,26 +545,7 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                let is_optional = matches!(fl.source_ty, ResolvedTypeRef::Optional(_));
-                if is_optional {
-                    w.line(&format!(
-                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                    ));
-                } else {
-                    w.line(&format!(
-                        "if !__value.{target_name}.raw_bytes().is_empty() {{"
-                    ));
-                    w.indent();
-                    w.line(&format!(
-                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                    ));
-                    w.dedent();
-                    w.line("} else {");
-                    w.indent();
-                    emit_vn_default_write(&fl.source_ty, schema, w);
-                    w.dedent();
-                    w.line("}");
-                }
+                emit_lazy_encode(target_name, &fl.source_ty, schema, w);
             } else {
                 emit_write_expr(
                     &fl.source_ty,
@@ -1118,18 +1072,7 @@ fn emit_optional_header_size(fields: &[FieldIR], w: &mut CodeWriter) {
 fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &ResolvedSchema) {
     for field in fields {
         if field.lazy {
-            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
-            if is_optional {
-                w.line(&format!(
-                    "size += __value.{}.raw_bytes().len();",
-                    field.name
-                ));
-            } else {
-                w.line(&format!(
-                    "size += if __value.{name}.raw_bytes().is_empty() {{ 16 }} else {{ __value.{name}.raw_bytes().len() }};",
-                    name = field.name
-                ));
-            }
+            emit_lazy_size(&field.name, &field.ty, schema, w);
             continue;
         }
         let accessor = format!("__value.{}", field.name);
@@ -1347,10 +1290,7 @@ fn emit_vn_nonoptional_field_size_hint(
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                w.line(&format!(
-                    "size += if __value.{target_name}.raw_bytes().is_empty() {{ 16 }} \
-                     else {{ __value.{target_name}.raw_bytes().len() }};"
-                ));
+                emit_lazy_size(target_name, &fl.source_ty, schema, w);
             } else {
                 let accessor = format!("__value.{target_name}");
                 if matches!(target_field.ty, ResolvedTypeRef::Optional(_))
@@ -1448,7 +1388,7 @@ fn emit_vn_optional_field_size_hint(
                 .unwrap()
                 .lazy;
             if target_is_lazy {
-                w.line(&format!("size += __value.{target_name}.raw_bytes().len();"));
+                emit_lazy_size(target_name, &fl.source_ty, schema, w);
             } else {
                 w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                 w.indent();
@@ -1638,4 +1578,118 @@ fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut Code
         }
         ResolvedTypeRef::Optional(_) | ResolvedTypeRef::ImportedSchema { .. } => {}
     }
+}
+
+fn emit_lazy_encode(
+    field_name: &str,
+    wire_ty: &ResolvedTypeRef,
+    schema: &ResolvedSchema,
+    w: &mut CodeWriter,
+) {
+    let is_optional = matches!(wire_ty, ResolvedTypeRef::Optional(_));
+    let inner_ty = match wire_ty {
+        ResolvedTypeRef::Optional(i) => i.as_ref(),
+        t => t,
+    };
+
+    w.line(&format!("match &__value.{field_name} {{"));
+    w.indent();
+    w.line("LazyView::Raw { buf, .. } if !buf.is_empty() => __buf.extend_from_slice(buf),");
+    if !is_optional {
+        w.line("LazyView::Raw { .. } => {");
+        w.indent();
+        emit_vn_default_write(wire_ty, schema, w);
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Raw { .. } => {}");
+    }
+
+    if is_optional {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        w.line("if let Some(__inner) = __val {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("write_delta_array(__buf, __inner);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("write_fixed_delta_array(__buf, __inner);")
+            }
+            _ => emit_write_expr(inner_ty, &deref_if_copy(inner_ty, "__inner"), None, true, w),
+        }
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("write_delta_array(__buf, &**__val);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("write_fixed_delta_array(__buf, &**__val);")
+            }
+            _ => emit_write_expr(inner_ty, &deref_if_copy(inner_ty, "__val"), None, true, w),
+        }
+        w.dedent();
+        w.line("}");
+    }
+
+    w.dedent();
+    w.line("}");
+}
+
+fn emit_lazy_size(
+    field_name: &str,
+    wire_ty: &ResolvedTypeRef,
+    schema: &ResolvedSchema,
+    w: &mut CodeWriter,
+) {
+    let is_optional = matches!(wire_ty, ResolvedTypeRef::Optional(_));
+    let inner_ty = match wire_ty {
+        ResolvedTypeRef::Optional(i) => i.as_ref(),
+        t => t,
+    };
+
+    w.line(&format!("match &__value.{field_name} {{"));
+    w.indent();
+    if is_optional {
+        w.line("LazyView::Raw { buf, .. } => size += buf.len(),");
+    } else {
+        w.line("LazyView::Raw { buf, .. } if !buf.is_empty() => size += buf.len(),");
+        w.line("LazyView::Raw { .. } => size += 16,");
+    }
+
+    if is_optional {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        w.line("if let Some(__inner) = __val {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("size += delta_array_size_hint(__inner);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("size += fixed_delta_array_size_hint(__inner);")
+            }
+            _ => emit_size_expr(inner_ty, "__inner", true, w, schema),
+        }
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("size += delta_array_size_hint(&**__val);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("size += fixed_delta_array_size_hint(&**__val);")
+            }
+            _ => emit_size_expr(inner_ty, "__val", true, w, schema),
+        }
+        w.dedent();
+        w.line("}");
+    }
+
+    w.dedent();
+    w.line("}");
 }
