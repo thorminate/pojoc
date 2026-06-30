@@ -1,5 +1,6 @@
 mod helpers;
 use helpers::*;
+use pojoc::{LazyView, pojvec};
 use pojoc_tests::pojoc_edge::*;
 
 #[test]
@@ -188,5 +189,44 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
             assert_eq!(data, &vec![0xDE, 0xAD, 0xBE, 0xEF]);
         }
         other => panic!("expected Unknown variant to survive roundtrip, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_raw_passthrough_is_byte_identical() {
+    let original = make_populated_edge();
+    let mut buf = Vec::new();
+    encode(&mut buf, &original);
+
+    let decoded = decode(&buf).expect("decode failed");
+    let mut reencoded = Vec::new();
+    encode(&mut reencoded, &decoded);
+
+    assert_eq!(
+        buf, reencoded,
+        "lazy Raw fields did not pass through byte-identical"
+    );
+}
+
+#[test]
+fn test_lazy_field_owned_roundtrip() {
+    let mut e = Edge::default();
+    let expected = Some(pojvec!("wow"));
+    e.lazy_audit_log = LazyView::Owned(Some(pojvec!("wow")));
+
+    let mut buf = Vec::new();
+    encode(&mut buf, &e);
+    let decoded = decode(&buf).expect("decode failed");
+
+    let value = decoded.lazy_audit_log.get().expect("lazy get failed");
+    assert_eq!(value, expected);
+}
+
+#[test]
+fn test_lazy_field_default_is_owned_not_raw() {
+    let e = Edge::default();
+    match &e.lazy_audit_log {
+        LazyView::Owned(_) => {}
+        LazyView::Raw { .. } => panic!("default lazy field should be Owned, not Raw"),
     }
 }

@@ -334,9 +334,9 @@ fn emit_decode_fn(
         w.blank();
         for mf in &vl.missing {
             if mf.lazy {
-                let none_fn = format!("{}_none", mf.target_name);
+                let default_expr = type_info(&mf.ty).default_expr;
                 w.line(&format!(
-                    "let {} = LazyView::new(&[], {none_fn});",
+                    "let {} = LazyView::Owned({default_expr});",
                     mf.target_name
                 ));
             } else {
@@ -405,22 +405,21 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
             from,
             to,
         } => {
-            let target_is_lazy = schema
+            let target_field = schema
                 .versions
                 .last()
                 .unwrap()
                 .fields
                 .iter()
                 .find(|f| f.name == *target_name)
-                .unwrap()
-                .lazy;
-            if target_is_lazy {
+                .unwrap();
+            if target_field.lazy {
                 if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
                     w.line(&stmt);
                 }
-                let none_fn = format!("{target_name}_none");
+                let default_expr = type_info(&target_field.ty).default_expr;
                 w.line(&format!(
-                    "let {target_name} = LazyView::new(&[], {none_fn});"
+                    "let {target_name} = LazyView::Owned({default_expr});"
                 ));
                 return;
             }
@@ -558,18 +557,17 @@ fn emit_field_mapping_arm(
             }
         }
         FieldMapping::PassThrough { target_name } => {
-            let target_is_lazy = schema
+            let target_field = schema
                 .versions
                 .last()
                 .unwrap()
                 .fields
                 .iter()
                 .find(|f| f.name == *target_name)
-                .unwrap()
-                .lazy;
-            if target_is_lazy {
+                .unwrap();
+            if target_field.lazy {
                 let some_fn = format!("{target_name}_some");
-                let none_fn = format!("{target_name}_none");
+                let default_expr = type_info(&target_field.ty).default_expr;
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(inner) {
                     w.line(&format!("if {__present} {{"));
@@ -579,10 +577,10 @@ fn emit_field_mapping_arm(
                     w.line("}");
                     w.line(&format!(
                         "let {target_name} = if {__present} {{ \
-                     LazyView::new(&__buf[__{target_name}_start..*__pos], {some_fn}) \
-                     }} else {{ \
-                     LazyView::new(&[], {none_fn}) \
-                     }};"
+                         LazyView::new(&__buf[__{target_name}_start..*__pos], {some_fn}) \
+                         }} else {{ \
+                         LazyView::Owned({default_expr}) \
+                         }};"
                     ));
                 }
                 return;
@@ -597,25 +595,24 @@ fn emit_field_mapping_arm(
             from: _,
             to,
         } => {
-            let target_is_lazy = schema
+            let target_field = schema
                 .versions
                 .last()
                 .unwrap()
                 .fields
                 .iter()
                 .find(|f| f.name == *target_name)
-                .unwrap()
-                .lazy;
-            if target_is_lazy {
+                .unwrap();
+            if target_field.lazy {
                 if let Some(stmt) = emit_skip_stmt(inner) {
                     w.line(&format!("if {__present} {{"));
                     w.indent();
                     w.line(&stmt);
                     w.dedent();
                     w.line("}");
-                    let none_fn = format!("{target_name}_none");
+                    let default_expr = type_info(&target_field.ty).default_expr;
                     w.line(&format!(
-                        "let {target_name} = LazyView::new(&[], {none_fn});"
+                        "let {target_name} = LazyView::Owned({default_expr});"
                     ));
                 }
                 return;
@@ -974,24 +971,6 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
                     .map(|s| s.trim_end().to_string())
                     .unwrap_or_else(|| format!("Ok({body})"));
                 w.line(&result_body);
-            }
-            w.dedent();
-            w.line("}");
-            w.blank();
-        }
-
-        let none_name = format!("{target_name}_none");
-        if emitted.insert(none_name.clone()) {
-            w.line("#[allow(dead_code)]");
-            w.line(&format!(
-                "fn {none_name}(_buf: &[u8], _pos: &mut usize) -> PojocResult<{rust_ty}> {{"
-            ));
-            w.indent();
-            if is_optional {
-                w.line("Ok(None)");
-            } else {
-                let default = type_info(ty).default_expr;
-                w.line(&format!("Ok({default})"));
             }
             w.dedent();
             w.line("}");
