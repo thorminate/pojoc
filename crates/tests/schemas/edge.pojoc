@@ -1,15 +1,22 @@
+/// The kitchen-sink test schema — exercises every edge case the codegen
+/// needs to handle correctly.
 schema Edge {
   import "player.pojoc" as Player
 
   version 1 {
+    /// Boundary values for numeric primitives, used to sanity-check
+    /// encode/decode of extreme values.
     enum NumericBounds {
+      /// Smallest representable `u8`.
       MinU8,
       MaxU8,
       MinI64,
       MaxI64,
     }
 
+    /// A small leaf struct nested inside `MiddleLayer`.
     type NestedLeaf {
+      /// Arbitrary string payload for the leaf.
       leaf_val: string = "leaf"
       leaf_numeric: i32 = 42
       leaf_rotation: vfloat(min: 0, max: 360, step: 0.1) = 0.0
@@ -35,7 +42,9 @@ schema Edge {
        knockback: vfloat(min: 0, max: 50, step: 0.1) = 0
     }
 
+    /// Tagged-union of every action a player can take in a single tick.
     union Payload {
+      /// A relative movement delta.
       Move: MovePayload,
       Attack: AttackPayload,
     }
@@ -115,6 +124,7 @@ schema Edge {
       lazy_leaf: lazy NestedLeaf                   // heavy nested struct, skip if not needed
 
       // Constant Primitive definitions
+      /// Archimedes' constant, to double precision.
       pi_const: const f64 = 3.141592653589793
       flag_const: const bool = true
 
@@ -201,6 +211,7 @@ schema Edge {
 
       // Step narrowed 0.1 -> 0.05, same range — bit width grows, old wire data must still decode
       ~ angle_deg -> angle_deg_v2: vfloat(min: 0, max: 360, step: 0.05)
+      /// Radius of the heal-over-time splash effect.
       + heal_radius: vfloat(min: 0, max: 25, step: 0.25) = 0.0
       ~ imported_player -> updated_imported_player: Player@6
     }
@@ -271,7 +282,9 @@ schema Edge {
   }
 
   version 4 {
+    /// Coarse-grained access-control flags for a connected client.
     bitset SystemPrivileges {
+      /// Permission to read state.
       Read,
       Write,
       Execute,

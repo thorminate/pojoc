@@ -5,6 +5,9 @@ pub struct SchemaAst {
     pub name: String,
     pub imports: Vec<ImportDeclAst>,
     pub versions: Vec<VersionAst>,
+    /// `///` doc comments directly above the `schema` header — emitted on
+    /// the generated root struct.
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
@@ -48,6 +51,8 @@ pub struct TypeDefAst {
     pub params: Vec<String>,
     pub extends: Option<ExtendsAst>,
     pub body: TypeBody,
+    /// `///` doc comments directly above the `type` header.
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
@@ -61,6 +66,7 @@ pub enum TypeBody {
 #[derive(Debug, Clone)]
 pub struct EnumVariantNode {
     pub name: String,
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
@@ -70,6 +76,7 @@ pub enum EnumDefAst {
     Definition {
         name: String,
         variants: Vec<EnumVariantNode>,
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -77,6 +84,9 @@ pub enum EnumDefAst {
         name: String,
         base: ExtendsAst,
         ops: Vec<EnumVariantOpAst>,
+        /// Overrides the enum's own doc for this and later versions when
+        /// non-empty; otherwise it keeps whatever doc the base version had.
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -95,6 +105,7 @@ impl EnumDefAst {
 pub enum EnumVariantOpAst {
     Add {
         name: String,
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -106,11 +117,20 @@ pub enum EnumVariantOpAst {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct BitsetVariantNode {
+    pub name: String,
+    pub doc: Vec<String>,
+    pub span: Span,
+    pub line: u32,
+}
+
 #[derive(Debug)]
 pub enum BitsetDefAst {
     Definition {
         name: String,
-        variants: Vec<String>,
+        variants: Vec<BitsetVariantNode>,
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -118,6 +138,9 @@ pub enum BitsetDefAst {
         name: String,
         base: ExtendsAst,
         ops: Vec<BitsetOpAst>,
+        /// Overrides the bitset's own doc for this and later versions when
+        /// non-empty; otherwise it keeps whatever doc the base version had.
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -134,14 +157,24 @@ impl BitsetDefAst {
 
 #[derive(Debug)]
 pub enum BitsetOpAst {
-    Add { name: String, span: Span, line: u32 },
-    Remove { name: String, span: Span, line: u32 },
+    Add {
+        name: String,
+        doc: Vec<String>,
+        span: Span,
+        line: u32,
+    },
+    Remove {
+        name: String,
+        span: Span,
+        line: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct UnionVariantAst {
     pub name: String,
     pub payload_ty: TypeAst,
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
@@ -151,6 +184,7 @@ pub enum UnionDefAst {
     Definition {
         name: String,
         variants: Vec<UnionVariantAst>,
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -158,6 +192,9 @@ pub enum UnionDefAst {
         name: String,
         base: ExtendsAst,
         ops: Vec<UnionVariantOpAst>,
+        /// Overrides the union's own doc for this and later versions when
+        /// non-empty; otherwise it keeps whatever doc the base version had.
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -177,6 +214,7 @@ pub enum UnionVariantOpAst {
     Add {
         name: String,
         payload_ty: TypeAst,
+        doc: Vec<String>,
         span: Span,
         line: u32,
     },
@@ -194,6 +232,7 @@ pub struct FieldAst {
     pub ty: TypeAst,
     pub default: Option<DefaultValueAst>,
     pub lazy: bool,
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
@@ -203,6 +242,7 @@ pub struct ConstFieldAst {
     pub name: String,
     pub ty: TypeAst,
     pub value: DefaultValueAst,
+    pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
 }
