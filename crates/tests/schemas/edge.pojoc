@@ -40,6 +40,24 @@ schema Edge {
       Attack: AttackPayload,
     }
 
+    // Generic type templates — monomorphized per distinct instantiation, so
+    // Box<i32> and Pair<i32, string> below become two entirely separate
+    // generated structs sharing no code, exercising the generics feature.
+    type Box<T> {
+      value: T
+    }
+
+    type Pair<A, B> {
+      first: A
+      second: B
+    }
+
+    type Triple<A, B, C> {
+      first: A
+      second: B
+      third: C
+    }
+
     fields {
       // Primitive & Boundary Numerical Extremes
       u8_max: u8 = 255
@@ -80,6 +98,17 @@ schema Edge {
 
       // Deep Structured Objects
       root_struct: MiddleLayer
+
+      // Generic instantiations — same template (Box<T>), different type
+      // arguments, must produce distinct wire-compatible structs.
+      generic_box: Box<i32>
+      generic_pair: Pair<i32, string>
+      generic_triple: Triple<i32, string, bool>
+
+      // `as Alias` picks the monomorphized struct's name explicitly instead
+      // of the auto-mangled one — same template and shape as `generic_box`,
+      // but a distinct, separately-named type.
+      generic_flag_box: Box<bool> as FlagBox
 
       // Lazy fields present from v1 — skipped on hot path, decoded on demand
       lazy_blob: lazy [u8] = []                    // raw byte payload, often unused
@@ -130,6 +159,13 @@ schema Edge {
       splash_radius: vfloat(min: 0, max: 10, step: 0.1) = 0.0
     }
 
+    // Same-name generic evolution — Box<T> gains a field the same way any
+    // other struct type evolves via `extends`, just with its type parameter
+    // carried through unchanged.
+    type Box<T> extends Box<T>@1 {
+      + label: string = "unlabeled"
+    }
+
     // Add-only union evolution — same shape as the enum/bitset extension
     // mechanism, just for tagged variants instead of plain discriminants.
     union Payload extends Payload@1 {
@@ -145,6 +181,11 @@ schema Edge {
       ~ fixed_str_min: string(8)
       + newly_added_optional: u64?
       ~ root_struct: MiddleLayer
+
+      // Re-resolve to the v2 Box<i32> instantiation (now label-aware) — same
+      // repin-via-UpdateType exercise as `root_struct` above, but for a
+      // monomorphized generic type instead of a plain struct.
+      ~ generic_box: Box<i32>
       ~ legacy_positions: [i32](delta)
       + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 1000]
 
@@ -188,12 +229,26 @@ schema Edge {
       Pong: PongPayload,
     }
 
+    // First step of a generic type-parameter-evolution chain (see v4/v5
+    // below): a single-parameter template introduced fresh at v3.
+    type Mono<A> {
+      value: A
+    }
+
     diff {
       + basic_map: map<string, string> = {}
       + fixed_map_empty: map<i32, f32>(0) = {}
       + fixed_map_populated: map<string, i64>(4) = {"ok": -1, "not_ok": 1, "bad": 0, "bad2": 0}
       + nested_map: map<string, [map<i32, bool>]> = {}
       + void_container: EmptyStruct
+
+      // Struct-typed diff Add — same free `Default::default()` pass as
+      // `control` below, just for a monomorphized generic instantiation.
+      // First link of the type-parameter-evolution chain below (v4/v5) —
+      // each version pins its own field rather than retyping this one,
+      // since (like any struct field in this schema) retyping across an
+      // incompatible shape isn't supported, generic or not.
+      + generic_mono_v3: Mono<string>
 
       ~ fixed_arr_populated -> array_to_map: map<i32, u8>
       ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)]
@@ -241,6 +296,13 @@ schema Edge {
       + Disconnect: DisconnectPayload
     }
 
+    // Second step of the type-parameter-evolution chain — a *different*
+    // generic name (`Duo`) extends `Mono`, passing its single param `A`
+    // through unchanged and adding a brand-new param `B` of its own.
+    type Duo<A, B> extends Mono<A>@3 {
+      + secondary: B?
+    }
+
     diff {
       + opt_u8: u8?
       + opt_i16: i16?
@@ -258,6 +320,10 @@ schema Edge {
       + hw_flags: HardwareFlags = HardwareFlags(IsCpuBound: true, HasVulkan: true)
 
       + opt_delta_arr: [i32](delta)?
+
+      // Second link of the chain — a fresh field pinned to `Duo`, the
+      // cross-name extension of `Mono` that adds its own parameter `B`.
+      + generic_duo_v4: Duo<string, i32>
 
       // Re-resolve to ControlSignal@4 (now Disconnect-aware) — same Cast
       // exercise as `~ action: Payload` above, this time on the second union.
@@ -299,11 +365,24 @@ schema Edge {
       + Despawn: DespawnPayload
     }
 
+    // Final step of the type-parameter-evolution chain — back to a
+    // single-param `Mono`, dropping `Duo`'s `B` via `_`. The dropped param's
+    // only user (`secondary`) must be cleaned up in this same diff, below.
+    type Mono<A> extends Duo<A, _>@4 {
+      - secondary
+    }
+
     diff {
       ~ privileges -> system_perms: SystemPrivileges
       ~ hw_flags -> legacy_hw_flags: u32
 
       + ultimate_boss_structure: DeepComplexWrapper
+
+      // Final link of the chain — a fresh field pinned to this version's
+      // `Mono`, which dropped `Duo`'s `B` via `_` above. Structurally
+      // identical to v3's `Mono<string>` (both are just `{ value: string }`),
+      // proving the wildcard-drop path produces a compatible shape again.
+      + generic_mono_v5: Mono<string>
 
       ~ fixed_str_padded: string(2)
       ~ fixed_map_populated: map<string, i64>(2)
