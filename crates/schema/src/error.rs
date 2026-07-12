@@ -83,6 +83,39 @@ pub enum AnalysisError {
         line: u32,
     },
 
+    #[error(
+        "generic type '{name}' in version {version} expects {expected} type argument(s), got {found}"
+    )]
+    GenericArityMismatch {
+        name: String,
+        expected: usize,
+        found: usize,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
+    #[error(
+        "generic instantiation '{name}' in version {version} collides with an existing type of the same name"
+    )]
+    GenericNameCollision {
+        name: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
+    #[error(
+        "type '{type_name}' in version {version} drops a type parameter via `_` but field '{field}' still references it — remove or retype it in this diff"
+    )]
+    UnresolvedGenericWildcard {
+        field: String,
+        type_name: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
     #[error("version {version}: enum '{type_name}' has no variant '{variant}'")]
     UnknownEnumVariant {
         type_name: String,
@@ -295,6 +328,9 @@ impl IndexableError for AnalysisError {
     fn span(&self) -> Span {
         match self {
             AnalysisError::UnknownType { span, .. } => *span,
+            AnalysisError::GenericArityMismatch { span, .. } => *span,
+            AnalysisError::GenericNameCollision { span, .. } => *span,
+            AnalysisError::UnresolvedGenericWildcard { span, .. } => *span,
             AnalysisError::UnknownParentType { span, .. } => *span,
             AnalysisError::UnknownEnumVariant { span, .. } => *span,
             AnalysisError::ExtendsWithFullDefinition { span, .. } => *span,
@@ -325,6 +361,9 @@ impl IndexableError for AnalysisError {
     fn line(&self) -> u32 {
         match self {
             AnalysisError::UnknownType { line, .. } => *line,
+            AnalysisError::GenericArityMismatch { line, .. } => *line,
+            AnalysisError::GenericNameCollision { line, .. } => *line,
+            AnalysisError::UnresolvedGenericWildcard { line, .. } => *line,
             AnalysisError::UnknownParentType { line, .. } => *line,
             AnalysisError::UnknownEnumVariant { line, .. } => *line,
             AnalysisError::ExtendsWithFullDefinition { line, .. } => *line,
