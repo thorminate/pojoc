@@ -34,6 +34,13 @@ pub struct SchemaIndex {
     pub field_docs: HashMap<(Option<String>, String), Vec<String>>,
     /// (enum/union/bitset name, variant name) -> doc.
     pub variant_docs: HashMap<(String, String), Vec<String>>,
+    /// Type name -> its current (name, type, lazy) field shape as declared
+    /// in the schema source. Unlike the fully-resolved `ResolvedSchema`,
+    /// this is populated even for un-instantiated generic templates (which
+    /// have no monomorphized `TypeId` of their own to look up) — the
+    /// primary consumer is hover, which falls back to this raw shape when
+    /// a type name has no corresponding resolved type.
+    pub generic_field_asts: HashMap<String, Vec<(String, TypeAst, bool)>>,
 }
 
 impl SchemaIndex {
@@ -76,6 +83,13 @@ impl SchemaIndex {
                                         c.doc.clone(),
                                     );
                                 }
+                                idx.generic_field_asts.insert(
+                                    t.name.clone(),
+                                    f.fields
+                                        .iter()
+                                        .map(|fld| (fld.name.clone(), fld.ty.clone(), fld.lazy))
+                                        .collect(),
+                                );
                                 let names = field_names(f);
                                 type_running.insert(t.name.clone(), names);
                             }
@@ -88,6 +102,9 @@ impl SchemaIndex {
                                     .insert((t.name.clone(), v.version), entry.clone());
                                 apply_diff(entry, ops);
                                 apply_diff_docs(&mut idx, Some(&t.name), ops);
+                                let field_ast_entry =
+                                    idx.generic_field_asts.entry(t.name.clone()).or_default();
+                                apply_diff_to_field_asts(field_ast_entry, ops);
                             }
                         }
                     }
@@ -357,6 +374,42 @@ fn apply_diff(fields: &mut Vec<String>, ops: &[DiffAst]) {
                 }
             }
             DiffAst::UpdateType { .. } | DiffAst::UpdateConst { .. } => {}
+        }
+    }
+}
+
+fn apply_diff_to_field_asts(fields: &mut Vec<(String, TypeAst, bool)>, ops: &[DiffAst]) {
+    for op in ops {
+        match op {
+            DiffAst::Add { field } => {
+                fields.push((field.name.clone(), field.ty.clone(), field.lazy));
+            }
+            DiffAst::Remove { name, .. } => fields.retain(|(n, _, _)| n != name),
+            DiffAst::Rename { from, to, .. } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == from) {
+                    f.0 = to.clone();
+                }
+            }
+            DiffAst::UpdateType { name, ty, lazy, .. } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == name) {
+                    f.1 = ty.clone();
+                    f.2 = *lazy;
+                }
+            }
+            DiffAst::Transform {
+                from, to, ty, lazy, ..
+            } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == from) {
+                    f.0 = to.clone();
+                    if let Some(ty) = ty {
+                        f.1 = ty.clone();
+                    }
+                    f.2 = *lazy;
+                }
+            }
+            DiffAst::AddConst { .. }
+            | DiffAst::TransformConst { .. }
+            | DiffAst::UpdateConst { .. } => {}
         }
     }
 }
