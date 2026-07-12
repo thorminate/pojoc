@@ -7,8 +7,6 @@ fn id(name: &str) -> TypeId {
     }
 }
 
-// --- normalize_type / is_primitive -----------------------------------------
-
 #[test]
 fn normalize_type_maps_known_aliases() {
     assert_eq!(normalize_type("byte"), "u8");
@@ -48,8 +46,6 @@ fn is_primitive_rejects_struct_names() {
     assert!(!is_primitive("MyStruct"));
     assert!(!is_primitive("Player"));
 }
-
-// --- ResolvedTypeRef::type_id() ---------------------------------------------
 
 #[test]
 fn type_id_unwraps_through_containers() {
@@ -107,8 +103,6 @@ fn type_id_is_none_for_shapeless_containers() {
     );
 }
 
-// --- VFloatBacking -----------------------------------------------------------
-
 #[test]
 fn vfloat_backing_reports_consistent_widths() {
     assert_eq!(VFloatBacking::U16.wire_size(), 2);
@@ -121,8 +115,6 @@ fn vfloat_backing_reports_consistent_widths() {
     assert_eq!(VFloatBacking::U32.read_fn(), "read_u32");
     assert_eq!(VFloatBacking::U32.write_fn(), "write_u32");
 }
-
-// --- type_info() -------------------------------------------------------------
 
 #[test]
 fn type_info_scalar_primitives_have_fixed_or_variable_wire_size() {
@@ -172,7 +164,6 @@ fn type_info_array_and_fixed_array_wire_sizes() {
     assert_eq!(array.wire_size, WireSize::Variable);
     assert_eq!(array.rust_type, "PojocVec<u32>");
 
-    // Fixed arrays of fixed-size elements have a fixed total wire size.
     let fixed = type_info(&ResolvedTypeRef::FixedArray(
         Box::new(ResolvedTypeRef::Scalar(id("u32"))),
         4,
@@ -180,7 +171,6 @@ fn type_info_array_and_fixed_array_wire_sizes() {
     assert_eq!(fixed.wire_size, WireSize::Fixed(16));
     assert_eq!(fixed.rust_type, "[u32; 4]");
 
-    // A fixed array of a variable-size element is itself variable.
     let fixed_of_variable = type_info(&ResolvedTypeRef::FixedArray(
         Box::new(ResolvedTypeRef::Scalar(id("string"))),
         4,
@@ -197,7 +187,6 @@ fn type_info_map_and_fixed_map() {
     assert_eq!(map.rust_type, "PojocMap<PojocString, i32>");
     assert_eq!(map.wire_size, WireSize::Variable);
 
-    // A fixed map of two fixed-size scalars has a fixed total wire size.
     let fixed_map = type_info(&ResolvedTypeRef::FixedMap(
         Box::new(ResolvedTypeRef::Scalar(id("i32"))),
         Box::new(ResolvedTypeRef::Scalar(id("f32"))),
@@ -249,8 +238,6 @@ fn type_info_imported_schema_namespaces_by_alias() {
     assert_eq!(info.write_fn, "player::encode_v2");
 }
 
-// --- TypeInfo::size_expr() ----------------------------------------------------
-
 #[test]
 fn size_expr_fixed_size_ignores_accessor() {
     let info = type_info(&ResolvedTypeRef::Scalar(id("u32")));
@@ -287,8 +274,6 @@ fn size_expr_falls_back_to_snake_case_size_hint_and_adds_borrow_when_needed() {
         "size_hint_box_i32(&self.value)"
     );
 }
-
-// --- delta eligibility ---------------------------------------------------------
 
 #[test]
 fn delta_eligible_integers_only() {
