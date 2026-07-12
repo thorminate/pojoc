@@ -2,6 +2,7 @@ use crate::completion::{
     BlockKind, SchemaIndex, Tok, cursor_in_line_comment, scan, tokenize_prefix,
 };
 use pojoc_core::types::{ResolvedTypeRef, TypeId};
+use pojoc_schema::ast::TypeAst;
 use pojoc_schema::ir::ir_types::*;
 use std::collections::HashMap;
 
@@ -35,7 +36,7 @@ pub fn hover_for_position(
     let prefix = &text[..start];
     let tokens = tokenize_prefix(prefix);
     let state = scan(&tokens);
-    let target = classify(&word, &state.pending, &state.stack, idx)?;
+    let target = classify(&word, &state.pending, &state.stack, idx, resolved)?;
     let markdown = render_hover(target, idx, resolved)?;
     Some((markdown, start, end))
 }
@@ -64,6 +65,7 @@ fn classify(
     pending: &[Tok],
     stack: &[BlockKind],
     idx: &SchemaIndex,
+    resolved: Option<&ResolvedSchema>,
 ) -> Option<HoverTarget> {
     // Immediately preceded by a declaring keyword -> this word IS the
     // type/enum/union/bitset/schema name being declared (or extended).
@@ -133,6 +135,16 @@ fn classify(
         return Some(HoverTarget::Bitset(word.to_string()));
     }
 
+    // A monomorphized generic instantiation's name — either auto-mangled
+    // (`Box<i32>` -> `BoxI32`) or an explicit `as Alias` — exists only as a
+    // resolved `TypeId`, never as a `type` keyword declaration, so it's
+    // absent from every `idx.*_names` set above.
+    if let Some(r) = resolved
+        && r.types.types.keys().any(|id| id.name == word)
+    {
+        return Some(HoverTarget::Type(word.to_string()));
+    }
+
     // Last resort: a bare variant name with no `Owner::` qualifier (best
     // effort — picks whichever enum/union/bitset happens to declare it).
     idx.variant_docs
@@ -166,12 +178,22 @@ fn render_hover(
             doc_only_markdown(&idx.schema_doc)
         }
         HoverTarget::Type(name) => {
-            if let Some(r) = resolved {
-                if let Some(t) = latest_by_name(&r.types.types, &name) {
-                    let sig = render_type_signature(&name, &t.fields, &t.const_fields);
-                    return Some(markdown_with_doc(&sig, &t.doc));
-                }
-                return None;
+            if let Some(r) = resolved
+                && let Some(t) = latest_by_name(&r.types.types, &name)
+            {
+                let sig = render_type_signature(&name, &t.fields, &t.const_fields);
+                return Some(markdown_with_doc(&sig, &t.doc));
+            }
+            // Un-instantiated generic template (e.g. `Box<T>` hovered by its
+            // own name) — codegen never sees these, only monomorphizations,
+            // so there's no resolved `TypeId` to look up; render the
+            // declared shape straight from the AST instead, params left
+            // abstract.
+            if let Some(fields) = idx.generic_field_asts.get(&name) {
+                let params = idx.generic_params.get(&name).cloned().unwrap_or_default();
+                let sig = render_generic_type_signature(&name, &params, fields);
+                let doc = idx.type_docs.get(&name).cloned().unwrap_or_default();
+                return Some(markdown_with_doc(&sig, &doc));
             }
             idx.type_docs.get(&name).and_then(|d| doc_only_markdown(d))
         }
@@ -209,34 +231,56 @@ fn render_hover(
         }
         HoverTarget::Field { owner, name } => {
             if let Some(r) = resolved {
-                let (fields, consts): (&[FieldIR], &[ResolvedConst]) = match &owner {
-                    Some(o) => {
-                        let t = latest_by_name(&r.types.types, o)?;
-                        (&t.fields, &t.const_fields)
-                    }
-                    None => {
-                        let latest = r.versions.last()?;
-                        (&latest.fields, &latest.const_fields)
-                    }
+                let found: Option<(&[FieldIR], &[ResolvedConst])> = match &owner {
+                    Some(o) => latest_by_name(&r.types.types, o)
+                        .map(|t| (&t.fields[..], &t.const_fields[..])),
+                    None => r
+                        .versions
+                        .last()
+                        .map(|latest| (&latest.fields[..], &latest.const_fields[..])),
                 };
-                if let Some(f) = fields.iter().find(|f| f.name == name) {
-                    let ty = render_type_ref(&f.ty);
-                    let sig = if f.lazy {
-                        format!("{name}: lazy {ty}")
-                    } else {
-                        format!("{name}: {ty}")
-                    };
-                    return Some(markdown_with_doc(&sig, &f.doc));
+                if let Some((fields, consts)) = found {
+                    if let Some(f) = fields.iter().find(|f| f.name == name) {
+                        let ty = render_type_ref(&f.ty);
+                        let sig = if f.lazy {
+                            format!("{name}: lazy {ty}")
+                        } else {
+                            format!("{name}: {ty}")
+                        };
+                        return Some(markdown_with_doc(&sig, &f.doc));
+                    }
+                    if let Some(c) = consts.iter().find(|c| c.name == name) {
+                        let sig = format!(
+                            "const {name}: {} = {}",
+                            rust_type_to_schema(c.rust_type),
+                            render_const_value(&c.value)
+                        );
+                        return Some(markdown_with_doc(&sig, &c.doc));
+                    }
                 }
-                if let Some(c) = consts.iter().find(|c| c.name == name) {
-                    let sig = format!(
-                        "const {name}: {} = {}",
-                        rust_type_to_schema(c.rust_type),
-                        render_const_value(&c.value)
-                    );
-                    return Some(markdown_with_doc(&sig, &c.doc));
-                }
-                return None;
+            }
+            // Field of an un-instantiated generic template — no resolved
+            // `TypeId` for the owner (see the `HoverTarget::Type` case
+            // above), so render straight from the declared AST shape.
+            if let Some(o) = &owner
+                && let Some(f) = idx
+                    .generic_field_asts
+                    .get(o)
+                    .and_then(|fields| fields.iter().find(|(n, ..)| n == &name))
+            {
+                let (_, ty, lazy) = f;
+                let rendered = render_type_ast(ty);
+                let sig = if *lazy {
+                    format!("{name}: lazy {rendered}")
+                } else {
+                    format!("{name}: {rendered}")
+                };
+                let doc = idx
+                    .field_docs
+                    .get(&(owner.clone(), name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                return Some(markdown_with_doc(&sig, &doc));
             }
             idx.field_docs
                 .get(&(owner, name))
@@ -343,6 +387,71 @@ fn render_type_ref(ty: &ResolvedTypeRef) -> String {
         ResolvedTypeRef::Optional(inner) => format!("{}?", render_type_ref(inner)),
         ResolvedTypeRef::ImportedSchema { alias, version, .. } => format!("{alias}@{version}"),
     }
+}
+
+/// Same idea as `render_type_ref`, but for the unresolved parser `TypeAst`
+/// — used for generic templates, which have no monomorphized `ResolvedTypeRef`
+/// of their own (only their concrete instantiations do).
+fn render_type_ast(ty: &TypeAst) -> String {
+    match ty {
+        TypeAst::Named(n) => n.clone(),
+        TypeAst::Generic(name, args, alias) => match alias {
+            Some(a) => a.clone(),
+            None => format!(
+                "{name}<{}>",
+                args.iter()
+                    .map(render_type_ast)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+        TypeAst::Optional(inner) => format!("{}?", render_type_ast(inner)),
+        TypeAst::Array(inner) => format!("[{}]", render_type_ast(inner)),
+        TypeAst::FixedArray(inner, n) => format!("[{}]({n})", render_type_ast(inner)),
+        TypeAst::DeltaArray(inner) => format!("[{}](delta)", render_type_ast(inner)),
+        TypeAst::FixedDeltaArray(inner, n) => format!("[{}](delta, {n})", render_type_ast(inner)),
+        TypeAst::FixedString(n) => format!("string({n})"),
+        TypeAst::Map(k, v) => format!("map<{}, {}>", render_type_ast(k), render_type_ast(v)),
+        TypeAst::FixedMap(k, v, n) => {
+            format!("map<{}, {}>({n})", render_type_ast(k), render_type_ast(v))
+        }
+        TypeAst::Tuple(elems) => format!(
+            "({})",
+            elems
+                .iter()
+                .map(render_type_ast)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TypeAst::VFloat { min, max, step } => {
+            format!("vfloat(min: {min}, max: {max}, step: {step})")
+        }
+        TypeAst::Imported { alias, version } => format!("{alias}@{version}"),
+        TypeAst::Wildcard => "_".to_string(),
+    }
+}
+
+fn render_generic_type_signature(
+    name: &str,
+    params: &[String],
+    fields: &[(String, TypeAst, bool)],
+) -> String {
+    let header = if params.is_empty() {
+        format!("type {name} {{")
+    } else {
+        format!("type {name}<{}> {{", params.join(", "))
+    };
+    let mut lines = vec![header];
+    for (fname, ty, lazy) in fields {
+        let rendered = render_type_ast(ty);
+        if *lazy {
+            lines.push(format!("    {fname}: lazy {rendered},"));
+        } else {
+            lines.push(format!("    {fname}: {rendered},"));
+        }
+    }
+    lines.push("}".to_string());
+    lines.join("\n")
 }
 
 fn render_type_signature(name: &str, fields: &[FieldIR], consts: &[ResolvedConst]) -> String {
@@ -680,5 +789,132 @@ schema Test {
 "#,
         );
         assert!(md.is_none());
+    }
+
+    #[test]
+    fn hover_on_generic_template_declaration_shows_abstract_shape() {
+        // `Box<T>` itself is never a resolved `TypeId` — only its concrete
+        // instantiations (`BoxI32`, ...) are — so this must fall back to
+        // the raw AST shape rather than finding nothing.
+        let md = hover(
+            r#"
+schema Test {
+  version 1 {
+    /// A generic container.
+    type |Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<i32>
+    }
+  }
+}
+"#,
+        )
+        .expect("expected hover on the generic template's own declaration");
+        assert!(md.contains("type Box<T> {"), "{md}");
+        assert!(md.contains("value: T"), "{md}");
+        assert!(md.contains("A generic container."), "{md}");
+    }
+
+    #[test]
+    fn hover_on_generic_template_field_shows_its_type_param() {
+        let md = hover(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      /// The wrapped value.
+      |value: T
+    }
+    fields {
+      b: Box<i32>
+    }
+  }
+}
+"#,
+        )
+        .expect("expected hover on a generic template's own field");
+        assert!(md.contains("value: T"), "{md}");
+        assert!(md.contains("The wrapped value."), "{md}");
+    }
+
+    #[test]
+    fn hover_on_generic_instantiation_reference_shows_template_shape() {
+        // Hovering `Box` at a use site (`b: Box<i32>`) shows the same
+        // abstract template shape — there's no way to know from the bare
+        // name alone which instantiation the reader has in mind.
+        let md = hover(
+            r#"
+schema Test {
+  version 1 {
+    /// A generic container.
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: |Box<i32>
+    }
+  }
+}
+"#,
+        )
+        .expect("expected hover on a generic instantiation reference");
+        assert!(md.contains("type Box<T> {"), "{md}");
+        assert!(md.contains("A generic container."), "{md}");
+    }
+
+    #[test]
+    fn hover_on_as_alias_resolves_the_monomorphized_type() {
+        // `as FlagBox` names a monomorphization explicitly; it only exists
+        // as a resolved `TypeId`, never as a `type` keyword declaration, so
+        // it's absent from every raw-AST name set.
+        let md = hover(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<bool> as |FlagBox
+    }
+  }
+}
+"#,
+        )
+        .expect("expected hover on an `as Alias` monomorphization");
+        assert!(md.contains("type FlagBox {"), "{md}");
+        assert!(md.contains("value: bool"), "{md}");
+    }
+
+    #[test]
+    fn hover_on_generic_field_added_via_extends_diff() {
+        // Fields added to a generic template via `extends` must also show
+        // up in the raw-AST fallback shape, not just fields from the
+        // original declaration.
+        let md = hover(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<i32>
+    }
+  }
+  version 2 {
+    type Box<T> extends Box<T>@1 {
+      /// A human-readable tag.
+      + |label: string = "unlabeled"
+    }
+  }
+}
+"#,
+        )
+        .expect("expected hover on a field added via extends diff");
+        assert!(md.contains("label: string"), "{md}");
+        assert!(md.contains("A human-readable tag."), "{md}");
     }
 }
