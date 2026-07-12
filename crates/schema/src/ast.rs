@@ -28,23 +28,31 @@ pub enum VersionBlockAst {
 }
 
 #[derive(Debug, Clone)]
+pub enum GenericArgAst {
+    Type(TypeAst),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
 pub struct ExtendsAst {
     pub name: String,
     pub version: i128,
+    pub args: Vec<GenericArgAst>,
     pub span: Span,
     pub line: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeDefAst {
     pub name: String,
+    pub params: Vec<String>,
     pub extends: Option<ExtendsAst>,
     pub body: TypeBody,
     pub span: Span,
     pub line: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeBody {
     Fields(FieldsAst),
     Diff(Vec<DiffAst>),
@@ -231,6 +239,9 @@ pub enum DefaultValueAst {
 #[derive(Debug, Clone)]
 pub enum TypeAst {
     Named(String),
+    /// `Name<args>`, with an optional `as Alias` naming the monomorphized
+    /// instantiation instead of using the auto-mangled name.
+    Generic(String, Vec<TypeAst>, Option<String>),
     Optional(Box<TypeAst>),
     Array(Box<TypeAst>),
     FixedArray(Box<TypeAst>, usize),
@@ -240,8 +251,19 @@ pub enum TypeAst {
     Map(Box<TypeAst>, Box<TypeAst>),
     FixedMap(Box<TypeAst>, Box<TypeAst>, usize),
     Tuple(Vec<TypeAst>),
-    VFloat { min: f64, max: f64, step: f64 },
-    Imported { alias: String, version: i128 },
+    VFloat {
+        min: f64,
+        max: f64,
+        step: f64,
+    },
+    Imported {
+        alias: String,
+        version: i128,
+    },
+    /// Internal-only marker produced when a generic ancestor's type parameter is
+    /// dropped via `_` in an `extends<...>` argument list. Never produced by the
+    /// parser; must not survive past `template_shape` resolution.
+    Wildcard,
 }
 
 #[derive(Debug, Clone)]

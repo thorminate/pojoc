@@ -1,5 +1,6 @@
 mod helpers;
 use helpers::*;
+use pojoc::{LazyView, pojvec};
 use pojoc_tests::pojoc_edge::*;
 
 #[test]
@@ -70,6 +71,22 @@ fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
             decoded.root_struct.leaf.leaf_numeric, original.root_struct.leaf.leaf_numeric,
             "v{version}: root_struct.leaf.leaf_numeric mismatch"
         );
+        assert_eq!(
+            decoded.generic_box.value, original.generic_box.value,
+            "v{version}: generic_box.value mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.first, original.generic_triple.first,
+            "v{version}: generic_triple.first mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.second, original.generic_triple.second,
+            "v{version}: generic_triple.second mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.third, original.generic_triple.third,
+            "v{version}: generic_triple.third mismatch"
+        );
     }
 }
 
@@ -99,8 +116,15 @@ fn test_encode_for_version_latest_version_fields_survive() {
         decoded.system_perms, original.system_perms,
         "v{latest}: system_perms mismatch"
     );
+    assert_eq!(
+        decoded.generic_box.label, original.generic_box.label,
+        "v{latest}: generic_box.label mismatch"
+    );
     assert_payload_eq(&decoded.action, &original.action);
     assert_control_signal_eq(&decoded.control, &original.control);
+    assert_mono_string_eq(&decoded.generic_mono_v3, &original.generic_mono_v3);
+    assert_duo_string_i32_eq(&decoded.generic_duo_v4, &original.generic_duo_v4);
+    assert_mono_string_eq(&decoded.generic_mono_v5, &original.generic_mono_v5);
 }
 #[test]
 fn test_encode_for_version_latest_is_byte_identical_to_encode() {
@@ -188,5 +212,44 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
             assert_eq!(data, &vec![0xDE, 0xAD, 0xBE, 0xEF]);
         }
         other => panic!("expected Unknown variant to survive roundtrip, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_raw_passthrough_is_byte_identical() {
+    let original = make_populated_edge();
+    let mut buf = Vec::new();
+    encode(&mut buf, &original);
+
+    let decoded = decode(&buf).expect("decode failed");
+    let mut reencoded = Vec::new();
+    encode(&mut reencoded, &decoded);
+
+    assert_eq!(
+        buf, reencoded,
+        "lazy Raw fields did not pass through byte-identical"
+    );
+}
+
+#[test]
+fn test_lazy_field_owned_roundtrip() {
+    let mut e = Edge::default();
+    let expected = Some(pojvec!("wow"));
+    e.lazy_audit_log = LazyView::Owned(Some(pojvec!("wow")));
+
+    let mut buf = Vec::new();
+    encode(&mut buf, &e);
+    let decoded = decode(&buf).expect("decode failed");
+
+    let value = decoded.lazy_audit_log.get().expect("lazy get failed");
+    assert_eq!(value, expected);
+}
+
+#[test]
+fn test_lazy_field_default_is_owned_not_raw() {
+    let e = Edge::default();
+    match &e.lazy_audit_log {
+        LazyView::Owned(_) => {}
+        LazyView::Raw { .. } => panic!("default lazy field should be Owned, not Raw"),
     }
 }
