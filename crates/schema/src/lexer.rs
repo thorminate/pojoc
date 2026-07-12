@@ -51,6 +51,11 @@ pub enum Token {
     FloatLiteral(CompactString),
     Identifier(CompactString),
     StringLiteral(CompactString),
+    /// A `/// text` doc comment line — one token per line, text already
+    /// stripped of the leading `///` and (if present) one following space.
+    /// Plain `//` comments (and `////`+) are not doc comments and never
+    /// produce a token; they're discarded like whitespace.
+    DocComment(CompactString),
     Keyword(Keyword),
     Equals,
     LBrace,
@@ -81,6 +86,7 @@ impl std::fmt::Display for Token {
             Token::FloatLiteral(s) => write!(f, "{}", s),
             Token::Identifier(s) => write!(f, "{}", s),
             Token::StringLiteral(s) => write!(f, "{}", s),
+            Token::DocComment(s) => write!(f, "///{}", s),
             Token::Keyword(k) => write!(f, "{}", k),
             Token::Equals => write!(f, "="),
             Token::LBrace => write!(f, "{{"),
@@ -167,6 +173,11 @@ impl Lexer {
                 }
             }
 
+            if self.at_doc_comment() {
+                // Leave it for `tokenize()` to read as a real `DocComment` token.
+                break;
+            }
+
             if self.peek() == Some('/') && self.peek_next() == Some('/') {
                 self.advance();
                 self.advance();
@@ -183,6 +194,31 @@ impl Lexer {
                 break;
             }
         }
+    }
+
+    /// True at a `///` doc comment — exactly three slashes. A fourth (as in
+    /// `////`) makes it a plain, non-doc comment, matching rustdoc's own rule.
+    fn at_doc_comment(&self) -> bool {
+        self.input.get(self.pos) == Some(&'/')
+            && self.input.get(self.pos + 1) == Some(&'/')
+            && self.input.get(self.pos + 2) == Some(&'/')
+            && self.input.get(self.pos + 3) != Some(&'/')
+    }
+
+    /// Reads a `/// text` line (the lexer must already be positioned at the
+    /// leading `/`), stripping the `///` and one following space if present.
+    fn read_doc_comment(&mut self) -> Token {
+        self.advance();
+        self.advance();
+        self.advance();
+        if self.peek() == Some(' ') {
+            self.advance();
+        }
+        let mut s = CompactString::new("");
+        while !matches!(self.peek(), Some('\n') | None) {
+            s.push(self.advance().unwrap());
+        }
+        Token::DocComment(s)
     }
 
     fn read_ident_or_keyword(&mut self) -> Token {
@@ -374,6 +410,7 @@ impl Lexer {
                                 });
                             }
                         }
+                        '/' => self.read_doc_comment(),
                         c if c.is_alphabetic() || c == '_' => self.read_ident_or_keyword(),
                         c if c.is_ascii_digit() => self.read_number(),
                         c => {

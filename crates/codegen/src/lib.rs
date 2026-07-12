@@ -214,8 +214,10 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 let mut default_bytes = vec![0u8; computed_len];
                 for (flag_name, flag_val) in kvs {
                     if *flag_val
-                        && let Some(idx) =
-                            resolved_bitset.variants.iter().position(|v| v == flag_name)
+                        && let Some(idx) = resolved_bitset
+                            .variants
+                            .iter()
+                            .position(|v| v.name == *flag_name)
                     {
                         default_bytes[idx / 8] |= 1 << (idx % 8);
                     }

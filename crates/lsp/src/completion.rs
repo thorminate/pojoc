@@ -177,7 +177,10 @@ fn apply_enum(idx: &mut SchemaIndex, e: &EnumDefAst) {
 fn apply_bitset(idx: &mut SchemaIndex, b: &BitsetDefAst) {
     match b {
         BitsetDefAst::Definition { name, variants, .. } => {
-            idx.bitset_variants.insert(name.clone(), variants.clone());
+            idx.bitset_variants.insert(
+                name.clone(),
+                variants.iter().map(|v| v.name.clone()).collect(),
+            );
         }
         BitsetDefAst::Extension { name, ops, .. } => {
             let list = idx.bitset_variants.entry(name.clone()).or_default();
