@@ -39,6 +39,10 @@ pub struct FieldIR {
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
     pub lazy: bool,
+    /// `///` doc lines carried through unchanged across renames/retypes,
+    /// same as `default` — only set (or replaced) where the field is
+    /// declared or `+ Add`ed.
+    pub doc: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,11 +56,13 @@ pub struct VersionContext {
 pub struct EnumVariant {
     pub name: String,
     pub wire_value: u32,
+    pub doc: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedEnum {
     pub variants: Vec<EnumVariant>,
+    pub doc: Vec<String>,
 }
 
 impl ResolvedEnum {
@@ -95,8 +101,15 @@ impl EnumRegistry {
 }
 
 #[derive(Debug, Clone)]
+pub struct BitsetVariant {
+    pub name: String,
+    pub doc: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedBitset {
-    pub variants: Vec<String>,
+    pub variants: Vec<BitsetVariant>,
+    pub doc: Vec<String>,
 }
 
 impl ResolvedBitset {
@@ -126,11 +139,13 @@ pub struct UnionVariant {
     pub name: String,
     pub payload: ResolvedTypeRef,
     pub discriminant: u64,
+    pub doc: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedUnion {
     pub variants: Vec<UnionVariant>,
+    pub doc: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -155,6 +170,7 @@ impl UnionRegistry {
 pub struct ResolvedType {
     pub fields: Vec<FieldIR>,
     pub const_fields: Vec<ResolvedConst>,
+    pub doc: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +178,7 @@ pub struct ResolvedConst {
     pub name: String,
     pub rust_type: &'static str,
     pub value: DefaultValue,
+    pub doc: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +198,9 @@ pub struct ResolvedSchema {
     pub bitsets: BitsetRegistry,
     pub lineage: SchemaLineage,
     pub imports: HashMap<String, Arc<ResolvedSchema>>,
+    /// `///` doc comments directly above the `schema` header — emitted on
+    /// the generated root struct.
+    pub doc: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
