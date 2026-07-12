@@ -9,6 +9,74 @@ use pojoc_core::types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Where a `TemplateField`'s default came from — determines how it gets
+/// classified once the field's concrete type is known (see `instantiate_shape`).
+#[derive(Debug, Clone)]
+enum TemplateDefault {
+    /// Declared directly in a `type Name { ... }` body: coerced literally
+    /// against the resolved type, `None` if absent.
+    Literal(Option<DefaultValueAst>),
+    /// Introduced via a `diff { + field: Type [= value] }` op: needs the same
+    /// "struct sentinel / optional-none sentinel / literal" classification
+    /// `handle_diff`'s `DiffAst::Add` always applied, just deferred here until
+    /// the field's type is fully resolved (it may still mention a template
+    /// param at merge time).
+    AddedViaDiff(Option<DefaultValueAst>),
+}
+
+/// A field within a not-yet-fully-resolved type template. Its `ty` may still
+/// reference the template's own type parameters (or, transiently while an
+/// `extends<...>` chain is being merged, a dropped ancestor parameter as
+/// `TypeAst::Wildcard`).
+#[derive(Debug, Clone)]
+struct TemplateField {
+    /// Stable across every version/instantiation this field is inherited into —
+    /// assigned once, when the field is first declared or `+ Add`ed, and carried
+    /// forward unchanged by `extends` (mirroring the old `parent.fields.clone()`
+    /// behavior, so renames/retypes still track as "the same field").
+    id: FieldId,
+    name: String,
+    ty: TypeAst,
+    default: TemplateDefault,
+    lazy: bool,
+    span: Span,
+    line: u32,
+}
+
+#[derive(Debug, Clone)]
+struct TemplateConst {
+    name: String,
+    ty: TypeAst,
+    value: DefaultValueAst,
+    span: Span,
+    line: u32,
+}
+
+/// The AST-level, unresolved shape of a `type` def at a given version: its own
+/// declared type parameters plus its fully-merged (`extends`/`diff` applied)
+/// field and const lists. Computing this never calls `resolve()`, so it can't
+/// loop on self-referential *field* types — the only recursion is through the
+/// `extends` chain, which is version-strictly-decreasing and therefore finite.
+#[derive(Debug, Clone)]
+struct TemplateShape {
+    params: Vec<String>,
+    fields: Vec<TemplateField>,
+    consts: Vec<TemplateConst>,
+}
+
+/// A generic instantiation discovered while resolving a field type, queued so
+/// its fields are computed *after* we've already committed to a `TypeId` for
+/// it. This is what makes self-referential generics (`Node<T> { next: Node<T>? }`)
+/// safe: the recursive field only ever needs the `TypeId` pointer, not the
+/// fully-computed fields, exactly like ordinary struct field references.
+#[derive(Debug)]
+struct PendingGeneric {
+    type_id: TypeId,
+    shape: TemplateShape,
+    subst: HashMap<String, ResolvedTypeRef>,
+    found_version: i128,
+}
+
 #[derive(Debug)]
 pub struct SchemaAnalyzer<'a> {
     ast: &'a SchemaAst,
@@ -21,6 +89,17 @@ pub struct SchemaAnalyzer<'a> {
     current: Option<VersionContext>,
     imports: HashMap<String, Arc<ResolvedSchema>>,
     id_gen: IdGen,
+    /// Every generic `TypeId` handed out so far, mapped to its canonical
+    /// auto-mangled identity (`Box<i32>` -> `"BoxI32"`) even when an explicit
+    /// `as Alias` was used — lets a second request for the same alias with
+    /// different args be rejected instead of silently aliasing to the wrong type.
+    generic_identities: HashMap<TypeId, String>,
+    pending_generics: Vec<PendingGeneric>,
+    /// Memoizes `build_shape` by (type name, exact version) so that a type looked
+    /// up repeatedly (as an `extends` ancestor from multiple descendants, or as a
+    /// generic template instantiated with different args) gets the exact same
+    /// `FieldId`s every time, instead of fresh ones per call.
+    shape_cache: HashMap<(String, i128), TemplateShape>,
 }
 
 impl<'a> SchemaAnalyzer<'a> {
@@ -36,6 +115,9 @@ impl<'a> SchemaAnalyzer<'a> {
             id_gen: IdGen::new(),
             current: None,
             imports,
+            generic_identities: HashMap::new(),
+            pending_generics: Vec::new(),
+            shape_cache: HashMap::new(),
         }
     }
 
@@ -51,6 +133,23 @@ impl<'a> SchemaAnalyzer<'a> {
         for version in &self.ast.versions {
             self.process_version(version)?;
         }
+        self.drain_pending_generics()?;
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn drain_pending_generics(&mut self) -> Result<(), AnalysisError> {
+        while let Some(item) = self.pending_generics.pop() {
+            let (fields, const_fields) =
+                self.instantiate_shape(&item.shape, &item.subst, item.found_version)?;
+            self.type_registry.types.insert(
+                item.type_id,
+                ResolvedType {
+                    fields,
+                    const_fields,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -59,12 +158,16 @@ impl<'a> SchemaAnalyzer<'a> {
         for version in &self.ast.versions {
             for block in &version.blocks {
                 if let VersionBlockAst::TypeDef(td) = block {
-                    let (fields, const_fields) = match &td.extends {
-                        None => self.collect_full_type(td, version.version)?,
-                        Some(extends_ast) => {
-                            self.collect_extended_type(td, extends_ast, version.version)?
-                        }
-                    };
+                    // generic templates are only instantiated lazily, on first use
+                    if !td.params.is_empty() {
+                        continue;
+                    }
+
+                    let empty_subst = HashMap::new();
+                    let (shape, found_version) =
+                        self.template_shape(&td.name, version.version, td.span, td.line)?;
+                    let (fields, const_fields) =
+                        self.instantiate_shape(&shape, &empty_subst, found_version)?;
 
                     let id = TypeId {
                         name: td.name.clone(),
@@ -277,6 +380,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                             version.version,
                                             *span,
                                             *line,
+                                            &HashMap::new(),
                                         )?;
 
                                         let discriminant = variants
@@ -310,7 +414,7 @@ impl<'a> SchemaAnalyzer<'a> {
 
     #[allow(clippy::result_large_err)]
     fn resolve_union_variants(
-        &self,
+        &mut self,
         variants: &[UnionVariantAst],
         version: i128,
     ) -> Result<Vec<UnionVariant>, AnalysisError> {
@@ -318,7 +422,8 @@ impl<'a> SchemaAnalyzer<'a> {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let payload = self.resolve(&v.payload_ty, version, v.span, v.line)?; // ← was resolver.resolve_type + ok_or
+                let payload =
+                    self.resolve(&v.payload_ty, version, v.span, v.line, &HashMap::new())?; // ← was resolver.resolve_type + ok_or
                 Ok(UnionVariant {
                     name: v.name.clone(),
                     payload,
@@ -409,47 +514,279 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
+    /// Computes the AST-level, unresolved shape of type `name` at the latest version
+    /// <= `version` (used for both plain type-name lookups and generic-template
+    /// lookups). `span`/`line` are only used for the "no such type" error, so callers
+    /// should pass the usage site's location.
     #[allow(clippy::result_large_err)]
-    fn collect_full_type(
+    fn template_shape(
+        &mut self,
+        name: &str,
+        version: i128,
+        span: Span,
+        line: u32,
+    ) -> Result<(TemplateShape, i128), AnalysisError> {
+        let (td, found_version) =
+            self.resolver
+                .resolve_type_def(name, version)
+                .ok_or_else(|| AnalysisError::UnknownType {
+                    name: name.to_string(),
+                    version,
+                    span,
+                    line,
+                })?;
+        let shape = self.build_shape(td, found_version)?;
+        Ok((shape, found_version))
+    }
+
+    /// Computes the shape of an already-located `TypeDefAst` at its exact `version`,
+    /// memoized by (name, version) so repeated lookups of the same def (as an
+    /// `extends` ancestor from multiple descendants, or as a generic template
+    /// instantiated with different args) return the exact same `FieldId`s every
+    /// time rather than assigning fresh ones. Recurses through `extends` chains
+    /// only — never through field types — so a self-referential field
+    /// (`Node<T> { next: Node<T>? }`) can never cause this to loop; the chain
+    /// itself is strictly version-decreasing and finite.
+    #[allow(clippy::result_large_err)]
+    fn build_shape(
         &mut self,
         td: &TypeDefAst,
         version: i128,
-    ) -> Result<(Vec<FieldIR>, Vec<ResolvedConst>), AnalysisError> {
-        let fields_ast = match &td.body {
-            TypeBody::Fields(f) => f,
-            TypeBody::Diff(_) => {
-                return Err(AnalysisError::ExtendsWithFullDefinition {
-                    name: td.name.clone(),
+    ) -> Result<TemplateShape, AnalysisError> {
+        let cache_key = (td.name.clone(), version);
+        if let Some(shape) = self.shape_cache.get(&cache_key) {
+            return Ok(shape.clone());
+        }
+
+        let shape = match &td.body {
+            TypeBody::Fields(f) => TemplateShape {
+                params: td.params.clone(),
+                fields: f
+                    .fields
+                    .iter()
+                    .map(|fa| TemplateField {
+                        id: self.id_gen.next_id(),
+                        name: fa.name.clone(),
+                        ty: fa.ty.clone(),
+                        default: TemplateDefault::Literal(fa.default.clone()),
+                        lazy: fa.lazy,
+                        span: fa.span,
+                        line: fa.line,
+                    })
+                    .collect(),
+                consts: f
+                    .const_fields
+                    .iter()
+                    .map(|cf| TemplateConst {
+                        name: cf.name.clone(),
+                        ty: cf.ty.clone(),
+                        value: cf.value.clone(),
+                        span: cf.span,
+                        line: cf.line,
+                    })
+                    .collect(),
+            },
+            TypeBody::Diff(ops) => {
+                let extends = td
+                    .extends
+                    .as_ref()
+                    .expect("parser only produces TypeBody::Diff alongside an extends clause")
+                    .clone();
+
+                if extends.version >= version {
+                    return Err(AnalysisError::UnknownParentType {
+                        child: td.name.clone(),
+                        parent: format!("{}@{}", extends.name, extends.version),
+                        version,
+                        span: extends.span,
+                        line: extends.line,
+                    });
+                }
+
+                let ancestor_td = self
+                    .resolver
+                    .resolve_type_def_exact(&extends.name, extends.version)
+                    .ok_or_else(|| AnalysisError::UnknownParentType {
+                        child: td.name.clone(),
+                        parent: format!("{}@{}", extends.name, extends.version),
+                        version,
+                        span: extends.span,
+                        line: extends.line,
+                    })?;
+                let ancestor = self.build_shape(ancestor_td, extends.version)?;
+
+                if extends.args.len() != ancestor.params.len() {
+                    return Err(AnalysisError::GenericArityMismatch {
+                        name: extends.name.clone(),
+                        expected: ancestor.params.len(),
+                        found: extends.args.len(),
+                        version,
+                        span: extends.span,
+                        line: extends.line,
+                    });
+                }
+
+                let rename: HashMap<&str, &GenericArgAst> = ancestor
+                    .params
+                    .iter()
+                    .map(String::as_str)
+                    .zip(extends.args.iter())
+                    .collect();
+
+                let mut fields: Vec<TemplateField> = ancestor
+                    .fields
+                    .iter()
+                    .map(|f| TemplateField {
+                        id: f.id,
+                        name: f.name.clone(),
+                        ty: substitute_ast(&f.ty, &rename),
+                        default: f.default.clone(),
+                        lazy: f.lazy,
+                        span: f.span,
+                        line: f.line,
+                    })
+                    .collect();
+                let mut consts: Vec<TemplateConst> = ancestor
+                    .consts
+                    .iter()
+                    .map(|c| TemplateConst {
+                        name: c.name.clone(),
+                        ty: substitute_ast(&c.ty, &rename),
+                        value: c.value.clone(),
+                        span: c.span,
+                        line: c.line,
+                    })
+                    .collect();
+
+                apply_template_diff_ops(
+                    &td.name,
+                    ops,
                     version,
-                    span: td.span,
-                    line: td.line,
-                });
+                    &mut fields,
+                    &mut consts,
+                    &mut self.id_gen,
+                )?;
+
+                for f in &fields {
+                    if type_ast_contains_wildcard(&f.ty) {
+                        return Err(AnalysisError::UnresolvedGenericWildcard {
+                            field: f.name.clone(),
+                            type_name: td.name.clone(),
+                            version,
+                            span: f.span,
+                            line: f.line,
+                        });
+                    }
+                }
+                for c in &consts {
+                    if type_ast_contains_wildcard(&c.ty) {
+                        return Err(AnalysisError::UnresolvedGenericWildcard {
+                            field: c.name.clone(),
+                            type_name: td.name.clone(),
+                            version,
+                            span: c.span,
+                            line: c.line,
+                        });
+                    }
+                }
+
+                TemplateShape {
+                    params: td.params.clone(),
+                    fields,
+                    consts,
+                }
             }
         };
 
-        let const_fields = fields_ast
-            .const_fields
+        self.shape_cache.insert(cache_key, shape.clone());
+        Ok(shape)
+    }
+
+    /// Resolves a fully-merged `TemplateShape` into concrete `FieldIR`/`ResolvedConst`
+    /// values, substituting `subst` (template param name -> concrete `ResolvedTypeRef`)
+    /// into every field type. `subst` is empty for non-generic types.
+    #[allow(clippy::result_large_err)]
+    fn instantiate_shape(
+        &mut self,
+        shape: &TemplateShape,
+        subst: &HashMap<String, ResolvedTypeRef>,
+        version: i128,
+    ) -> Result<(Vec<FieldIR>, Vec<ResolvedConst>), AnalysisError> {
+        let const_fields = shape
+            .consts
             .iter()
-            .map(|cf| resolve_const(cf, version))
+            .map(|c| {
+                resolve_const(
+                    &ConstFieldAst {
+                        name: c.name.clone(),
+                        ty: c.ty.clone(),
+                        value: c.value.clone(),
+                        span: c.span,
+                        line: c.line,
+                    },
+                    version,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let fields = fields_ast
+        let fields = shape
             .fields
             .iter()
             .map(|f| {
-                // was `.expect("type must be resolved")` — silently panicked on a real
-                // resolution failure instead of returning the (now-spanned) error.
-                let ty = self.resolve(&f.ty, version, f.span, f.line)?;
-                let default = self.coerce_default(
-                    f.default.as_ref().map(DefaultValue::from),
-                    &ty,
-                    &f.name,
-                    version,
-                    f.span,
-                    f.line,
-                )?;
+                let ty = self.resolve(&f.ty, version, f.span, f.line, subst)?;
+
+                let default = match &f.default {
+                    TemplateDefault::Literal(raw) => self.coerce_default(
+                        raw.as_ref().map(DefaultValue::from),
+                        &ty,
+                        &f.name,
+                        version,
+                        f.span,
+                        f.line,
+                    )?,
+                    TemplateDefault::AddedViaDiff(raw) => {
+                        if f.lazy && !matches!(ty, ResolvedTypeRef::Optional(_)) {
+                            return Err(AnalysisError::LazyDiffFieldMustBeOptional {
+                                field: f.name.clone(),
+                                version,
+                                span: f.span,
+                                line: f.line,
+                            });
+                        }
+
+                        match &ty {
+                            ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+                                Some(DefaultValue::Struct)
+                            }
+                            ResolvedTypeRef::Union(_) => Some(DefaultValue::Struct),
+                            ResolvedTypeRef::Optional(_) if raw.is_none() => {
+                                Some(DefaultValue::None)
+                            }
+                            _ => {
+                                let lit =
+                                    raw.as_ref().map(DefaultValue::from).ok_or_else(|| {
+                                        AnalysisError::MissingDefault {
+                                            field: f.name.clone(),
+                                            version,
+                                            span: f.span,
+                                            line: f.line,
+                                        }
+                                    })?;
+                                self.coerce_default(
+                                    Some(lit),
+                                    &ty,
+                                    &f.name,
+                                    version,
+                                    f.span,
+                                    f.line,
+                                )?
+                            }
+                        }
+                    }
+                };
+
                 Ok(FieldIR {
-                    id: self.id_gen.next_id(),
+                    id: f.id,
                     name: f.name.clone(),
                     ty,
                     default,
@@ -459,284 +796,6 @@ impl<'a> SchemaAnalyzer<'a> {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok((fields, const_fields))
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn collect_extended_type(
-        &mut self,
-        td: &TypeDefAst,
-        extends: &ExtendsAst,
-        version: i128,
-    ) -> Result<(Vec<FieldIR>, Vec<ResolvedConst>), AnalysisError> {
-        let ops = match &td.body {
-            TypeBody::Diff(ops) => ops,
-            TypeBody::Fields(_) => {
-                return Err(AnalysisError::ExtendsWithFullDefinition {
-                    name: td.name.clone(),
-                    version,
-                    span: td.span,
-                    line: td.line,
-                });
-            }
-        };
-
-        if extends.version >= version {
-            return Err(AnalysisError::UnknownParentType {
-                child: td.name.clone(),
-                parent: format!("{}@{}", extends.name, extends.version),
-                version,
-                span: extends.span,
-                line: extends.line,
-            });
-        }
-
-        let parent = self
-            .type_registry
-            .types
-            .get(&TypeId {
-                name: extends.name.clone(),
-                version: extends.version,
-            })
-            .ok_or_else(|| AnalysisError::UnknownParentType {
-                child: td.name.clone(),
-                parent: format!("{}@{}", extends.name, extends.version),
-                version,
-                span: extends.span,
-                line: extends.line,
-            })?;
-
-        let mut fields: Vec<FieldIR> = parent.fields.clone();
-        let mut consts: Vec<ResolvedConst> = parent.const_fields.clone();
-
-        for op in ops {
-            match op {
-                DiffAst::Add { field } => {
-                    let ty = self.resolve(&field.ty, version, field.span, field.line)?;
-
-                    if field.lazy && !matches!(ty, ResolvedTypeRef::Optional(_)) {
-                        return Err(AnalysisError::LazyDiffFieldMustBeOptional {
-                            field: field.name.clone(),
-                            version,
-                            span: field.span,
-                            line: field.line,
-                        });
-                    }
-
-                    let default = match &ty {
-                        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-                            Some(DefaultValue::Struct)
-                        }
-                        ResolvedTypeRef::Union(_) => Some(DefaultValue::Struct),
-                        ResolvedTypeRef::Optional(_) if field.default.is_none() => {
-                            Some(DefaultValue::None)
-                        }
-                        _ => {
-                            let raw = field.default.as_ref().map(DefaultValue::from).ok_or_else(
-                                || AnalysisError::MissingDefault {
-                                    field: field.name.clone(),
-                                    version,
-                                    span: field.span,
-                                    line: field.line,
-                                },
-                            )?;
-                            self.coerce_default(
-                                Some(raw),
-                                &ty,
-                                &field.name,
-                                version,
-                                field.span,
-                                field.line,
-                            )?
-                        }
-                    };
-
-                    fields.push(FieldIR {
-                        id: self.id_gen.next_id(),
-                        name: field.name.clone(),
-                        ty,
-                        default,
-                        lazy: field.lazy,
-                    });
-                }
-
-                DiffAst::AddConst { field } => {
-                    if consts.iter().any(|c| c.name == field.name)
-                        || fields.iter().any(|f| f.name == field.name)
-                    {
-                        return Err(AnalysisError::FieldAlreadyExists {
-                            version,
-                            field: field.name.clone(),
-                            span: field.span,
-                            line: field.line,
-                        });
-                    }
-
-                    consts.push(resolve_const(field, version)?);
-                }
-
-                DiffAst::Remove { name, span, line } => {
-                    let existed_in_fields = fields.iter().any(|f| f.name == *name);
-                    let existed_in_consts = consts.iter().any(|c| c.name == *name);
-
-                    if !existed_in_fields && !existed_in_consts {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "remove",
-                            field: name.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                    fields.retain(|f| f.name != *name);
-                    consts.retain(|c| c.name != *name);
-                }
-
-                DiffAst::Rename {
-                    from,
-                    to,
-                    span,
-                    line,
-                } => {
-                    if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
-                        f.name = to.clone();
-                    } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
-                        c.name = to.clone();
-                    } else {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "rename",
-                            field: from.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                }
-
-                DiffAst::UpdateType {
-                    name,
-                    ty,
-                    lazy,
-                    span,
-                    line,
-                } => {
-                    if let Some(f) = fields.iter_mut().find(|f| f.name == *name) {
-                        let new_ty = self.resolve(ty, version, *span, *line)?;
-                        check_type_update(&f.ty, &new_ty, version)?;
-                        f.ty = new_ty;
-                        f.lazy = *lazy;
-                    } else if consts.iter().any(|c| c.name == *name) {
-                    } else {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "update type",
-                            field: name.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                }
-
-                DiffAst::Transform {
-                    from,
-                    to,
-                    ty,
-                    lazy,
-                    span,
-                    line,
-                } => {
-                    if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
-                        f.name = to.clone();
-                        if let Some(ty) = ty {
-                            // was `.expect("type must be resolved")` — same panic bug as above.
-                            f.ty = self.resolve(ty, version, *span, *line)?;
-                        }
-                        f.lazy = *lazy;
-                    } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
-                        c.name = to.clone();
-                    } else {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "transform",
-                            field: from.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                }
-
-                DiffAst::UpdateConst {
-                    name,
-                    ty,
-                    value,
-                    span,
-                    line,
-                } => {
-                    if let Some(c) = consts.iter_mut().find(|c| c.name == *name) {
-                        let updated = resolve_const(
-                            &ConstFieldAst {
-                                name: name.clone(),
-                                ty: ty.clone(),
-                                value: value.clone(),
-                                span: *span,
-                                line: *line,
-                            },
-                            version,
-                        )?;
-                        c.rust_type = updated.rust_type;
-                        c.value = updated.value;
-                    } else {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "update const",
-                            field: name.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                }
-
-                DiffAst::TransformConst {
-                    from,
-                    to,
-                    ty,
-                    value,
-                    span,
-                    line,
-                } => {
-                    if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
-                        let updated = resolve_const(
-                            &ConstFieldAst {
-                                name: to.clone(),
-                                ty: ty.clone(),
-                                value: value.clone(),
-                                span: *span,
-                                line: *line,
-                            },
-                            version,
-                        )?;
-                        c.name = updated.name;
-                        c.rust_type = updated.rust_type;
-                        c.value = updated.value;
-                    } else {
-                        return Err(AnalysisError::FieldNotFound {
-                            op: "transform const",
-                            field: from.clone(),
-                            type_name: td.name.clone(),
-                            version,
-                            span: *span,
-                            line: *line,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok((fields, consts))
     }
 
     #[allow(clippy::result_large_err)]
@@ -778,7 +837,7 @@ impl<'a> SchemaAnalyzer<'a> {
         ctx: &mut VersionContext,
     ) -> Result<(), AnalysisError> {
         for field in &f.fields {
-            let ty = self.resolve(&field.ty, version, field.span, field.line)?;
+            let ty = self.resolve(&field.ty, version, field.span, field.line, &HashMap::new())?;
             let default = self.coerce_default(
                 field.default.as_ref().map(DefaultValue::from),
                 &ty,
@@ -822,7 +881,8 @@ impl<'a> SchemaAnalyzer<'a> {
                         });
                     }
 
-                    let ty = self.resolve(&field.ty, version, field.span, field.line)?;
+                    let ty =
+                        self.resolve(&field.ty, version, field.span, field.line, &HashMap::new())?;
 
                     if field.lazy && !matches!(ty, ResolvedTypeRef::Optional(_)) {
                         return Err(AnalysisError::LazyDiffFieldMustBeOptional {
@@ -906,7 +966,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     line,
                 } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *name) {
-                        let new_ty = self.resolve(ty, version, *span, *line)?;
+                        let new_ty = self.resolve(ty, version, *span, *line, &HashMap::new())?;
                         check_type_update(&f.ty, &new_ty, version)?;
                         f.ty = new_ty;
                         f.lazy = *lazy;
@@ -924,7 +984,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
                         if let Some(ty) = ty {
-                            f.ty = self.resolve(ty, version, *span, *line)?;
+                            f.ty = self.resolve(ty, version, *span, *line, &HashMap::new())?;
                         }
                         f.lazy = *lazy;
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
@@ -1021,7 +1081,6 @@ impl<'a> SchemaAnalyzer<'a> {
         span: Span,
         line: u32,
     ) -> Result<DefaultValue, AnalysisError> {
-        // `..elem` only makes sense where the repeat count is statically known.
         if let DefaultValue::Repeat(elem) = value {
             return match ty {
                 ResolvedTypeRef::FixedArray(inner, n)
@@ -1346,14 +1405,19 @@ impl<'a> SchemaAnalyzer<'a> {
 
     #[allow(clippy::result_large_err)]
     fn resolve(
-        &self,
+        &mut self,
         ty: &TypeAst,
         version: i128,
         span: Span,
         line: u32,
+        subst: &HashMap<String, ResolvedTypeRef>,
     ) -> Result<ResolvedTypeRef, AnalysisError> {
         match ty {
             TypeAst::Named(name) => {
+                if let Some(bound) = subst.get(name) {
+                    return Ok(bound.clone());
+                }
+
                 if is_primitive(name) {
                     return Ok(ResolvedTypeRef::Scalar(TypeId {
                         name: name.clone(),
@@ -1379,8 +1443,21 @@ impl<'a> SchemaAnalyzer<'a> {
                     return Ok(ResolvedTypeRef::Union(id.clone()));
                 }
 
-                if let Some(type_id) = self.resolver.resolve_type(name, version) {
-                    return Ok(ResolvedTypeRef::Scalar(type_id));
+                if let Some((td, found_version)) = self.resolver.resolve_type_def(name, version) {
+                    if !td.params.is_empty() {
+                        return Err(AnalysisError::GenericArityMismatch {
+                            name: name.clone(),
+                            expected: td.params.len(),
+                            found: 0,
+                            version,
+                            span,
+                            line,
+                        });
+                    }
+                    return Ok(ResolvedTypeRef::Scalar(TypeId {
+                        name: name.clone(),
+                        version: found_version,
+                    }));
                 }
 
                 Err(AnalysisError::UnknownType {
@@ -1390,8 +1467,79 @@ impl<'a> SchemaAnalyzer<'a> {
                     line,
                 })
             }
+            TypeAst::Generic(name, args, alias) => {
+                let resolved_args = args
+                    .iter()
+                    .map(|a| self.resolve(a, version, span, line, subst))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let (shape, found_version) = self.template_shape(name, version, span, line)?;
+                if shape.params.len() != resolved_args.len() {
+                    return Err(AnalysisError::GenericArityMismatch {
+                        name: name.clone(),
+                        expected: shape.params.len(),
+                        found: resolved_args.len(),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+
+                let new_subst: HashMap<String, ResolvedTypeRef> = shape
+                    .params
+                    .iter()
+                    .cloned()
+                    .zip(resolved_args.iter().cloned())
+                    .collect();
+
+                // The auto-mangled name is always computed, even when an
+                // explicit `as Alias` is given: it's the canonical identity
+                // of "this template instantiated with these exact args",
+                // used to detect two DIFFERENT instantiations accidentally
+                // requesting the same alias.
+                let mangled = mangle_generic_name(name, &resolved_args);
+                let display_name = alias.clone().unwrap_or_else(|| mangled.clone());
+                let type_id = TypeId {
+                    name: display_name,
+                    version: found_version,
+                };
+
+                if let Some(existing_identity) = self.generic_identities.get(&type_id) {
+                    if *existing_identity != mangled {
+                        return Err(AnalysisError::GenericNameCollision {
+                            name: type_id.name.clone(),
+                            version: found_version,
+                            span,
+                            line,
+                        });
+                    }
+                    return Ok(ResolvedTypeRef::Scalar(type_id));
+                }
+                if self.type_registry.types.contains_key(&type_id) {
+                    return Err(AnalysisError::GenericNameCollision {
+                        name: type_id.name.clone(),
+                        version: found_version,
+                        span,
+                        line,
+                    });
+                }
+
+                self.generic_identities.insert(type_id.clone(), mangled);
+                self.pending_generics.push(PendingGeneric {
+                    type_id: type_id.clone(),
+                    shape,
+                    subst: new_subst,
+                    found_version,
+                });
+
+                Ok(ResolvedTypeRef::Scalar(type_id))
+            }
+            TypeAst::Wildcard => unreachable!(
+                "TypeAst::Wildcard is an internal marker eliminated by template_shape \
+                 before resolve() ever sees a field type"
+            ),
             TypeAst::Array(inner) => {
-                let inner_ref = self.resolve(inner, version, span, line)?;
+                let inner_ref = self.resolve(inner, version, span, line, subst)?;
                 Ok(ResolvedTypeRef::Array(Box::new(inner_ref)))
             }
             TypeAst::FixedArray(inner, n) => {
@@ -1404,11 +1552,11 @@ impl<'a> SchemaAnalyzer<'a> {
                         line,
                     });
                 }
-                let inner_ref = self.resolve(inner, version, span, line)?;
+                let inner_ref = self.resolve(inner, version, span, line, subst)?;
                 Ok(ResolvedTypeRef::FixedArray(Box::new(inner_ref), *n))
             }
             TypeAst::DeltaArray(inner) => {
-                let inner_ref = self.resolve(inner, version, span, line)?;
+                let inner_ref = self.resolve(inner, version, span, line, subst)?;
                 if !is_delta_eligible(&inner_ref) {
                     return Err(AnalysisError::InvalidDeltaElementType {
                         type_desc: format!("{:?}", inner_ref),
@@ -1429,7 +1577,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         line,
                     });
                 }
-                let inner_ref = self.resolve(inner, version, span, line)?;
+                let inner_ref = self.resolve(inner, version, span, line, subst)?;
                 if !is_delta_eligible(&inner_ref) {
                     return Err(AnalysisError::InvalidDeltaElementType {
                         type_desc: format!("{:?}", inner_ref),
@@ -1442,8 +1590,8 @@ impl<'a> SchemaAnalyzer<'a> {
             }
             TypeAst::FixedString(n) => Ok(ResolvedTypeRef::FixedString(*n)),
             TypeAst::Map(k, v) => Ok(ResolvedTypeRef::Map(
-                Box::new(self.resolve(k, version, span, line)?),
-                Box::new(self.resolve(v, version, span, line)?),
+                Box::new(self.resolve(k, version, span, line, subst)?),
+                Box::new(self.resolve(v, version, span, line, subst)?),
             )),
             TypeAst::FixedMap(k, v, n) => {
                 if *n > 1024 {
@@ -1456,15 +1604,15 @@ impl<'a> SchemaAnalyzer<'a> {
                     });
                 }
                 Ok(ResolvedTypeRef::FixedMap(
-                    Box::new(self.resolve(k, version, span, line)?),
-                    Box::new(self.resolve(v, version, span, line)?),
+                    Box::new(self.resolve(k, version, span, line, subst)?),
+                    Box::new(self.resolve(v, version, span, line, subst)?),
                     *n,
                 ))
             }
             TypeAst::Tuple(elements) => {
                 let resolved = elements
                     .iter()
-                    .map(|t| self.resolve(t, version, span, line))
+                    .map(|t| self.resolve(t, version, span, line, subst))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(ResolvedTypeRef::Tuple(resolved))
             }
@@ -1510,7 +1658,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 })
             }
             TypeAst::Optional(v) => {
-                let inner_ref = self.resolve(v, version, span, line)?;
+                let inner_ref = self.resolve(v, version, span, line, subst)?;
                 Ok(ResolvedTypeRef::Optional(Box::new(inner_ref)))
             }
             TypeAst::Imported {
@@ -1756,6 +1904,345 @@ fn check_type_update(
     _version: i128,
 ) -> Result<(), AnalysisError> {
     // TODO: validate the cast is sound. Doesn't error today, so no span needed
-    // yet — if it starts erroring, thread span/line through like everywhere else.
+    // yet — if it starts erroring, thread span/line like everywhere else.
     Ok(())
+}
+
+/// Applies a child type def's own `diff` ops to an inherited (and already
+/// rename-substituted) field/const list, at the AST level — same op semantics as
+/// the old `collect_extended_type`, just operating on unresolved `TypeAst` so it
+/// can run before a generic template's params are known.
+#[allow(clippy::result_large_err)]
+fn apply_template_diff_ops(
+    type_name: &str,
+    ops: &[DiffAst],
+    version: i128,
+    fields: &mut Vec<TemplateField>,
+    consts: &mut Vec<TemplateConst>,
+    id_gen: &mut IdGen,
+) -> Result<(), AnalysisError> {
+    for op in ops {
+        match op {
+            DiffAst::Add { field } => {
+                if fields.iter().any(|f| f.name == field.name)
+                    || consts.iter().any(|c| c.name == field.name)
+                {
+                    return Err(AnalysisError::FieldAlreadyExists {
+                        version,
+                        field: field.name.clone(),
+                        span: field.span,
+                        line: field.line,
+                    });
+                }
+
+                fields.push(TemplateField {
+                    id: id_gen.next_id(),
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                    default: TemplateDefault::AddedViaDiff(field.default.clone()),
+                    lazy: field.lazy,
+                    span: field.span,
+                    line: field.line,
+                });
+            }
+
+            DiffAst::AddConst { field } => {
+                if consts.iter().any(|c| c.name == field.name)
+                    || fields.iter().any(|f| f.name == field.name)
+                {
+                    return Err(AnalysisError::FieldAlreadyExists {
+                        version,
+                        field: field.name.clone(),
+                        span: field.span,
+                        line: field.line,
+                    });
+                }
+
+                consts.push(TemplateConst {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                    value: field.value.clone(),
+                    span: field.span,
+                    line: field.line,
+                });
+            }
+
+            DiffAst::Remove { name, span, line } => {
+                let existed_in_fields = fields.iter().any(|f| f.name == *name);
+                let existed_in_consts = consts.iter().any(|c| c.name == *name);
+
+                if !existed_in_fields && !existed_in_consts {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "remove",
+                        field: name.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+                fields.retain(|f| f.name != *name);
+                consts.retain(|c| c.name != *name);
+            }
+
+            DiffAst::Rename {
+                from,
+                to,
+                span,
+                line,
+            } => {
+                if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
+                    f.name = to.clone();
+                } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
+                    c.name = to.clone();
+                } else {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "rename",
+                        field: from.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+            }
+
+            DiffAst::UpdateType {
+                name,
+                ty,
+                lazy,
+                span,
+                line,
+            } => {
+                if let Some(f) = fields.iter_mut().find(|f| f.name == *name) {
+                    f.ty = ty.clone();
+                    f.lazy = *lazy;
+                    f.span = *span;
+                    f.line = *line;
+                } else if consts.iter().any(|c| c.name == *name) {
+                } else {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "update type",
+                        field: name.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+            }
+
+            DiffAst::Transform {
+                from,
+                to,
+                ty,
+                lazy,
+                span,
+                line,
+            } => {
+                if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
+                    f.name = to.clone();
+                    if let Some(ty) = ty {
+                        f.ty = ty.clone();
+                        f.span = *span;
+                        f.line = *line;
+                    }
+                    f.lazy = *lazy;
+                } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
+                    c.name = to.clone();
+                } else {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "transform",
+                        field: from.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+            }
+
+            DiffAst::UpdateConst {
+                name,
+                ty,
+                value,
+                span,
+                line,
+            } => {
+                if let Some(c) = consts.iter_mut().find(|c| c.name == *name) {
+                    c.ty = ty.clone();
+                    c.value = value.clone();
+                    c.span = *span;
+                    c.line = *line;
+                } else {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "update const",
+                        field: name.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+            }
+
+            DiffAst::TransformConst {
+                from,
+                to,
+                ty,
+                value,
+                span,
+                line,
+            } => {
+                if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
+                    c.name = to.clone();
+                    c.ty = ty.clone();
+                    c.value = value.clone();
+                    c.span = *span;
+                    c.line = *line;
+                } else {
+                    return Err(AnalysisError::FieldNotFound {
+                        op: "transform const",
+                        field: from.clone(),
+                        type_name: type_name.to_string(),
+                        version,
+                        span: *span,
+                        line: *line,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// AST-level substitution used while merging an `extends<...>` chain: replaces
+/// occurrences of a renamed ancestor type parameter with either the child's
+/// corresponding type expression, or `TypeAst::Wildcard` if it was dropped (`_`).
+/// Names that aren't in `rename` (ordinary type references) are left untouched.
+fn substitute_ast(ty: &TypeAst, rename: &HashMap<&str, &GenericArgAst>) -> TypeAst {
+    match ty {
+        TypeAst::Named(n) => match rename.get(n.as_str()) {
+            Some(GenericArgAst::Type(replacement)) => replacement.clone(),
+            Some(GenericArgAst::Wildcard) => TypeAst::Wildcard,
+            None => TypeAst::Named(n.clone()),
+        },
+        TypeAst::Generic(n, args, alias) => TypeAst::Generic(
+            n.clone(),
+            args.iter().map(|a| substitute_ast(a, rename)).collect(),
+            alias.clone(),
+        ),
+        TypeAst::Optional(inner) => TypeAst::Optional(Box::new(substitute_ast(inner, rename))),
+        TypeAst::Array(inner) => TypeAst::Array(Box::new(substitute_ast(inner, rename))),
+        TypeAst::FixedArray(inner, n) => {
+            TypeAst::FixedArray(Box::new(substitute_ast(inner, rename)), *n)
+        }
+        TypeAst::DeltaArray(inner) => TypeAst::DeltaArray(Box::new(substitute_ast(inner, rename))),
+        TypeAst::FixedDeltaArray(inner, n) => {
+            TypeAst::FixedDeltaArray(Box::new(substitute_ast(inner, rename)), *n)
+        }
+        TypeAst::Map(k, v) => TypeAst::Map(
+            Box::new(substitute_ast(k, rename)),
+            Box::new(substitute_ast(v, rename)),
+        ),
+        TypeAst::FixedMap(k, v, n) => TypeAst::FixedMap(
+            Box::new(substitute_ast(k, rename)),
+            Box::new(substitute_ast(v, rename)),
+            *n,
+        ),
+        TypeAst::Tuple(elements) => {
+            TypeAst::Tuple(elements.iter().map(|e| substitute_ast(e, rename)).collect())
+        }
+        TypeAst::FixedString(n) => TypeAst::FixedString(*n),
+        TypeAst::VFloat { min, max, step } => TypeAst::VFloat {
+            min: *min,
+            max: *max,
+            step: *step,
+        },
+        TypeAst::Imported { alias, version } => TypeAst::Imported {
+            alias: alias.clone(),
+            version: *version,
+        },
+        TypeAst::Wildcard => TypeAst::Wildcard,
+    }
+}
+
+/// True if a dropped ancestor type parameter (`_` in an `extends<...>` list)
+/// still appears anywhere in this type, meaning the child's own `diff` didn't
+/// fully remove/retype the fields that used it.
+fn type_ast_contains_wildcard(ty: &TypeAst) -> bool {
+    match ty {
+        TypeAst::Wildcard => true,
+        TypeAst::Named(_)
+        | TypeAst::FixedString(_)
+        | TypeAst::VFloat { .. }
+        | TypeAst::Imported { .. } => false,
+        TypeAst::Generic(_, args, _) => args.iter().any(type_ast_contains_wildcard),
+        TypeAst::Tuple(elements) => elements.iter().any(type_ast_contains_wildcard),
+        TypeAst::Optional(inner)
+        | TypeAst::Array(inner)
+        | TypeAst::FixedArray(inner, _)
+        | TypeAst::DeltaArray(inner)
+        | TypeAst::FixedDeltaArray(inner, _) => type_ast_contains_wildcard(inner),
+        TypeAst::Map(k, v) | TypeAst::FixedMap(k, v, _) => {
+            type_ast_contains_wildcard(k) || type_ast_contains_wildcard(v)
+        }
+    }
+}
+
+/// Synthesizes a stable, Rust-identifier-safe name for a monomorphized generic
+/// instantiation, e.g. `Box<i32>` -> `BoxI32`, `Pair<i32, string>` -> `PairI32String`.
+fn mangle_generic_name(base: &str, args: &[ResolvedTypeRef]) -> String {
+    let mut name = base.to_string();
+    for arg in args {
+        name.push_str(&mangle_type_ref(arg));
+    }
+    name
+}
+
+fn mangle_type_ref(ty: &ResolvedTypeRef) -> String {
+    fn pascalize(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut cap_next = true;
+        for c in s.chars() {
+            if c == '_' {
+                cap_next = true;
+            } else if cap_next {
+                out.extend(c.to_uppercase());
+                cap_next = false;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    match ty {
+        ResolvedTypeRef::Scalar(id) => pascalize(&id.name),
+        ResolvedTypeRef::Enum(id) => id.name.clone(),
+        ResolvedTypeRef::Union(id) => id.name.clone(),
+        ResolvedTypeRef::Bitset(id, _) => id.name.clone(),
+        ResolvedTypeRef::Array(inner) => format!("{}Array", mangle_type_ref(inner)),
+        ResolvedTypeRef::FixedArray(inner, n) => format!("{}Array{n}", mangle_type_ref(inner)),
+        ResolvedTypeRef::DeltaArray(inner) => format!("{}DeltaArray", mangle_type_ref(inner)),
+        ResolvedTypeRef::FixedDeltaArray(inner, n) => {
+            format!("{}DeltaArray{n}", mangle_type_ref(inner))
+        }
+        ResolvedTypeRef::FixedString(n) => format!("String{n}"),
+        ResolvedTypeRef::Map(k, v) => {
+            format!("MapOf{}To{}", mangle_type_ref(k), mangle_type_ref(v))
+        }
+        ResolvedTypeRef::FixedMap(k, v, n) => {
+            format!("MapOf{}To{}{n}", mangle_type_ref(k), mangle_type_ref(v))
+        }
+        ResolvedTypeRef::Tuple(elements) => {
+            elements.iter().map(mangle_type_ref).collect::<String>()
+        }
+        ResolvedTypeRef::VFloat { .. } => "VFloat".to_string(),
+        ResolvedTypeRef::Optional(inner) => format!("Opt{}", mangle_type_ref(inner)),
+        ResolvedTypeRef::ImportedSchema {
+            alias, root_name, ..
+        } => format!("{}{}", pascalize(alias), root_name),
+    }
 }

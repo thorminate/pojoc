@@ -22,6 +22,8 @@ pub struct SchemaIndex {
     pub type_fields_before_version: HashMap<(String, i128), Vec<String>>,
     pub import_aliases: HashSet<String>,
     pub import_versions: HashMap<String, Vec<i128>>,
+    /// Type name -> its declared generic parameter names, if any (`type Box<T>` -> `["T"]`).
+    pub generic_params: HashMap<String, Vec<String>>,
 }
 
 impl SchemaIndex {
@@ -45,6 +47,9 @@ impl SchemaIndex {
                             .entry(t.name.clone())
                             .or_default()
                             .push(v.version);
+                        if !t.params.is_empty() {
+                            idx.generic_params.insert(t.name.clone(), t.params.clone());
+                        }
                         match &t.body {
                             TypeBody::Fields(f) => {
                                 let names = field_names(f);
@@ -396,6 +401,21 @@ fn current_version(stack: &[BlockKind]) -> Option<i128> {
     })
 }
 
+/// The generic parameters of the `type` def we're currently nested inside
+/// (its own `<T, U>` list), if any — so a field type inside `type Box<T> { ... }`
+/// can suggest `T` alongside ordinary types.
+fn enclosing_type_params(stack: &[BlockKind], idx: &SchemaIndex) -> Vec<String> {
+    stack
+        .iter()
+        .rev()
+        .find_map(|frame| match frame {
+            BlockKind::TypeDef(name) => idx.generic_params.get(name),
+            _ => None,
+        })
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn find_diff_context(stack: &[BlockKind]) -> Option<(Option<String>, i128)> {
     if !matches!(stack.last(), Some(BlockKind::Diff)) {
         return None;
@@ -412,19 +432,33 @@ fn find_diff_context(stack: &[BlockKind]) -> Option<(Option<String>, i128)> {
     version.map(|v| (owner, v))
 }
 
-/// Identifier immediately preceding the innermost still-open bracket, if any.
-fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char)> {
-    let mut stack: Vec<(Option<String>, char)> = Vec::new();
+/// Identifier immediately preceding the innermost still-open bracket, if any,
+/// plus whether that identifier was itself immediately preceded by `extends`
+/// (i.e. this bracket is an `extends Name<...>` argument list, not some other
+/// use of `<...>` such as a field-type instantiation or `map<K, V>`).
+fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char, bool)> {
+    let mut stack: Vec<(Option<String>, char, bool)> = Vec::new();
     let mut last_ident: Option<String> = None;
+    let mut prev_ident: Option<String> = None;
     for tok in pending {
         match tok {
-            Tok::Ident(s) => last_ident = Some(s.clone()),
-            Tok::Punct(c @ ('(' | '[' | '<')) => stack.push((last_ident.take(), *c)),
+            Tok::Ident(s) => {
+                prev_ident = last_ident.take();
+                last_ident = Some(s.clone());
+            }
+            Tok::Punct(c @ ('(' | '[' | '<')) => {
+                let is_extends_args = matches!(&prev_ident, Some(p) if p == "extends");
+                stack.push((last_ident.take(), *c, is_extends_args));
+                prev_ident = None;
+            }
             Tok::Punct(')' | ']' | '>') => {
                 stack.pop();
             }
             Tok::Punct(',') | Tok::Punct(':') => {}
-            _ => last_ident = None,
+            _ => {
+                last_ident = None;
+                prev_ident = None;
+            }
         }
     }
     stack.last().cloned()
@@ -442,11 +476,23 @@ enum Ctx {
         version: i128,
         already_used: HashSet<String>,
     },
-    TypePosition(Option<i128>),
+    TypePosition {
+        version: Option<i128>,
+        /// The enclosing `type Name<...>`'s own parameters, if we're
+        /// currently nested inside one — valid types at this position too.
+        own_params: Vec<String>,
+    },
     ExtendsName(Option<i128>),
+    /// Inside the `<...>` argument list of an `extends Name<...>@V` clause —
+    /// like `TypePosition`, but `_` (drop this ancestor parameter) is also valid.
+    ExtendsGenericArgs {
+        version: Option<i128>,
+        own_params: Vec<String>,
+    },
     ArrayElementType {
         delta: bool,
         version: Option<i128>,
+        own_params: Vec<String>,
     },
     ExtendsVersion {
         name: String,
@@ -535,7 +581,7 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
         return Ctx::BitsetLiteralValue;
     }
 
-    if let Some((owner, bracket)) = enclosing_call(pending) {
+    if let Some((owner, bracket, is_extends_args)) = enclosing_call(pending) {
         match (owner.as_deref(), bracket) {
             (Some("vfloat"), '(') => return Ctx::VFloatParam,
             (Some(name), '(') if idx.bitset_names.contains(name) => {
@@ -552,9 +598,26 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
                 return Ctx::ArrayElementType {
                     delta: false,
                     version: current_version(stack),
+                    own_params: enclosing_type_params(stack, idx),
                 };
             }
-            (_, '<') => return Ctx::TypePosition(current_version(stack)),
+            (_, '<') if is_extends_args => {
+                return Ctx::ExtendsGenericArgs {
+                    version: current_version(stack),
+                    own_params: enclosing_type_params(stack, idx),
+                };
+            }
+            // `type Name<...>` declaring its own parameter list — fresh
+            // identifiers, not references, so there's nothing to suggest.
+            (_, '<') if matches!(pending.first(), Some(Tok::Ident(k)) if k == "type") => {
+                return Ctx::Unknown;
+            }
+            (_, '<') => {
+                return Ctx::TypePosition {
+                    version: current_version(stack),
+                    own_params: enclosing_type_params(stack, idx),
+                };
+            }
             _ => {}
         }
     }
@@ -571,14 +634,20 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     }
 
     if matches!(pending.last(), Some(Tok::Punct(':'))) {
-        return Ctx::TypePosition(current_version(stack));
+        return Ctx::TypePosition {
+            version: current_version(stack),
+            own_params: enclosing_type_params(stack, idx),
+        };
     }
 
     if pending.len() >= 2
         && let (Tok::Punct(':'), Tok::Ident(_)) =
             (&pending[pending.len() - 2], &pending[pending.len() - 1])
     {
-        return Ctx::TypePosition(current_version(stack));
+        return Ctx::TypePosition {
+            version: current_version(stack),
+            own_params: enclosing_type_params(stack, idx),
+        };
     }
 
     if let Some((owner, version)) = find_diff_context(stack) {
@@ -642,10 +711,16 @@ pub fn completions_for_position(
         let tokens = tokenize_prefix(prefix);
         let state = scan(&tokens);
         let mut ctx = determine_ctx(&state, idx);
-        if let Ctx::ArrayElementType { version, .. } = ctx {
+        if let Ctx::ArrayElementType {
+            version,
+            own_params,
+            ..
+        } = ctx
+        {
             ctx = Ctx::ArrayElementType {
                 delta: suffix_has_delta(text, offset),
                 version,
+                own_params,
             };
         }
         ctx
@@ -787,7 +862,24 @@ pub fn completions_for_position(
                 .collect()
         }
 
-        Ctx::TypePosition(version) => type_position_items(idx, version),
+        Ctx::TypePosition {
+            version,
+            own_params,
+        } => type_position_items(idx, version, &own_params),
+
+        Ctx::ExtendsGenericArgs {
+            version,
+            own_params,
+        } => {
+            let mut items = type_position_items(idx, version, &own_params);
+            items.push(CompletionItem {
+                label: "_".into(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("drop this ancestor type parameter".into()),
+                ..Default::default()
+            });
+            items
+        }
 
         Ctx::ArrayElementType { delta: true, .. } => {
             const NUMBER_PRIMITIVES: &[&str] = &[
@@ -806,7 +898,8 @@ pub fn completions_for_position(
         Ctx::ArrayElementType {
             delta: false,
             version,
-        } => type_position_items(idx, version),
+            own_params,
+        } => type_position_items(idx, version, &own_params),
 
         Ctx::VFloatParam => ["min", "max", "step"]
             .iter()
@@ -993,30 +1086,63 @@ fn snippet(label: &str, insert: &str, detail: &str) -> CompletionItem {
     }
 }
 
-fn type_position_items(idx: &SchemaIndex, version: Option<i128>) -> Vec<CompletionItem> {
+/// Builds a `Box<$1>`/`Pair<$1, $2>`-style snippet for instantiating a
+/// generic type, one tab stop per declared parameter (mirrors the
+/// `map<$1, $2>` snippet below).
+fn generic_instantiation_item(name: &str, params: &[String]) -> CompletionItem {
+    let placeholders = (1..=params.len())
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    CompletionItem {
+        label: format!("{name}<{}>", params.join(", ")),
+        insert_text: Some(format!("{name}<{placeholders}>")),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some("generic type".into()),
+        ..Default::default()
+    }
+}
+
+fn type_position_items(
+    idx: &SchemaIndex,
+    version: Option<i128>,
+    own_params: &[String],
+) -> Vec<CompletionItem> {
     const PRIMITIVES: &[&str] = &[
         "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "varint32", "varint64",
         "bool", "string",
     ];
 
-    let mut items: Vec<CompletionItem> = PRIMITIVES
+    // The enclosing generic type's own parameters (e.g. `T` inside
+    // `type Box<T> { value: | }`) — offered first, since they're the most
+    // contextually relevant.
+    let mut items: Vec<CompletionItem> = own_params
         .iter()
         .map(|p| CompletionItem {
-            label: p.to_string(),
+            label: p.clone(),
             kind: Some(CompletionItemKind::TYPE_PARAMETER),
+            detail: Some("type parameter".into()),
             ..Default::default()
         })
         .collect();
 
-    items.extend(
-        idx.type_like_names_at(version)
-            .into_iter()
-            .map(|n| CompletionItem {
+    items.extend(PRIMITIVES.iter().map(|p| CompletionItem {
+        label: p.to_string(),
+        kind: Some(CompletionItemKind::TYPE_PARAMETER),
+        ..Default::default()
+    }));
+
+    items.extend(idx.type_like_names_at(version).into_iter().map(
+        |n| match idx.generic_params.get(n) {
+            Some(params) if !params.is_empty() => generic_instantiation_item(n, params),
+            _ => CompletionItem {
                 label: n.to_string(),
                 kind: Some(CompletionItemKind::CLASS),
                 ..Default::default()
-            }),
-    );
+            },
+        },
+    ));
 
     items.extend(idx.import_aliases.iter().map(|n| CompletionItem {
         label: n.clone() + "@",
@@ -1491,4 +1617,212 @@ fn cursor_in_line_comment(text: &str, offset: usize) -> bool {
         i += 1;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pojoc_schema::{Lexer, Parser};
+
+    /// `text_with_cursor` must contain exactly one `|`, and must still form a
+    /// *complete, parseable* schema once it's stripped out (mirroring how the
+    /// real server always indexes the last-known-good AST, never a
+    /// mid-edit/incomplete one) — put the marker where completion should
+    /// trigger, with enough valid text after it to close out the statement.
+    fn complete(text_with_cursor: &str) -> Vec<CompletionItem> {
+        let offset = text_with_cursor
+            .find('|')
+            .expect("test input must contain a `|` cursor marker");
+        let text: String = text_with_cursor.replacen('|', "", 1);
+
+        let tokens = Lexer::new(&text).tokenize().expect("lex failed");
+        let ast = Parser::new(tokens)
+            .parse_schema()
+            .unwrap_or_else(|e| panic!("test schema must parse cleanly: {e}\n{text}"));
+        let idx = SchemaIndex::build(&ast);
+
+        completions_for_position(&text, offset, &idx, None)
+    }
+
+    fn labels(items: &[CompletionItem]) -> Vec<&str> {
+        items.iter().map(|i| i.label.as_str()).collect()
+    }
+
+    #[test]
+    fn suggests_generic_instantiation_snippet_at_type_position() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      x: |i32
+    }
+  }
+}
+"#,
+        );
+        let item = items
+            .iter()
+            .find(|i| i.label == "Box<T>")
+            .expect("Box<T> snippet not offered");
+        assert_eq!(item.insert_text.as_deref(), Some("Box<$1>"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        // The bare, argument-less name shouldn't also be offered — it's
+        // never a valid type on its own.
+        assert!(!labels(&items).contains(&"Box"));
+    }
+
+    #[test]
+    fn multi_param_generic_snippet_has_one_tab_stop_per_param() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Pair<A, B> {
+      first: A
+      second: B
+    }
+    fields {
+      x: |i32
+    }
+  }
+}
+"#,
+        );
+        let item = items
+            .iter()
+            .find(|i| i.label == "Pair<A, B>")
+            .expect("Pair<A, B> snippet not offered");
+        assert_eq!(item.insert_text.as_deref(), Some("Pair<$1, $2>"));
+    }
+
+    #[test]
+    fn extends_generic_args_offers_wildcard_and_types() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+  }
+  version 2 {
+    type Pair<A, B> extends Box<|i32>@1 {
+      + other: B?
+    }
+  }
+}
+"#,
+        );
+        let ls = labels(&items);
+        assert!(ls.contains(&"_"), "expected `_` wildcard, got {ls:?}");
+        assert!(ls.contains(&"i32"), "expected primitive types, got {ls:?}");
+    }
+
+    #[test]
+    fn type_param_declaration_offers_nothing() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Box<|T> {
+      value: T
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            items.is_empty(),
+            "expected no completions while declaring type params, got {items:?}"
+        );
+    }
+
+    #[test]
+    fn non_generic_type_position_is_unaffected() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Plain {
+      x: i32
+    }
+    fields {
+      y: |i32
+    }
+  }
+}
+"#,
+        );
+        let item = items
+            .iter()
+            .find(|i| i.label == "Plain")
+            .expect("Plain not offered");
+        assert_eq!(item.kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(item.insert_text, None);
+    }
+
+    #[test]
+    fn suggests_own_type_params_inside_generic_body() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Triple<A, B, C> {
+      first: |i32
+    }
+  }
+}
+"#,
+        );
+        let ls = labels(&items);
+        for p in ["A", "B", "C"] {
+            assert!(ls.contains(&p), "expected type param `{p}`, got {ls:?}");
+        }
+        let a = items.iter().find(|i| i.label == "A").unwrap();
+        assert_eq!(a.kind, Some(CompletionItemKind::TYPE_PARAMETER));
+    }
+
+    #[test]
+    fn own_type_params_offered_in_extended_generic_body_too() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Mono<A> {
+      value: A
+    }
+  }
+  version 2 {
+    type Mono<A> extends Mono<A>@1 {
+      + second: |A
+    }
+  }
+}
+"#,
+        );
+        assert!(labels(&items).contains(&"A"));
+    }
+
+    #[test]
+    fn own_type_params_not_offered_outside_a_type_body() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      x: |i32
+    }
+  }
+}
+"#,
+        );
+        assert!(!labels(&items).contains(&"T"));
+    }
 }
