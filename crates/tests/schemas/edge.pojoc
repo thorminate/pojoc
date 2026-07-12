@@ -243,11 +243,9 @@ schema Edge {
       + void_container: EmptyStruct
 
       // Struct-typed diff Add — same free `Default::default()` pass as
-      // `control` below, just for a monomorphized generic instantiation.
-      // First link of the type-parameter-evolution chain below (v4/v5) —
-      // each version pins its own field rather than retyping this one,
-      // since (like any struct field in this schema) retyping across an
-      // incompatible shape isn't supported, generic or not.
+      // `control` below. First link of the Mono/Duo/Mono chain (see `Mono`
+      // above) — each version pins its own field rather than retyping this
+      // one, since retyping across an incompatible shape isn't supported.
       + generic_mono_v3: Mono<string>
 
       ~ fixed_arr_populated -> array_to_map: map<i32, u8>
@@ -321,8 +319,7 @@ schema Edge {
 
       + opt_delta_arr: [i32](delta)?
 
-      // Second link of the chain — a fresh field pinned to `Duo`, the
-      // cross-name extension of `Mono` that adds its own parameter `B`.
+      // Second link of the chain — a fresh field pinned to `Duo` (see above).
       + generic_duo_v4: Duo<string, i32>
 
       // Re-resolve to ControlSignal@4 (now Disconnect-aware) — same Cast
@@ -379,9 +376,8 @@ schema Edge {
       + ultimate_boss_structure: DeepComplexWrapper
 
       // Final link of the chain — a fresh field pinned to this version's
-      // `Mono`, which dropped `Duo`'s `B` via `_` above. Structurally
-      // identical to v3's `Mono<string>` (both are just `{ value: string }`),
-      // proving the wildcard-drop path produces a compatible shape again.
+      // `Mono` (see above), proving the wildcard-drop path still produces a
+      // wire-compatible shape.
       + generic_mono_v5: Mono<string>
 
       ~ fixed_str_padded: string(2)
