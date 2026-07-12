@@ -71,6 +71,22 @@ fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
             decoded.root_struct.leaf.leaf_numeric, original.root_struct.leaf.leaf_numeric,
             "v{version}: root_struct.leaf.leaf_numeric mismatch"
         );
+        assert_eq!(
+            decoded.generic_box.value, original.generic_box.value,
+            "v{version}: generic_box.value mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.first, original.generic_triple.first,
+            "v{version}: generic_triple.first mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.second, original.generic_triple.second,
+            "v{version}: generic_triple.second mismatch"
+        );
+        assert_eq!(
+            decoded.generic_triple.third, original.generic_triple.third,
+            "v{version}: generic_triple.third mismatch"
+        );
     }
 }
 
@@ -100,8 +116,15 @@ fn test_encode_for_version_latest_version_fields_survive() {
         decoded.system_perms, original.system_perms,
         "v{latest}: system_perms mismatch"
     );
+    assert_eq!(
+        decoded.generic_box.label, original.generic_box.label,
+        "v{latest}: generic_box.label mismatch"
+    );
     assert_payload_eq(&decoded.action, &original.action);
     assert_control_signal_eq(&decoded.control, &original.control);
+    assert_mono_string_eq(&decoded.generic_mono_v3, &original.generic_mono_v3);
+    assert_duo_string_i32_eq(&decoded.generic_duo_v4, &original.generic_duo_v4);
+    assert_mono_string_eq(&decoded.generic_mono_v5, &original.generic_mono_v5);
 }
 #[test]
 fn test_encode_for_version_latest_is_byte_identical_to_encode() {

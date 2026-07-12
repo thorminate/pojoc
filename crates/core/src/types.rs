@@ -128,7 +128,7 @@ pub fn is_primitive(name: &str) -> bool {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireSize {
     Fixed(usize),
     Variable,

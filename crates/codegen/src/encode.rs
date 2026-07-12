@@ -1166,12 +1166,43 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
-            w.indent();
-            emit_size_expr(k_ty, "__k", true, w, schema);
-            emit_size_expr(v_ty, "__v", true, w, schema);
-            w.dedent();
-            w.line("}");
+            // A fixed-size side contributes a compile-time-constant amount
+            // per entry regardless of its actual value, so its binding would
+            // go unused inside a `for (__k, __v) in ...` loop
+            // (clippy::for_kv_map) — fold it into a `len() * size` term
+            // instead and only iterate the side(s) that need their value
+            // inspected, exactly like the `FixedMap` case below already does.
+            let k_wire = type_info(k_ty).wire_size;
+            let v_wire = type_info(v_ty).wire_size;
+            match (k_wire, v_wire) {
+                (WireSize::Fixed(ks), WireSize::Fixed(vs)) => {
+                    w.line(&format!("size += {accessor}.len() * ({ks} + {vs});"));
+                }
+                (WireSize::Fixed(ks), WireSize::Variable) => {
+                    w.line(&format!("size += {accessor}.len() * {ks};"));
+                    w.line(&format!("for __v in {accessor}.values() {{"));
+                    w.indent();
+                    emit_size_expr(v_ty, "__v", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+                (WireSize::Variable, WireSize::Fixed(vs)) => {
+                    w.line(&format!("size += {accessor}.len() * {vs};"));
+                    w.line(&format!("for __k in {accessor}.keys() {{"));
+                    w.indent();
+                    emit_size_expr(k_ty, "__k", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+                (WireSize::Variable, WireSize::Variable) => {
+                    w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
+                    w.indent();
+                    emit_size_expr(k_ty, "__k", true, w, schema);
+                    emit_size_expr(v_ty, "__v", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+            }
         }
         ResolvedTypeRef::FixedMap(k_ty, v_ty, n) => {
             let k_info = type_info(k_ty);
