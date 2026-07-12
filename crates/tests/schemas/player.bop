@@ -1,0 +1,128 @@
+enum Status : uint32 {
+  Alive        = 0;
+  Dead         = 1;
+  Downed       = 2;
+  Disqualified = 3;
+  Spectating   = 4;
+}
+
+enum Class : uint32 {
+  Warrior     = 0;
+  Mage        = 1;
+  Assassin    = 2;
+  Necromancer = 3;
+  Paladin     = 4;
+}
+
+enum Region : uint32 {
+  North   = 0;
+  South   = 1;
+  East    = 2;
+  West    = 3;
+  Central = 4;
+  Void    = 5;
+}
+
+enum Perks : uint32 {
+  DoubleJump  = 1;
+  Thievery    = 2;
+  Telekinesis = 4;
+}
+
+enum Flags : uint32 {
+  IsBanned    = 1;
+  IsVerified  = 2;
+  IsPremium   = 4;
+  IsStreamer  = 8;
+  IsDeveloper = 16;
+}
+
+struct Vector3 {
+  float32 x;
+  float32 y;
+  float32 z;
+  float32 w;
+}
+
+struct Aabb { // i had to decapitalize because bebop couldn't compile it otherwise lol
+  float32 minX;
+  float32 minY;
+  float32 maxX;
+  float32 maxY;
+}
+
+struct Transform {
+  Vector3 position;
+  Aabb    bounds;
+}
+
+struct Velocity {
+  float32 x;
+  float32 y;
+  float32 z;
+}
+
+struct Coordinates {
+  float32 x;
+  float32 y;
+}
+
+struct KillDeath {
+  int32 kills;
+  int32 deaths;
+}
+
+struct Point3D {
+  float32 x;
+  float32 y;
+  float32 z;
+}
+
+message Stats {
+  1 -> int32   strength;
+  2 -> int32   agility;
+  3 -> int32   intelligence;
+  4 -> int32   endurance;
+  5 -> int32   charisma;
+  6 -> float32 resistance;
+}
+
+message LoadoutEntry {
+  1 -> string item;
+  2 -> int32  quantity;
+}
+
+message Player {
+  1  -> float64             playerId;
+  2  -> float32             level;
+  3  -> Status              status;
+  4  -> Class               class;
+  5  -> string[]            inventory;
+  6  -> string              callsign;
+  7  -> Vector3             position;
+  8  -> string[]            tags;
+  9  -> Transform           transform;
+  10 -> Velocity            velocity;
+  11 -> string              statusCode;
+  12 -> bool                isNauseous;
+  13 -> Region              region;
+  14 -> Stats               stats;
+  15 -> string[]            hotbar;
+  16 -> string              sessionToken;
+  17 -> Coordinates         coordinates;
+  18 -> KillDeath           killDeath;
+  19 -> string[]            recentZones;
+  20 -> string[]            chatHistory;
+  21 -> string              guildTag;
+  22 -> Point3D             spawnPoint;
+  23 -> uint32[]            achievementIds;
+  24 -> uint32              activePerks;
+  25 -> uint32              accountFlags;
+  26 -> map[string, int32]  questProgress;
+  27 -> map[int32, string]  quickSlots;
+  28 -> map[string, float32] skillLevels;
+  29 -> LoadoutEntry[]      loadout;
+  30 -> map[string, int64]  leaderboardScores;
+  31 -> uint32[]            partyMembers;
+  32 -> Point3D             lastPosition;
+}
