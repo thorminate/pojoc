@@ -1670,8 +1670,7 @@ schema Test {
             .expect("Box<T> snippet not offered");
         assert_eq!(item.insert_text.as_deref(), Some("Box<$1>"));
         assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
-        // The bare, argument-less name shouldn't also be offered — it's
-        // never a valid type on its own.
+        // bare "Box" is never a valid type on its own, so it shouldn't be offered
         assert!(!labels(&items).contains(&"Box"));
     }
 

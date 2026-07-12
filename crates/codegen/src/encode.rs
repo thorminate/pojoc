@@ -1166,12 +1166,10 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            // A fixed-size side contributes a compile-time-constant amount
-            // per entry regardless of its actual value, so its binding would
-            // go unused inside a `for (__k, __v) in ...` loop
-            // (clippy::for_kv_map) — fold it into a `len() * size` term
-            // instead and only iterate the side(s) that need their value
-            // inspected, exactly like the `FixedMap` case below already does.
+            // A fixed-size side's contribution doesn't depend on its value,
+            // so looping `for (__k, __v)` over it would leave that binding
+            // unused (clippy::for_kv_map) — fold it into `len() * size` and
+            // only iterate the side(s) that actually vary per entry.
             let k_wire = type_info(k_ty).wire_size;
             let v_wire = type_info(v_ty).wire_size;
             match (k_wire, v_wire) {
