@@ -290,21 +290,84 @@ impl Parser {
         }
     }
 
+    fn parse_generic_params(&mut self) -> Result<Vec<String>, ParseError> {
+        if !matches!(self.peek(), Token::LAngle) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut params = Vec::new();
+        loop {
+            let (name, span, line) = {
+                let (span, line) = self.here();
+                (self.expect_ident()?, span, line)
+            };
+            if params.contains(&name) {
+                return Err(self.err_invalid_at(
+                    format!("duplicate type parameter '{name}'"),
+                    span,
+                    line,
+                ));
+            }
+            params.push(name);
+            match self.peek() {
+                Token::Comma => {
+                    self.advance();
+                }
+                Token::RAngle => {
+                    self.advance();
+                    break;
+                }
+                got => return Err(self.err_unexpected(got.clone(), "',' or '>'")),
+            }
+        }
+        Ok(params)
+    }
+
+    fn parse_generic_args(&mut self) -> Result<Vec<GenericArgAst>, ParseError> {
+        if !matches!(self.peek(), Token::LAngle) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut args = Vec::new();
+        loop {
+            if matches!(self.peek(), Token::Identifier(s) if s == "_") {
+                self.advance();
+                args.push(GenericArgAst::Wildcard);
+            } else {
+                args.push(GenericArgAst::Type(self.parse_type()?));
+            }
+            match self.peek() {
+                Token::Comma => {
+                    self.advance();
+                }
+                Token::RAngle => {
+                    self.advance();
+                    break;
+                }
+                got => return Err(self.err_unexpected(got.clone(), "',' or '>'")),
+            }
+        }
+        Ok(args)
+    }
+
     fn parse_type_def(&mut self) -> Result<TypeDefAst, ParseError> {
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Type)?;
         let name = self.expect_ident()?;
+        let params = self.parse_generic_params()?;
 
         let extends = if matches!(self.peek(), Token::Keyword(Keyword::Extends)) {
             let (ext_span, ext_line) = self.here();
             self.advance();
             let parent_name = self.expect_ident()?;
+            let args = self.parse_generic_args()?;
             self.expect(Token::At, "'@'")?;
             let version = self.expect_number()?;
             let span = ext_span.join(self.last_consumed_span());
             Some(ExtendsAst {
                 name: parent_name,
                 version,
+                args,
                 span,
                 line: ext_line,
             })
@@ -323,6 +386,7 @@ impl Parser {
         let span = start_span.join(self.last_consumed_span());
         Ok(TypeDefAst {
             name,
+            params,
             extends,
             body,
             span,
@@ -345,6 +409,7 @@ impl Parser {
             let base = ExtendsAst {
                 name: base_name,
                 version: base_version,
+                args: Vec::new(),
                 span: base_span,
                 line: ext_line,
             };
@@ -447,6 +512,7 @@ impl Parser {
             let base = ExtendsAst {
                 name: base_name,
                 version: base_version,
+                args: Vec::new(),
                 span: base_span,
                 line: ext_line,
             };
@@ -568,6 +634,7 @@ impl Parser {
             let base = ExtendsAst {
                 name: base_name,
                 version: base_version,
+                args: Vec::new(),
                 span: base_span,
                 line: ext_line,
             };
@@ -769,6 +836,21 @@ impl Parser {
                     let v = self.parse_type()?;
                     self.expect(Token::RAngle, "'>'")?;
                     TypeAst::Map(Box::new(k), Box::new(v))
+                } else if matches!(self.peek(), Token::LAngle) {
+                    self.advance();
+                    let mut args = vec![self.parse_type()?];
+                    while matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                        args.push(self.parse_type()?);
+                    }
+                    self.expect(Token::RAngle, "'>'")?;
+                    let alias = if matches!(self.peek(), Token::Keyword(Keyword::As)) {
+                        self.advance();
+                        Some(self.expect_ident()?)
+                    } else {
+                        None
+                    };
+                    TypeAst::Generic(name, args, alias)
                 } else {
                     TypeAst::Named(name)
                 }

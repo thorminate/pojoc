@@ -178,40 +178,55 @@ pub use std::collections::HashMap as PojocMap;
 
 pub use serde_bytes::Bytes as SerdeBytes;
 
-pub struct LazyView<'buf, T> {
-    buf: &'buf [u8],
-    decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>,
+pub enum LazyView<'buf, T> {
+    Raw {
+        buf: &'buf [u8],
+        decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>,
+    },
+    Owned(T),
 }
 
 impl<'buf, T> LazyView<'buf, T> {
     #[inline]
-    pub fn new(buf: &'buf [u8], decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>) -> Self {
-        Self { buf, decode_fn }
+    pub const fn new(buf: &'buf [u8], decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>) -> Self {
+        Self::Raw { buf, decode_fn }
     }
 
     #[inline]
-    pub fn get(&self) -> PojocResult<T> {
-        (self.decode_fn)(self.buf, &mut 0)
+    pub fn get(self) -> PojocResult<T> {
+        match self {
+            Self::Raw { buf, decode_fn } => decode_fn(buf, &mut 0),
+            Self::Owned(val) => Ok(val),
+        }
     }
 
     #[inline]
-    pub fn raw_bytes(&self) -> &'buf [u8] {
-        self.buf
+    pub fn raw_bytes(&self) -> Option<&'buf [u8]> {
+        match self {
+            Self::Raw { buf, .. } => Some(buf),
+            Self::Owned(_) => None,
+        }
     }
 }
 
-impl<'buf, T> Clone for LazyView<'buf, T> {
+impl<'buf, T: Clone> Clone for LazyView<'buf, T> {
     fn clone(&self) -> Self {
-        Self {
-            buf: self.buf,
-            decode_fn: self.decode_fn,
+        match self {
+            Self::Raw { buf, decode_fn } => Self::Raw {
+                buf,
+                decode_fn: *decode_fn,
+            },
+            Self::Owned(val) => Self::Owned(val.clone()),
         }
     }
 }
 
 impl<'buf, T> std::fmt::Debug for LazyView<'buf, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LazyView(<{} bytes, not yet decoded>)", self.buf.len())
+        match self {
+            Self::Raw { buf, .. } => write!(f, "LazyView::Raw(<{} bytes>)", buf.len()),
+            Self::Owned(_) => write!(f, "LazyView::Owned"),
+        }
     }
 }
 

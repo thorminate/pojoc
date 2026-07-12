@@ -1,13 +1,13 @@
+use bebop::{Record, SliceWrapper};
+use flatbuffers::FlatBufferBuilder;
 use pojoc_tests::{
-    fb_player, player_capnp as capnp_player,
+    fb_player, player_bebop, player_capnp as capnp_player,
     pojoc_player::{
         self, AABB, Class, Flags, Perks, Player, Region, Stats, Status, Transform, Vector3,
         runtime::*,
     },
     proto_player,
 };
-
-use flatbuffers::FlatBufferBuilder;
 use prost::Message;
 
 fn make_pojoc_player() -> Player {
@@ -815,6 +815,158 @@ fn make_fb_player(builder: &mut FlatBufferBuilder) {
     builder.finish(player, None);
 }
 
+fn make_bebop_player() -> player_bebop::Player<'static> {
+    player_bebop::Player {
+        player_id: Some(1.0),
+        level: Some(12.5),
+        status: Some(player_bebop::Status::Alive),
+        class: Some(player_bebop::Class::Warrior),
+        inventory: Some(vec!["sword", "shield", "healing_potion", "torch", "rope"]),
+        callsign: Some("NONE00"),
+        position: Some(player_bebop::Vector3 {
+            x: 10.0,
+            y: 42.5,
+            z: -3.0,
+            w: 1.0,
+        }),
+        tags: Some(vec![
+            "starter_zone",
+            "pvp_enabled",
+            "vip",
+            "quest_giver",
+            "faction_red",
+        ]),
+        transform: Some(player_bebop::Transform {
+            position: player_bebop::Vector3 {
+                x: 10.0,
+                y: 42.5,
+                z: -3.0,
+                w: 1.0,
+            },
+            bounds: player_bebop::Aabb {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 100.0,
+                max_y: 100.0,
+            },
+        }),
+        velocity: Some(player_bebop::Velocity {
+            x: 1.0,
+            y: 0.0,
+            z: -1.0,
+        }),
+        status_code: Some("00000000"),
+        is_nauseous: Some(false),
+        region: Some(player_bebop::Region::Central),
+        stats: Some(player_bebop::Stats {
+            strength: Some(14),
+            agility: Some(8),
+            intelligence: Some(11),
+            endurance: Some(10),
+            charisma: Some(6),
+            resistance: Some(0.25),
+        }),
+        hotbar: Some(vec!["sword", "healing_potion", "torch", "", "", ""]),
+        session_token: Some("SESSION000000000"),
+        coordinates: Some(player_bebop::Coordinates { x: 128.5, y: 64.0 }),
+        kill_death: Some(player_bebop::KillDeath {
+            kills: 42,
+            deaths: 7,
+        }),
+        recent_zones: Some(vec![
+            "zone_forest",
+            "zone_dungeon",
+            "zone_town",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]),
+        chat_history: Some({
+            let mut v = vec!["hello world", "anyone here?"];
+            v.resize(32, "");
+            v
+        }),
+        guild_tag: Some("IRON"),
+        spawn_point: Some(player_bebop::Point3D {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        achievement_ids: Some(SliceWrapper::from_cooked(&[101, 204, 305, 412])),
+        active_perks: Some(0x02 | 0x04),
+        account_flags: Some(0x02 | 0x04),
+        quest_progress: Some(
+            [
+                ("main_quest_01", 3),
+                ("side_quest_forest", 1),
+                ("daily_kill_10", 7),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        quick_slots: Some(
+            [
+                (1, "sword"),
+                (2, "shield"),
+                (3, "healing_potion"),
+                (4, "torch"),
+                (5, ""),
+                (6, ""),
+                (7, ""),
+                (8, ""),
+                (9, ""),
+                (10, ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        skill_levels: Some(
+            [
+                ("swordsmanship", 4.5f32),
+                ("stealth", 2.0f32),
+                ("arcana", 1.5f32),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        loadout: Some(vec![
+            player_bebop::LoadoutEntry {
+                item: Some("sword"),
+                quantity: Some(1),
+            },
+            player_bebop::LoadoutEntry {
+                item: Some("shield"),
+                quantity: Some(1),
+            },
+            player_bebop::LoadoutEntry {
+                item: Some("healing_potion"),
+                quantity: Some(5),
+            },
+            player_bebop::LoadoutEntry {
+                item: Some("torch"),
+                quantity: Some(3),
+            },
+        ]),
+        leaderboard_scores: Some(
+            [
+                ("kills", 1042i64),
+                ("score", 88500i64),
+                ("playtime_seconds", 72400i64),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        party_members: Some(SliceWrapper::from_cooked(&[2, 3, 0, 0])),
+        last_position: Some(player_bebop::Point3D {
+            x: 10.0,
+            y: 42.5,
+            z: -3.0,
+        }),
+    }
+}
+
 fn main() {
     let player = make_pojoc_player();
     let mut pojoc_buf = Vec::new();
@@ -831,10 +983,15 @@ fn main() {
     make_fb_player(&mut fb_builder);
     let fb_buf = fb_builder.finished_data().to_vec();
 
+    let bebop_player = make_bebop_player();
+    let mut bebop_buf = Vec::new();
+    bebop_player.serialize(&mut bebop_buf).unwrap();
+
     println!("\n=== binary size comparison ===");
     println!("POJOC:        {} bytes", pojoc_buf.len());
     println!("Protobuf:     {} bytes", proto_buf.len());
     println!("Cap'n Proto:  {} bytes", capnp_buf.len());
     println!("FlatBuffers:  {} bytes", fb_buf.len());
+    println!("Bebop:        {} bytes", bebop_buf.len());
     println!("==============================\n");
 }

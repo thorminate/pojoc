@@ -1,5 +1,6 @@
 mod common;
 use common::*;
+use pojoc_core::types::ResolvedTypeRef;
 use pojoc_schema::ast::*;
 
 const SAMPLE_SCHEMA: &str = r#"
@@ -550,4 +551,342 @@ schema Player {
 "#;
     let ast = parse_schema(input).unwrap();
     assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn generic_type_instantiates_distinct_monomorphizations() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b1: Box<i32>
+      b2: Box<string>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    let box_i32 = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "BoxI32")
+        .map(|(_, t)| t)
+        .expect("BoxI32 not found");
+    let box_string = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "BoxString")
+        .map(|(_, t)| t)
+        .expect("BoxString not found");
+
+    assert!(matches!(
+        box_i32.fields.iter().find(|f| f.name == "value").unwrap().ty,
+        ResolvedTypeRef::Scalar(ref id) if id.name == "i32"
+    ));
+    assert!(matches!(
+        box_string.fields.iter().find(|f| f.name == "value").unwrap().ty,
+        ResolvedTypeRef::Scalar(ref id) if id.name == "string"
+    ));
+}
+
+#[test]
+fn generic_arity_mismatch_errors() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<i32, string>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn generic_used_without_args_errors() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn self_referential_generic_resolves() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Node<T> {
+      value: T
+      next: Node<T>?
+    }
+    fields {
+      root: Node<i32>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    let node_i32 = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "NodeI32")
+        .map(|(_, t)| t)
+        .expect("NodeI32 not found");
+
+    let next = &node_i32
+        .fields
+        .iter()
+        .find(|f| f.name == "next")
+        .unwrap()
+        .ty;
+    match next {
+        ResolvedTypeRef::Optional(inner) => {
+            assert!(matches!(**inner, ResolvedTypeRef::Scalar(ref id) if id.name == "NodeI32"));
+        }
+        other => panic!("expected Optional<NodeI32>, got {other:?}"),
+    }
+}
+
+#[test]
+fn generic_param_evolution_with_wildcard_drop() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Mono<A> {
+      value: A
+    }
+    fields {
+      m: Mono<i32>
+    }
+  }
+  version 2 {
+    type Pair<A, B> extends Mono<A>@1 {
+      + other: B?
+    }
+    diff {
+      ~ m: Pair<i32, string>
+    }
+  }
+  version 3 {
+    type Mono<A> extends Pair<A, _>@2 {
+      - other
+    }
+    diff {
+      ~ m: Mono<i32>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    // `m: Mono<i32>` at version 3 is a monomorphized instantiation, stored under
+    // its mangled name rather than the bare template name "Mono".
+    let mono_i32 = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "MonoI32")
+        .map(|(_, t)| t)
+        .expect("MonoI32 not found");
+    assert!(mono_i32.fields.iter().any(|f| f.name == "value"));
+    assert!(mono_i32.fields.iter().all(|f| f.name != "other"));
+}
+
+#[test]
+fn generic_wildcard_drop_without_cleanup_errors() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Mono<A> {
+      value: A
+    }
+    fields {
+      m: Mono<i32>
+    }
+  }
+  version 2 {
+    type Pair<A, B> extends Mono<A>@1 {
+      + other: B?
+    }
+    diff {
+      ~ m: Pair<i32, string>
+    }
+  }
+  version 3 {
+    type Mono<A> extends Pair<A, _>@2 {
+    }
+    diff {
+      ~ m: Mono<i32>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn plain_type_extends_specific_generic_instantiation() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<i32>
+    }
+  }
+  version 2 {
+    type ConcreteFoo extends Box<i32>@1 {
+      + label: string = "x"
+    }
+    diff {
+      + f: ConcreteFoo
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    let foo = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "ConcreteFoo")
+        .map(|(_, t)| t)
+        .expect("ConcreteFoo not found");
+    assert!(foo.fields.iter().any(|f| f.name == "value"));
+    assert!(foo.fields.iter().any(|f| f.name == "label"));
+}
+
+#[test]
+fn generic_alias_names_the_monomorphized_type() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b: Box<i32> as MyInt
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    assert!(
+        schema.types.types.iter().any(|(id, _)| id.name == "MyInt"),
+        "expected a type named MyInt"
+    );
+    assert!(
+        !schema.types.types.iter().any(|(id, _)| id.name == "BoxI32"),
+        "auto-mangled name shouldn't also be registered once aliased"
+    );
+}
+
+#[test]
+fn generic_alias_dedupes_same_instantiation() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b1: Box<i32> as MyInt
+      b2: Box<i32> as MyInt
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    let matches: Vec<_> = schema
+        .types
+        .types
+        .iter()
+        .filter(|(id, _)| id.name == "MyInt")
+        .collect();
+    assert_eq!(matches.len(), 1, "expected exactly one MyInt registration");
+}
+
+#[test]
+fn generic_alias_collision_with_different_args_errors() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b1: Box<i32> as MyInt
+      b2: Box<string> as MyInt
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn generic_alias_matching_auto_mangled_name_dedupes_with_unaliased_usage() {
+    let input = r#"
+schema Test {
+  version 1 {
+    type Box<T> {
+      value: T
+    }
+    fields {
+      b1: Box<i32>
+      b2: Box<i32> as BoxI32
+    }
+  }
+}
+"#;
+    let ast = parse_schema(input).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    let matches: Vec<_> = schema
+        .types
+        .types
+        .iter()
+        .filter(|(id, _)| id.name == "BoxI32")
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected a single, shared BoxI32 registration"
+    );
 }
