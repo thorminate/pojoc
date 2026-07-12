@@ -33,7 +33,8 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     decode::emit_decode_functions(schema, &infected, &mut w);
     emit_dispatcher(schema, &infected, &mut w);
     w.blank();
-    encode::emit_size_hint(schema, &mut w);
+    encode::emit_size_hint_helpers(schema, &mut w);
+    encode::emit_size_hint_vn_functions(schema, &mut w);
     encode::emit_encode_helpers(schema, &mut w);
     encode::emit_encode_vn_functions(schema, &mut w);
 
@@ -73,7 +74,7 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
         "pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"
     ));
     w.indent();
-    w.line("buf.reserve(size_hint(value));");
+    w.line(&format!("buf.reserve(size_hint_v{latest}(value));"));
     w.line(&format!(
         "let len_pos = write_envelope_header(buf, {latest});"
     ));
@@ -89,7 +90,16 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
         "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}, version: u64) -> PojocResult<()> {{"
     ));
     w.indent();
-    w.line("buf.reserve(size_hint(value));");
+    w.line("let hint = match version {");
+    w.indent();
+    for vl in &schema.lineage.versions {
+        let v = vl.version;
+        w.line(&format!("{v} => size_hint_v{v}(value),"));
+    }
+    w.line("v => return Err(Error::UnsupportedVersion(v)),");
+    w.dedent();
+    w.line("};");
+    w.line("buf.reserve(hint);");
     w.line("let len_pos = write_envelope_header(buf, version);");
     w.line("let payload_start = buf.len();");
     w.line("match version {");
@@ -98,7 +108,7 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
         let v = vl.version;
         w.line(&format!("{v} => encode_v{v}(buf, value),"));
     }
-    w.line("v => return Err(Error::UnsupportedVersion(v)),");
+    w.line("_ => unreachable!(),");
     w.dedent();
     w.line("}");
     w.line("let payload_len = buf.len() - payload_start;");

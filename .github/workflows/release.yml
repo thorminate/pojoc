@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.artifact_target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -147,7 +147,7 @@ jobs:
           cp lsp-bins/pojoc-lsp-* jetbrains-plugin/src/main/resources/bin/
           chmod +x jetbrains-plugin/src/main/resources/bin/*
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'

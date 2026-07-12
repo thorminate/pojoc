@@ -12,6 +12,22 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.root_struct.leaf.leaf_numeric = 1;
     e.updated_imported_player.player_id = 12345.0;
     e.updated_imported_player.status = player::Status::Spectating;
+
+    // Generics — monomorphized instantiations and the Mono/Duo/Mono
+    // type-parameter-evolution chain.
+    e.generic_box.value = 7;
+    e.generic_box.label = "probe".into();
+    e.generic_pair.first = 1;
+    e.generic_pair.second = "probe-pair".into();
+    e.generic_triple.first = 2;
+    e.generic_triple.second = "probe-triple".into();
+    e.generic_triple.third = true;
+    e.generic_flag_box.value = true;
+    e.generic_mono_v3.value = "probe-mono-v3".into();
+    e.generic_duo_v4.value = "probe-duo-v4".into();
+    e.generic_duo_v4.secondary = Some(9);
+    e.generic_mono_v5.value = "probe-mono-v5".into();
+
     e
 }
 
@@ -37,12 +53,14 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.empty_arr.push(pojstr!("FirstElement"));
     e.empty_arr.push(pojstr!("SecondElement"));
     e.array_to_map.insert(5, 25);
+    e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
     // Delta sequences
     e.delta_positions.push(1000);
     e.delta_positions.push(1010);
     e.delta_i64_seq.push(-50);
     e.delta_i64_seq.push(-45);
+    e.lazy_delta_log = LazyView::Owned(Some(pojvec!(100, 150, 120)));
 
     // Nested struct
     e.root_struct.leaf.leaf_val = "LeafNode".into();
@@ -58,6 +76,23 @@ pub fn make_populated_edge() -> Edge<'static> {
         leaf_numeric: 22,
         leaf_rotation: 180f32,
     });
+
+    // Generics — three distinct monomorphizations of the same struct-shape
+    // machinery (Box<i32>, Pair<i32, string>, Triple<i32, string, bool>),
+    // an explicitly-named instantiation (`Box<bool> as FlagBox`), plus the
+    // Mono<A> -> Duo<A, B> -> Mono<A> type-parameter-evolution chain (v3/v4/v5).
+    e.generic_box.value = 42;
+    e.generic_box.label = "meaning-of-life".into();
+    e.generic_pair.first = 3;
+    e.generic_pair.second = "third".into();
+    e.generic_triple.first = -8;
+    e.generic_triple.second = "triple".into();
+    e.generic_triple.third = false;
+    e.generic_flag_box.value = false;
+    e.generic_mono_v3.value = "mono-v3".into();
+    e.generic_duo_v4.value = "duo-v4".into();
+    e.generic_duo_v4.secondary = Some(-17);
+    e.generic_mono_v5.value = "mono-v5".into();
 
     // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
@@ -255,6 +290,35 @@ pub fn assert_middle_layer_eq(a: &MiddleLayer, b: &MiddleLayer) {
     }
 }
 
+pub fn assert_box_i32_eq(a: &BoxI32, b: &BoxI32) {
+    assert_eq!(a.value, b.value);
+    assert_eq!(a.label, b.label);
+}
+
+pub fn assert_pair_i32_string_eq(a: &PairI32String, b: &PairI32String) {
+    assert_eq!(a.first, b.first);
+    assert_eq!(a.second, b.second);
+}
+
+pub fn assert_triple_i32_string_bool_eq(a: &TripleI32StringBool, b: &TripleI32StringBool) {
+    assert_eq!(a.first, b.first);
+    assert_eq!(a.second, b.second);
+    assert_eq!(a.third, b.third);
+}
+
+pub fn assert_flag_box_eq(a: &FlagBox, b: &FlagBox) {
+    assert_eq!(a.value, b.value);
+}
+
+pub fn assert_mono_string_eq(a: &MonoString, b: &MonoString) {
+    assert_eq!(a.value, b.value);
+}
+
+pub fn assert_duo_string_i32_eq(a: &DuoStringI32, b: &DuoStringI32) {
+    assert_eq!(a.value, b.value);
+    assert_eq!(a.secondary, b.secondary);
+}
+
 pub fn assert_sensor_frame_eq(a: &SensorFrame, b: &SensorFrame) {
     assert_eq!(a.readings, b.readings);
     assert_eq!(a.sample_ids, b.sample_ids);
@@ -371,6 +435,15 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
     assert_eq!(a.newly_added_optional, b.newly_added_optional);
     assert_eq!(a.u32_delta_seq, b.u32_delta_seq);
 
+    // Generics
+    assert_box_i32_eq(&a.generic_box, &b.generic_box);
+    assert_pair_i32_string_eq(&a.generic_pair, &b.generic_pair);
+    assert_triple_i32_string_bool_eq(&a.generic_triple, &b.generic_triple);
+    assert_flag_box_eq(&a.generic_flag_box, &b.generic_flag_box);
+    assert_mono_string_eq(&a.generic_mono_v3, &b.generic_mono_v3);
+    assert_duo_string_i32_eq(&a.generic_duo_v4, &b.generic_duo_v4);
+    assert_mono_string_eq(&a.generic_mono_v5, &b.generic_mono_v5);
+
     // Maps
     assert_eq!(a.basic_map, b.basic_map);
     assert_eq!(a.fixed_map_empty, b.fixed_map_empty);
@@ -440,6 +513,30 @@ pub fn assert_edge_eq(a: &Edge, b: &Edge) {
             .expect("control_map key missing after roundtrip");
         assert_payload_eq(v, other);
     }
+
+    let a_audit = a
+        .lazy_audit_log
+        .clone()
+        .get()
+        .expect("a.lazy_audit_log decode failed");
+    let b_audit = b
+        .lazy_audit_log
+        .clone()
+        .get()
+        .expect("b.lazy_audit_log decode failed");
+    assert_eq!(a_audit, b_audit, "lazy_audit_log mismatch");
+
+    let a_delta = a
+        .lazy_delta_log
+        .clone()
+        .get()
+        .expect("a.lazy_delta_log decode failed");
+    let b_delta = b
+        .lazy_delta_log
+        .clone()
+        .get()
+        .expect("b.lazy_delta_log decode failed");
+    assert_eq!(a_delta, b_delta, "lazy_delta_log mismatch");
 }
 
 pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {

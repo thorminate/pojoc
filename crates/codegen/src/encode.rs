@@ -18,49 +18,16 @@ pub fn emit_encode_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
-pub fn emit_size_hint(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_size_hint_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_type_size_hints(schema, w);
     emit_union_size_hints(schema, w);
-
-    let name = &schema.name_hint;
-    let ordered = lineage_ordered_fields(schema);
-
-    w.line(&format!("pub fn size_hint(__value: &{name}) -> usize {{"));
-    w.indent();
-    if ordered.is_empty() {
-        w.line("5usize");
-    } else {
-        w.line("let mut size = 5usize;");
-        emit_optional_header_size(&ordered, w);
-        emit_fields_size_loop(&ordered, w, schema);
-        w.line("size");
-    }
-    w.dedent();
-    w.line("}");
-    w.blank();
 }
 
-fn lineage_ordered_fields(schema: &ResolvedSchema) -> Vec<FieldIR> {
-    let latest = schema.versions.last().unwrap();
-    let by_name: std::collections::HashMap<&str, &FieldIR> =
-        latest.fields.iter().map(|f| (f.name.as_str(), f)).collect();
-
-    schema
-        .lineage
-        .versions
-        .last()
-        .unwrap()
-        .fields
-        .iter()
-        .filter_map(|fl| {
-            let name = match &fl.mapping {
-                FieldMapping::PassThrough { target_name } => target_name.as_str(),
-                FieldMapping::Cast { target_name, .. } => target_name.as_str(),
-                FieldMapping::Discard => return None,
-            };
-            by_name.get(name).map(|f| (*f).clone())
-        })
-        .collect()
+pub fn emit_size_hint_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    for vl in &schema.lineage.versions {
+        emit_size_hint_vn_fn(schema, vl, w);
+        w.blank();
+    }
 }
 
 fn deref_if_copy(ty: &ResolvedTypeRef, var: &str) -> String {
@@ -163,6 +130,27 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
+    match payload {
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+            // existing named write helper, __payload is already &T
+            w.line(&format!(
+                "write_{}(&mut __tmp, __payload);",
+                id.name.to_snake_case()
+            ));
+        }
+        _ => {
+            w.line("{");
+            w.indent();
+            w.line("let __buf = &mut __tmp;");
+            let accessor = deref_if_copy(payload, "__payload");
+            emit_write_expr(payload, &accessor, None, true, w);
+            w.dedent();
+            w.line("}");
+        }
+    }
+}
+
 fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
     let opt: Vec<&FieldIR> = fields
         .iter()
@@ -187,29 +175,7 @@ fn emit_optional_header_write(fields: &[FieldIR], w: &mut CodeWriter) {
 fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut CodeWriter) {
     for field in fields {
         if field.lazy {
-            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
-            if is_optional {
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
-                    field.name
-                ));
-            } else {
-                w.line(&format!(
-                    "if !__value.{}.raw_bytes().is_empty() {{",
-                    field.name
-                ));
-                w.indent();
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{}.raw_bytes());",
-                    field.name
-                ));
-                w.dedent();
-                w.line("} else {");
-                w.indent();
-                emit_vn_default_write(&field.ty, schema, w);
-                w.dedent();
-                w.line("}");
-            }
+            emit_lazy_encode(&field.name, &field.ty, schema, w);
             continue;
         }
         let accessor = format!("__value.{}", field.name);
@@ -226,7 +192,7 @@ fn emit_fields_write_loop(schema: &ResolvedSchema, fields: &[FieldIR], w: &mut C
     }
 }
 
-fn emit_write_expr(
+pub(crate) fn emit_write_expr(
     ty: &ResolvedTypeRef,
     accessor: &str,
     vn: Option<&ResolvedSchema>,
@@ -435,7 +401,10 @@ fn emit_vn_optional_header_bit(
                 .lazy;
             if target_is_lazy {
                 w.line(&format!(
-                    "if !__value.{target_name}.raw_bytes().is_empty() {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
+                    "if match &__value.{target_name} {{ \
+                         LazyView::Raw {{ buf, .. }} => !buf.is_empty(), \
+                         LazyView::Owned(__val) => __val.is_some(), \
+                     }} {{ __header[{byte_idx}] |= 1 << {bit_idx}; }}"
                 ));
             } else {
                 w.line(&format!(
@@ -487,15 +456,7 @@ fn emit_vn_optional_body(
                 .unwrap()
                 .lazy;
             if target_is_lazy {
-                w.line(&format!(
-                    "if !__value.{target_name}.raw_bytes().is_empty() {{"
-                ));
-                w.indent();
-                w.line(&format!(
-                    "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                ));
-                w.dedent();
-                w.line("}");
+                emit_lazy_encode(target_name, &fl.source_ty, schema, w);
             } else {
                 w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
                 w.indent();
@@ -584,26 +545,7 @@ fn emit_vn_nonoptional_field(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                let is_optional = matches!(fl.source_ty, ResolvedTypeRef::Optional(_));
-                if is_optional {
-                    w.line(&format!(
-                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                    ));
-                } else {
-                    w.line(&format!(
-                        "if !__value.{target_name}.raw_bytes().is_empty() {{"
-                    ));
-                    w.indent();
-                    w.line(&format!(
-                        "__buf.extend_from_slice(__value.{target_name}.raw_bytes());"
-                    ));
-                    w.dedent();
-                    w.line("} else {");
-                    w.indent();
-                    emit_vn_default_write(&fl.source_ty, schema, w);
-                    w.dedent();
-                    w.line("}");
-                }
+                emit_lazy_encode(target_name, &fl.source_ty, schema, w);
             } else {
                 emit_write_expr(
                     &fl.source_ty,
@@ -1130,18 +1072,7 @@ fn emit_optional_header_size(fields: &[FieldIR], w: &mut CodeWriter) {
 fn emit_fields_size_loop(fields: &[FieldIR], w: &mut CodeWriter, schema: &ResolvedSchema) {
     for field in fields {
         if field.lazy {
-            let is_optional = matches!(field.ty, ResolvedTypeRef::Optional(_));
-            if is_optional {
-                w.line(&format!(
-                    "size += __value.{}.raw_bytes().len();",
-                    field.name
-                ));
-            } else {
-                w.line(&format!(
-                    "size += if __value.{name}.raw_bytes().is_empty() {{ 16 }} else {{ __value.{name}.raw_bytes().len() }};",
-                    name = field.name
-                ));
-            }
+            emit_lazy_size(&field.name, &field.ty, schema, w);
             continue;
         }
         let accessor = format!("__value.{}", field.name);
@@ -1198,7 +1129,20 @@ fn emit_size_expr(
             let inner_info = type_info(inner);
             if let WireSize::Fixed(elem_size) = inner_info.wire_size {
                 if *n > 0 {
-                    w.line(&format!("size += {n} * {elem_size};"));
+                    let size_str = if *n == 1 {
+                        format!("size += {elem_size};")
+                    } else {
+                        if elem_size == 1 {
+                            format!("size += {n};")
+                        } else {
+                            if *n == 1 {
+                                format!("size += {n};")
+                            } else {
+                                format!("size += {n} * {elem_size};")
+                            }
+                        }
+                    };
+                    w.line(&size_str);
                 }
             } else if *n > 0 {
                 w.line(&format!("for __item in {accessor}.iter() {{"));
@@ -1222,12 +1166,41 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
-            w.indent();
-            emit_size_expr(k_ty, "__k", true, w, schema);
-            emit_size_expr(v_ty, "__v", true, w, schema);
-            w.dedent();
-            w.line("}");
+            // A fixed-size side's contribution doesn't depend on its value,
+            // so looping `for (__k, __v)` over it would leave that binding
+            // unused (clippy::for_kv_map) — fold it into `len() * size` and
+            // only iterate the side(s) that actually vary per entry.
+            let k_wire = type_info(k_ty).wire_size;
+            let v_wire = type_info(v_ty).wire_size;
+            match (k_wire, v_wire) {
+                (WireSize::Fixed(ks), WireSize::Fixed(vs)) => {
+                    w.line(&format!("size += {accessor}.len() * ({ks} + {vs});"));
+                }
+                (WireSize::Fixed(ks), WireSize::Variable) => {
+                    w.line(&format!("size += {accessor}.len() * {ks};"));
+                    w.line(&format!("for __v in {accessor}.values() {{"));
+                    w.indent();
+                    emit_size_expr(v_ty, "__v", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+                (WireSize::Variable, WireSize::Fixed(vs)) => {
+                    w.line(&format!("size += {accessor}.len() * {vs};"));
+                    w.line(&format!("for __k in {accessor}.keys() {{"));
+                    w.indent();
+                    emit_size_expr(k_ty, "__k", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+                (WireSize::Variable, WireSize::Variable) => {
+                    w.line(&format!("for (__k, __v) in {accessor}.iter() {{"));
+                    w.indent();
+                    emit_size_expr(k_ty, "__k", true, w, schema);
+                    emit_size_expr(v_ty, "__v", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                }
+            }
         }
         ResolvedTypeRef::FixedMap(k_ty, v_ty, n) => {
             let k_info = type_info(k_ty);
@@ -1236,7 +1209,13 @@ fn emit_size_expr(
                 (&k_info.wire_size, &v_info.wire_size)
             {
                 if *n > 0 {
-                    w.line(&format!("size += {n} * ({ks} + {vs});"));
+                    let entry_size = ks + vs;
+                    let size_str = if *n == 1 {
+                        format!("size += {entry_size};")
+                    } else {
+                        format!("size += {n} * ({ks} + {vs});")
+                    };
+                    w.line(&size_str);
                 }
             } else {
                 let k_rust = k_info.rust_type;
@@ -1271,33 +1250,475 @@ fn emit_size_expr(
             w.dedent();
             w.line("}");
         }
-        ResolvedTypeRef::ImportedSchema { alias, .. } => {
+        ResolvedTypeRef::ImportedSchema { alias, version, .. } => {
             let module = alias.to_snake_case();
             let ref_prefix = if is_ref { "" } else { "&" };
             w.line(&format!(
-                "size += {module}::size_hint({ref_prefix}{accessor});"
+                "size += {module}::size_hint_v{version}({ref_prefix}{accessor});"
             ));
         }
     }
 }
 
-fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
-    match payload {
-        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-            // existing named write helper, __payload is already &T
-            w.line(&format!(
-                "write_{}(&mut __tmp, __payload);",
-                id.name.to_snake_case()
-            ));
+fn emit_size_hint_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+    let name = &schema.name_hint;
+    let v = vl.version;
+
+    w.line(&format!(
+        "pub fn size_hint_v{v}(__value: &{name}) -> usize {{"
+    ));
+    w.indent();
+
+    let opt_count = vl
+        .fields
+        .iter()
+        .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
+        .count();
+    let header_bytes = opt_count.div_ceil(8);
+
+    if vl.fields.is_empty() {
+        w.line("5usize");
+    } else {
+        w.line("let mut size = 5usize;");
+        if header_bytes > 0 {
+            w.line(&format!("size += {header_bytes};"));
         }
-        _ => {
-            w.line("{");
-            w.indent();
-            w.line("let __buf = &mut __tmp;");
-            let accessor = deref_if_copy(payload, "__payload");
-            emit_write_expr(payload, &accessor, None, true, w);
-            w.dedent();
-            w.line("}");
+        for fl in &vl.fields {
+            emit_vn_field_size_hint(schema, fl, w);
+        }
+        w.line("size");
+    }
+
+    w.dedent();
+    w.line("}");
+}
+
+fn emit_vn_field_size_hint(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
+    match &fl.source_ty {
+        ResolvedTypeRef::Optional(inner_src) => {
+            emit_vn_optional_field_size_hint(schema, fl, inner_src, w);
+        }
+        _ => emit_vn_nonoptional_field_size_hint(schema, fl, w),
+    }
+}
+
+fn emit_vn_nonoptional_field_size_hint(
+    schema: &ResolvedSchema,
+    fl: &FieldLineage,
+    w: &mut CodeWriter,
+) {
+    match &fl.mapping {
+        FieldMapping::Discard => emit_default_size(schema, &fl.source_ty, w),
+        FieldMapping::PassThrough { target_name } => {
+            let target_field = schema
+                .versions
+                .last()
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name == *target_name)
+                .unwrap();
+            if target_field.lazy {
+                emit_lazy_size(target_name, &fl.source_ty, schema, w);
+            } else {
+                let accessor = format!("__value.{target_name}");
+                if matches!(target_field.ty, ResolvedTypeRef::Optional(_))
+                    && !matches!(fl.source_ty, ResolvedTypeRef::Optional(_))
+                {
+                    w.line(&format!("if let Some(__val) = &{accessor} {{"));
+                    w.indent();
+                    emit_size_expr(&fl.source_ty, "__val", true, w, schema);
+                    w.dedent();
+                    w.line("}");
+                } else {
+                    emit_size_expr(&fl.source_ty, &accessor, false, w, schema);
+                }
+            }
+        }
+        FieldMapping::Cast {
+            target_name,
+            from,
+            to,
+        } => {
+            let target_is_lazy = schema
+                .versions
+                .last()
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name == *target_name)
+                .unwrap()
+                .lazy;
+            if target_is_lazy {
+                emit_default_size(schema, from, w);
+            } else {
+                let (f_inner, t_inner) = match (from, to) {
+                    (ResolvedTypeRef::Optional(f), ResolvedTypeRef::Optional(t)) => {
+                        (f.as_ref(), t.as_ref())
+                    }
+                    (ResolvedTypeRef::Optional(f), t) => (f.as_ref(), t),
+                    (f, ResolvedTypeRef::Optional(t)) => (f, t.as_ref()),
+                    (f, t) => (f, t),
+                };
+                if matches!(from, ResolvedTypeRef::Optional(_))
+                    && matches!(to, ResolvedTypeRef::Optional(_))
+                {
+                    w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
+                    w.indent();
+                    emit_vn_cast_size_hint(schema, f_inner, t_inner, "__val", true, w);
+                    w.dedent();
+                    w.line("}");
+                } else if matches!(from, ResolvedTypeRef::Optional(_)) {
+                    emit_vn_cast_size_hint(
+                        schema,
+                        f_inner,
+                        t_inner,
+                        &format!("__value.{target_name}"),
+                        false,
+                        w,
+                    );
+                } else if matches!(to, ResolvedTypeRef::Optional(_)) {
+                    w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
+                    w.indent();
+                    emit_vn_cast_size_hint(schema, f_inner, t_inner, "__val", true, w);
+                    w.dedent();
+                    w.line("}");
+                } else {
+                    emit_vn_cast_size_hint(
+                        schema,
+                        f_inner,
+                        t_inner,
+                        &format!("__value.{target_name}"),
+                        false,
+                        w,
+                    );
+                }
+            }
         }
     }
+}
+
+fn emit_vn_optional_field_size_hint(
+    schema: &ResolvedSchema,
+    fl: &FieldLineage,
+    inner_src: &ResolvedTypeRef,
+    w: &mut CodeWriter,
+) {
+    match &fl.mapping {
+        FieldMapping::Discard => {}
+        FieldMapping::PassThrough { target_name } => {
+            let target_is_lazy = schema
+                .versions
+                .last()
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name == *target_name)
+                .unwrap()
+                .lazy;
+            if target_is_lazy {
+                emit_lazy_size(target_name, &fl.source_ty, schema, w);
+            } else {
+                w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
+                w.indent();
+                emit_size_expr(inner_src, "__val", true, w, schema);
+                w.dedent();
+                w.line("}");
+            }
+        }
+        FieldMapping::Cast {
+            target_name,
+            from,
+            to,
+        } => {
+            let target_is_lazy = schema
+                .versions
+                .last()
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name == *target_name)
+                .unwrap()
+                .lazy;
+            if !target_is_lazy {
+                let (f_inner, t_inner) = match (from, to) {
+                    (ResolvedTypeRef::Optional(f), ResolvedTypeRef::Optional(t)) => {
+                        (f.as_ref(), t.as_ref())
+                    }
+                    (ResolvedTypeRef::Optional(f), t) => (f.as_ref(), t),
+                    (f, ResolvedTypeRef::Optional(t)) => (f, t.as_ref()),
+                    (f, t) => (f, t),
+                };
+                if matches!(to, ResolvedTypeRef::Optional(_)) {
+                    w.line(&format!("if let Some(__val) = &__value.{target_name} {{"));
+                    w.indent();
+                    emit_vn_cast_size_hint(schema, f_inner, t_inner, "__val", true, w);
+                    w.dedent();
+                    w.line("}");
+                } else {
+                    emit_vn_cast_size_hint(
+                        schema,
+                        f_inner,
+                        t_inner,
+                        &format!("__value.{target_name}"),
+                        false,
+                        w,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn emit_vn_cast_size_hint(
+    schema: &ResolvedSchema,
+    from: &ResolvedTypeRef,
+    to: &ResolvedTypeRef,
+    accessor: &str,
+    is_ref: bool,
+    w: &mut CodeWriter,
+) {
+    use ResolvedTypeRef::*;
+    match (from, to) {
+        (FixedArray(elem, f_n), FixedArray(..)) => {
+            if let WireSize::Fixed(s) = type_info(elem).wire_size {
+                if *f_n == 1 {
+                    w.line(&format!("size += {s};"))
+                } else {
+                    if s == 1 {
+                        w.line(&format!("size += {f_n};"))
+                    } else {
+                        w.line(&format!("size += {f_n} * {s};"))
+                    }
+                }
+            } else {
+                emit_size_expr(from, accessor, is_ref, w, schema);
+            }
+        }
+        (FixedDeltaArray(_, f_n), FixedDeltaArray(..)) => {
+            w.line(&format!(
+                "size += fixed_delta_array_size_hint(&{accessor}[..{f_n}]);"
+            ));
+        }
+        _ => emit_size_expr(from, accessor, is_ref, w, schema),
+    }
+}
+
+fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut CodeWriter) {
+    let info = type_info(ty);
+    match ty {
+        ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
+            if let WireSize::Fixed(n) = info.wire_size {
+                w.line(&format!("size += {n};"));
+            } else {
+                w.line("size += 1;");
+            }
+        }
+        ResolvedTypeRef::Scalar(id) => {
+            if let Some(hist) = schema.types.types.get(id) {
+                let opt_count = hist
+                    .fields
+                    .iter()
+                    .filter(|f| matches!(f.ty, ResolvedTypeRef::Optional(_)))
+                    .count();
+                let hb = opt_count.div_ceil(8);
+                if hb > 0 {
+                    w.line(&format!("size += {hb};"));
+                }
+                for field in &hist.fields {
+                    if !matches!(field.ty, ResolvedTypeRef::Optional(_)) {
+                        emit_default_size(schema, &field.ty, w);
+                    }
+                }
+            }
+        }
+        ResolvedTypeRef::Enum(_) => w.line("size += 1;"),
+        ResolvedTypeRef::Union(_) => w.line("size += 2;"),
+        ResolvedTypeRef::Bitset(id, _) => {
+            let len = schema
+                .bitsets
+                .bitsets
+                .get(id)
+                .map(|bs| bs.variants.len().div_ceil(8))
+                .unwrap_or(1);
+            w.line(&format!("size += {len};"));
+        }
+        ResolvedTypeRef::Array(_) | ResolvedTypeRef::Map(_, _) => w.line("size += 1;"),
+        ResolvedTypeRef::DeltaArray(_) => w.line("size += 1;"),
+        ResolvedTypeRef::FixedArray(inner, n) => {
+            if *n > 0 {
+                if let WireSize::Fixed(s) = type_info(inner).wire_size {
+                    if *n > 0 {
+                        let size_str = if *n == 1 {
+                            format!("size += {s};")
+                        } else {
+                            if *n == 1 {
+                                format!("size += {n};")
+                            } else {
+                                format!("size += {n} * {s};")
+                            }
+                        };
+                        w.line(&size_str);
+                    }
+                } else {
+                    for _ in 0..*n {
+                        emit_default_size(schema, inner, w);
+                    }
+                }
+            }
+        }
+        ResolvedTypeRef::FixedDeltaArray(_, n) => {
+            if *n > 0 {
+                w.line(&format!("size += {n};"));
+            }
+        }
+        ResolvedTypeRef::FixedString(n) => w.line(&format!("size += {n};")),
+        ResolvedTypeRef::FixedMap(k, v, n) => {
+            if *n > 0 {
+                if let (WireSize::Fixed(ks), WireSize::Fixed(vs)) =
+                    (type_info(k).wire_size, type_info(v).wire_size)
+                {
+                    if *n > 0 {
+                        let entry_size = ks + vs;
+                        let size_str = if *n == 1 {
+                            format!("size += {entry_size};")
+                        } else {
+                            format!("size += {n} * ({ks} + {vs});")
+                        };
+                        w.line(&size_str);
+                    }
+                } else {
+                    for _ in 0..*n {
+                        emit_default_size(schema, k, w);
+                        emit_default_size(schema, v, w);
+                    }
+                }
+            }
+        }
+        ResolvedTypeRef::Tuple(elements) => {
+            for elem in elements {
+                emit_default_size(schema, elem, w);
+            }
+        }
+        ResolvedTypeRef::VFloat { .. } => {
+            if let WireSize::Fixed(n) = info.wire_size {
+                w.line(&format!("size += {n};"));
+            }
+        }
+        ResolvedTypeRef::Optional(_) | ResolvedTypeRef::ImportedSchema { .. } => {}
+    }
+}
+
+fn emit_lazy_encode(
+    field_name: &str,
+    wire_ty: &ResolvedTypeRef,
+    schema: &ResolvedSchema,
+    w: &mut CodeWriter,
+) {
+    let is_optional = matches!(wire_ty, ResolvedTypeRef::Optional(_));
+    let inner_ty = match wire_ty {
+        ResolvedTypeRef::Optional(i) => i.as_ref(),
+        t => t,
+    };
+
+    w.line(&format!("match &__value.{field_name} {{"));
+    w.indent();
+    w.line("LazyView::Raw { buf, .. } if !buf.is_empty() => __buf.extend_from_slice(buf),");
+    if !is_optional {
+        w.line("LazyView::Raw { .. } => {");
+        w.indent();
+        emit_vn_default_write(wire_ty, schema, w);
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Raw { .. } => {}");
+    }
+
+    if is_optional {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        w.line("if let Some(__inner) = __val {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("write_delta_array(__buf, __inner);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("write_fixed_delta_array(__buf, __inner);")
+            }
+            _ => emit_write_expr(inner_ty, &deref_if_copy(inner_ty, "__inner"), None, true, w),
+        }
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("write_delta_array(__buf, &**__val);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("write_fixed_delta_array(__buf, &**__val);")
+            }
+            _ => emit_write_expr(inner_ty, &deref_if_copy(inner_ty, "__val"), None, true, w),
+        }
+        w.dedent();
+        w.line("}");
+    }
+
+    w.dedent();
+    w.line("}");
+}
+
+fn emit_lazy_size(
+    field_name: &str,
+    wire_ty: &ResolvedTypeRef,
+    schema: &ResolvedSchema,
+    w: &mut CodeWriter,
+) {
+    let is_optional = matches!(wire_ty, ResolvedTypeRef::Optional(_));
+    let inner_ty = match wire_ty {
+        ResolvedTypeRef::Optional(i) => i.as_ref(),
+        t => t,
+    };
+
+    w.line(&format!("match &__value.{field_name} {{"));
+    w.indent();
+    if is_optional {
+        w.line("LazyView::Raw { buf, .. } => size += buf.len(),");
+    } else {
+        w.line("LazyView::Raw { buf, .. } if !buf.is_empty() => size += buf.len(),");
+        w.line("LazyView::Raw { .. } => size += 16,");
+    }
+
+    if is_optional {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        w.line("if let Some(__inner) = __val {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("size += delta_array_size_hint(__inner);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("size += fixed_delta_array_size_hint(__inner);")
+            }
+            _ => emit_size_expr(inner_ty, "__inner", true, w, schema),
+        }
+        w.dedent();
+        w.line("}");
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line("LazyView::Owned(__val) => {");
+        w.indent();
+        match inner_ty {
+            ResolvedTypeRef::DeltaArray(_) => w.line("size += delta_array_size_hint(&**__val);"),
+            ResolvedTypeRef::FixedDeltaArray(_, _) => {
+                w.line("size += fixed_delta_array_size_hint(&**__val);")
+            }
+            _ => emit_size_expr(inner_ty, "__val", true, w, schema),
+        }
+        w.dedent();
+        w.line("}");
+    }
+
+    w.dedent();
+    w.line("}");
 }
