@@ -24,12 +24,30 @@ pub struct SchemaIndex {
     pub import_versions: HashMap<String, Vec<i128>>,
     /// Type name -> its declared generic parameter names, if any (`type Box<T>` -> `["T"]`).
     pub generic_params: HashMap<String, Vec<String>>,
+    /// `///` doc comment directly above the `schema` header, if any.
+    pub schema_doc: Vec<String>,
+    pub type_docs: HashMap<String, Vec<String>>,
+    pub enum_docs: HashMap<String, Vec<String>>,
+    pub union_docs: HashMap<String, Vec<String>>,
+    pub bitset_docs: HashMap<String, Vec<String>>,
+    /// (owning type name, or `None` for root fields) -> field/const name -> doc.
+    pub field_docs: HashMap<(Option<String>, String), Vec<String>>,
+    /// (enum/union/bitset name, variant name) -> doc.
+    pub variant_docs: HashMap<(String, String), Vec<String>>,
+    /// Type name -> its current (name, type, lazy) field shape as declared
+    /// in the schema source. Unlike the fully-resolved `ResolvedSchema`,
+    /// this is populated even for un-instantiated generic templates (which
+    /// have no monomorphized `TypeId` of their own to look up) — the
+    /// primary consumer is hover, which falls back to this raw shape when
+    /// a type name has no corresponding resolved type.
+    pub generic_field_asts: HashMap<String, Vec<(String, TypeAst, bool)>>,
 }
 
 impl SchemaIndex {
     pub fn build(ast: &SchemaAst) -> Self {
         let mut idx = SchemaIndex {
             import_aliases: ast.imports.iter().map(|i| i.alias.clone()).collect(),
+            schema_doc: ast.doc.clone(),
             ..Default::default()
         };
         let mut running_fields: Vec<String> = Vec::new();
@@ -52,14 +70,41 @@ impl SchemaIndex {
                         }
                         match &t.body {
                             TypeBody::Fields(f) => {
+                                idx.type_docs.insert(t.name.clone(), t.doc.clone());
+                                for fld in &f.fields {
+                                    idx.field_docs.insert(
+                                        (Some(t.name.clone()), fld.name.clone()),
+                                        fld.doc.clone(),
+                                    );
+                                }
+                                for c in &f.const_fields {
+                                    idx.field_docs.insert(
+                                        (Some(t.name.clone()), c.name.clone()),
+                                        c.doc.clone(),
+                                    );
+                                }
+                                idx.generic_field_asts.insert(
+                                    t.name.clone(),
+                                    f.fields
+                                        .iter()
+                                        .map(|fld| (fld.name.clone(), fld.ty.clone(), fld.lazy))
+                                        .collect(),
+                                );
                                 let names = field_names(f);
                                 type_running.insert(t.name.clone(), names);
                             }
                             TypeBody::Diff(ops) => {
+                                if !t.doc.is_empty() {
+                                    idx.type_docs.insert(t.name.clone(), t.doc.clone());
+                                }
                                 let entry = type_running.entry(t.name.clone()).or_default();
                                 idx.type_fields_before_version
                                     .insert((t.name.clone(), v.version), entry.clone());
                                 apply_diff(entry, ops);
+                                apply_diff_docs(&mut idx, Some(&t.name), ops);
+                                let field_ast_entry =
+                                    idx.generic_field_asts.entry(t.name.clone()).or_default();
+                                apply_diff_to_field_asts(field_ast_entry, ops);
                             }
                         }
                     }
@@ -88,10 +133,18 @@ impl SchemaIndex {
                         apply_bitset(&mut idx, b);
                     }
                     VersionBlockAst::Fields(f) => {
+                        for fld in &f.fields {
+                            idx.field_docs
+                                .insert((None, fld.name.clone()), fld.doc.clone());
+                        }
+                        for c in &f.const_fields {
+                            idx.field_docs.insert((None, c.name.clone()), c.doc.clone());
+                        }
                         running_fields = field_names(f);
                     }
                     VersionBlockAst::Diff(ops) => {
                         apply_diff(&mut running_fields, ops);
+                        apply_diff_docs(&mut idx, None, ops);
                     }
                 }
             }
@@ -152,20 +205,42 @@ fn field_names(f: &FieldsAst) -> Vec<String> {
 
 fn apply_enum(idx: &mut SchemaIndex, e: &EnumDefAst) {
     match e {
-        EnumDefAst::Definition { name, variants, .. } => {
+        EnumDefAst::Definition {
+            name,
+            variants,
+            doc,
+            ..
+        } => {
+            idx.enum_docs.insert(name.clone(), doc.clone());
             idx.enum_variants.insert(
                 name.clone(),
                 variants.iter().map(|v| v.name.clone()).collect(),
             );
+            for v in variants {
+                idx.variant_docs
+                    .insert((name.clone(), v.name.clone()), v.doc.clone());
+            }
         }
-        EnumDefAst::Extension { name, ops, .. } => {
+        EnumDefAst::Extension { name, ops, doc, .. } => {
+            if !doc.is_empty() {
+                idx.enum_docs.insert(name.clone(), doc.clone());
+            }
             let list = idx.enum_variants.entry(name.clone()).or_default();
             for op in ops {
                 match op {
-                    EnumVariantOpAst::Add { name: n, .. } => list.push(n.clone()),
+                    EnumVariantOpAst::Add {
+                        name: n, doc: vdoc, ..
+                    } => {
+                        list.push(n.clone());
+                        idx.variant_docs
+                            .insert((name.clone(), n.clone()), vdoc.clone());
+                    }
                     EnumVariantOpAst::Rename { from, to, .. } => {
                         if let Some(slot) = list.iter_mut().find(|v| *v == from) {
                             *slot = to.clone();
+                        }
+                        if let Some(d) = idx.variant_docs.remove(&(name.clone(), from.clone())) {
+                            idx.variant_docs.insert((name.clone(), to.clone()), d);
                         }
                     }
                 }
@@ -176,18 +251,40 @@ fn apply_enum(idx: &mut SchemaIndex, e: &EnumDefAst) {
 
 fn apply_bitset(idx: &mut SchemaIndex, b: &BitsetDefAst) {
     match b {
-        BitsetDefAst::Definition { name, variants, .. } => {
+        BitsetDefAst::Definition {
+            name,
+            variants,
+            doc,
+            ..
+        } => {
+            idx.bitset_docs.insert(name.clone(), doc.clone());
             idx.bitset_variants.insert(
                 name.clone(),
                 variants.iter().map(|v| v.name.clone()).collect(),
             );
+            for v in variants {
+                idx.variant_docs
+                    .insert((name.clone(), v.name.clone()), v.doc.clone());
+            }
         }
-        BitsetDefAst::Extension { name, ops, .. } => {
+        BitsetDefAst::Extension { name, ops, doc, .. } => {
+            if !doc.is_empty() {
+                idx.bitset_docs.insert(name.clone(), doc.clone());
+            }
             let list = idx.bitset_variants.entry(name.clone()).or_default();
             for op in ops {
                 match op {
-                    BitsetOpAst::Add { name: n, .. } => list.push(n.clone()),
-                    BitsetOpAst::Remove { name: n, .. } => list.retain(|v| v != n),
+                    BitsetOpAst::Add {
+                        name: n, doc: vdoc, ..
+                    } => {
+                        list.push(n.clone());
+                        idx.variant_docs
+                            .insert((name.clone(), n.clone()), vdoc.clone());
+                    }
+                    BitsetOpAst::Remove { name: n, .. } => {
+                        list.retain(|v| v != n);
+                        idx.variant_docs.remove(&(name.clone(), n.clone()));
+                    }
                 }
             }
         }
@@ -196,19 +293,66 @@ fn apply_bitset(idx: &mut SchemaIndex, b: &BitsetDefAst) {
 
 fn apply_union(idx: &mut SchemaIndex, u: &UnionDefAst) {
     match u {
-        UnionDefAst::Definition { name, variants, .. } => {
+        UnionDefAst::Definition {
+            name,
+            variants,
+            doc,
+            ..
+        } => {
+            idx.union_docs.insert(name.clone(), doc.clone());
             idx.union_variants.insert(
                 name.clone(),
                 variants.iter().map(|v| v.name.clone()).collect(),
             );
+            for v in variants {
+                idx.variant_docs
+                    .insert((name.clone(), v.name.clone()), v.doc.clone());
+            }
         }
-        UnionDefAst::Extension { name, ops, .. } => {
+        UnionDefAst::Extension { name, ops, doc, .. } => {
+            if !doc.is_empty() {
+                idx.union_docs.insert(name.clone(), doc.clone());
+            }
             let list = idx.union_variants.entry(name.clone()).or_default();
             for op in ops {
                 match op {
-                    UnionVariantOpAst::Add { name: n, .. } => list.push(n.clone()),
+                    UnionVariantOpAst::Add {
+                        name: n, doc: vdoc, ..
+                    } => {
+                        list.push(n.clone());
+                        idx.variant_docs
+                            .insert((name.clone(), n.clone()), vdoc.clone());
+                    }
                 }
             }
+        }
+    }
+}
+
+fn apply_diff_docs(idx: &mut SchemaIndex, owner: Option<&str>, ops: &[DiffAst]) {
+    let key = |name: &str| (owner.map(str::to_string), name.to_string());
+    for op in ops {
+        match op {
+            DiffAst::Add { field } => {
+                idx.field_docs.insert(key(&field.name), field.doc.clone());
+            }
+            DiffAst::AddConst { field } => {
+                idx.field_docs.insert(key(&field.name), field.doc.clone());
+            }
+            DiffAst::Remove { name, .. } => {
+                idx.field_docs.remove(&key(name));
+            }
+            DiffAst::Rename { from, to, .. } | DiffAst::Transform { from, to, .. } => {
+                if let Some(doc) = idx.field_docs.remove(&key(from)) {
+                    idx.field_docs.insert(key(to), doc);
+                }
+            }
+            DiffAst::TransformConst { from, to, .. } => {
+                if let Some(doc) = idx.field_docs.remove(&key(from)) {
+                    idx.field_docs.insert(key(to), doc);
+                }
+            }
+            DiffAst::UpdateType { .. } | DiffAst::UpdateConst { .. } => {}
         }
     }
 }
@@ -234,10 +378,46 @@ fn apply_diff(fields: &mut Vec<String>, ops: &[DiffAst]) {
     }
 }
 
+fn apply_diff_to_field_asts(fields: &mut Vec<(String, TypeAst, bool)>, ops: &[DiffAst]) {
+    for op in ops {
+        match op {
+            DiffAst::Add { field } => {
+                fields.push((field.name.clone(), field.ty.clone(), field.lazy));
+            }
+            DiffAst::Remove { name, .. } => fields.retain(|(n, _, _)| n != name),
+            DiffAst::Rename { from, to, .. } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == from) {
+                    f.0 = to.clone();
+                }
+            }
+            DiffAst::UpdateType { name, ty, lazy, .. } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == name) {
+                    f.1 = ty.clone();
+                    f.2 = *lazy;
+                }
+            }
+            DiffAst::Transform {
+                from, to, ty, lazy, ..
+            } => {
+                if let Some(f) = fields.iter_mut().find(|(n, _, _)| n == from) {
+                    f.0 = to.clone();
+                    if let Some(ty) = ty {
+                        f.1 = ty.clone();
+                    }
+                    f.2 = *lazy;
+                }
+            }
+            DiffAst::AddConst { .. }
+            | DiffAst::TransformConst { .. }
+            | DiffAst::UpdateConst { .. } => {}
+        }
+    }
+}
+
 // --- cursor-position context detection ---------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tok {
+pub(crate) enum Tok {
     Ident(String),
     Number(String),
     Punct(char),
@@ -245,7 +425,7 @@ enum Tok {
     Newline,
 }
 
-fn tokenize_prefix(src: &str) -> Vec<Tok> {
+pub(crate) fn tokenize_prefix(src: &str) -> Vec<Tok> {
     let mut toks = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0;
@@ -309,24 +489,27 @@ fn tokenize_prefix(src: &str) -> Vec<Tok> {
 }
 
 #[derive(Debug, Clone)]
-enum BlockKind {
+pub(crate) enum BlockKind {
     Root,
     #[allow(dead_code)]
     Schema(String),
     Version(i128),
     TypeDef(String),
+    EnumDef(String),
+    UnionDef(String),
+    BitsetDef(String),
     Fields,
     Diff,
     Other,
 }
 
-struct ScanState {
-    stack: Vec<BlockKind>,
-    pending: Vec<Tok>,
+pub(crate) struct ScanState {
+    pub(crate) stack: Vec<BlockKind>,
+    pub(crate) pending: Vec<Tok>,
     consumed: Vec<HashSet<String>>,
 }
 
-fn scan(tokens: &[Tok]) -> ScanState {
+pub(crate) fn scan(tokens: &[Tok]) -> ScanState {
     let mut stack = vec![BlockKind::Root];
     let mut consumed: Vec<HashSet<String>> = vec![HashSet::new()];
     let mut pending: Vec<Tok> = Vec::new();
@@ -388,6 +571,11 @@ fn classify_header(pending: &[Tok]) -> BlockKind {
             BlockKind::Version(n.parse().unwrap_or(0))
         }
         [Tok::Ident(k), Tok::Ident(name), ..] if k == "type" => BlockKind::TypeDef(name.clone()),
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "enum" => BlockKind::EnumDef(name.clone()),
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "union" => BlockKind::UnionDef(name.clone()),
+        [Tok::Ident(k), Tok::Ident(name), ..] if k == "bitset" => {
+            BlockKind::BitsetDef(name.clone())
+        }
         [Tok::Ident(k), ..] if k == "fields" => BlockKind::Fields,
         [Tok::Ident(k), ..] if k == "diff" => BlockKind::Diff,
         _ => BlockKind::Other,
@@ -788,6 +976,10 @@ pub fn completions_for_position(
                 .map(|n| CompletionItem {
                     label: n.clone(),
                     kind: Some(CompletionItemKind::FIELD),
+                    documentation: idx
+                        .field_docs
+                        .get(&(owner_type.clone(), n.clone()))
+                        .and_then(|d| doc_to_documentation(d)),
                     ..Default::default()
                 })
                 .collect()
@@ -799,6 +991,7 @@ pub fn completions_for_position(
             .map(|n| CompletionItem {
                 label: n.to_string(),
                 kind: Some(CompletionItemKind::CLASS),
+                documentation: type_like_doc(idx, n).and_then(|d| doc_to_documentation(d)),
                 ..Default::default()
             })
             .collect(),
@@ -860,6 +1053,10 @@ pub fn completions_for_position(
                 .map(|v| CompletionItem {
                     label: v.clone(),
                     kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    documentation: idx
+                        .variant_docs
+                        .get(&(name.clone(), v.clone()))
+                        .and_then(|d| doc_to_documentation(d)),
                     ..Default::default()
                 })
                 .collect()
@@ -933,10 +1130,15 @@ pub fn completions_for_position(
                 .iter()
                 .filter(|v| !used.contains(*v))
                 .map(|v| {
+                    let documentation = idx
+                        .variant_docs
+                        .get(&(bitset_name.clone(), v.clone()))
+                        .and_then(|d| doc_to_documentation(d));
                     if has_value_after {
                         CompletionItem {
                             label: v.clone(),
                             kind: Some(CompletionItemKind::PROPERTY),
+                            documentation,
                             ..Default::default()
                         }
                     } else {
@@ -945,6 +1147,7 @@ pub fn completions_for_position(
                             insert_text: Some(format!("{v}: $0")),
                             insert_text_format: Some(InsertTextFormat::SNIPPET),
                             kind: Some(CompletionItemKind::PROPERTY),
+                            documentation,
                             ..Default::default()
                         }
                     }
@@ -1033,6 +1236,10 @@ pub fn completions_for_position(
                     .map(|v| CompletionItem {
                         label: format!("{name}::{v}"),
                         kind: Some(CompletionItemKind::ENUM_MEMBER),
+                        documentation: idx
+                            .variant_docs
+                            .get(&(name.clone(), v.clone()))
+                            .and_then(|d| doc_to_documentation(d)),
                         ..Default::default()
                     })
                     .collect()
@@ -1092,7 +1299,11 @@ fn snippet(label: &str, insert: &str, detail: &str) -> CompletionItem {
 /// Builds a `Box<$1>`/`Pair<$1, $2>`-style snippet for instantiating a
 /// generic type, one tab stop per declared parameter (mirrors the
 /// `map<$1, $2>` snippet below).
-fn generic_instantiation_item(name: &str, params: &[String]) -> CompletionItem {
+fn generic_instantiation_item(
+    name: &str,
+    params: &[String],
+    documentation: Option<Documentation>,
+) -> CompletionItem {
     let placeholders = (1..=params.len())
         .map(|i| format!("${i}"))
         .collect::<Vec<_>>()
@@ -1103,7 +1314,29 @@ fn generic_instantiation_item(name: &str, params: &[String]) -> CompletionItem {
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         kind: Some(CompletionItemKind::SNIPPET),
         detail: Some("generic type".into()),
+        documentation,
         ..Default::default()
+    }
+}
+
+/// Doc comment lookup across every type-like namespace (structs, enums,
+/// unions, bitsets all share one name space).
+fn type_like_doc<'a>(idx: &'a SchemaIndex, name: &str) -> Option<&'a Vec<String>> {
+    idx.type_docs
+        .get(name)
+        .or_else(|| idx.enum_docs.get(name))
+        .or_else(|| idx.union_docs.get(name))
+        .or_else(|| idx.bitset_docs.get(name))
+}
+
+fn doc_to_documentation(doc: &[String]) -> Option<Documentation> {
+    if doc.is_empty() {
+        None
+    } else {
+        Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: doc.join("\n"),
+        }))
     }
 }
 
@@ -1136,16 +1369,20 @@ fn type_position_items(
         ..Default::default()
     }));
 
-    items.extend(idx.type_like_names_at(version).into_iter().map(
-        |n| match idx.generic_params.get(n) {
-            Some(params) if !params.is_empty() => generic_instantiation_item(n, params),
+    items.extend(idx.type_like_names_at(version).into_iter().map(|n| {
+        let documentation = type_like_doc(idx, n).and_then(|d| doc_to_documentation(d));
+        match idx.generic_params.get(n) {
+            Some(params) if !params.is_empty() => {
+                generic_instantiation_item(n, params, documentation)
+            }
             _ => CompletionItem {
                 label: n.to_string(),
                 kind: Some(CompletionItemKind::CLASS),
+                documentation,
                 ..Default::default()
             },
-        },
-    ));
+        }
+    }));
 
     items.extend(idx.import_aliases.iter().map(|n| CompletionItem {
         label: n.clone() + "@",
@@ -1603,7 +1840,7 @@ fn suffix_has_delta(text: &str, offset: usize) -> bool {
         .any(|t| matches!(t, Tok::Ident(s) if s == "delta"))
 }
 
-fn cursor_in_line_comment(text: &str, offset: usize) -> bool {
+pub(crate) fn cursor_in_line_comment(text: &str, offset: usize) -> bool {
     let prefix = &text[..offset.min(text.len())];
     let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = &prefix[line_start..];
