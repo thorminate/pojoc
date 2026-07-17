@@ -4,11 +4,64 @@ mod encode;
 mod structs;
 pub mod writer;
 
-use crate::core::types::{ResolvedTypeRef, is_primitive};
+use crate::core::types::{ResolvedTypeRef, WireSize, contains_fixed_map, is_primitive, type_info};
 use crate::schema::ir::ir_types::{DefaultValue, ResolvedSchema};
+use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
 use std::collections::{HashMap, HashSet};
 use writer::CodeWriter;
+
+/// Byte size of `ty` on the wire when it is a statically fixed-width type, else
+/// `None`. Backed by the shared [`type_info`] classifier (`WireSize::Fixed`).
+pub(crate) fn wire_fixed_size(ty: &ResolvedTypeRef) -> Option<usize> {
+    match type_info(ty).wire_size {
+        WireSize::Fixed(n) => Some(n),
+        WireSize::Variable => None,
+    }
+}
+
+fn target_is_lazy(schema: &ResolvedSchema, target_name: &str) -> bool {
+    schema
+        .versions
+        .last()
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.name == *target_name)
+        .map(|f| f.lazy)
+        .unwrap_or(false)
+}
+
+/// Whether decode can read this version-field through the single-bounds-checked
+/// fixed block using unchecked accessors: it must be statically fixed-width,
+/// `Copy`-representable (no `FixedMap`), and a direct read — a non-lazy
+/// pass-through or a discard/skip. Casts and lazy fields fall back to the normal
+/// per-read checked path.
+pub(crate) fn is_blastable(schema: &ResolvedSchema, fl: &FieldLineage) -> bool {
+    if wire_fixed_size(&fl.source_ty).is_none() || contains_fixed_map(&fl.source_ty) {
+        return false;
+    }
+    match &fl.mapping {
+        FieldMapping::Discard => true,
+        FieldMapping::PassThrough { target_name } => !target_is_lazy(schema, target_name),
+        FieldMapping::Cast { .. } => false,
+    }
+}
+
+/// The version's wire fields, stably reordered so that all "blastable"
+/// fixed-width fields form a contiguous leading block and everything else
+/// follows in declaration order. Encode/decode/skip all consume this identical
+/// order, so the reordering is invisible on the wire. Optional fields (always
+/// variable) keep their relative order, so optional-header bit indices are
+/// unchanged.
+pub(crate) fn ordered_wire_fields<'a>(
+    schema: &ResolvedSchema,
+    vl: &'a VersionLineage,
+) -> Vec<&'a FieldLineage> {
+    let mut fields: Vec<&FieldLineage> = vl.fields.iter().collect();
+    fields.sort_by_key(|fl| u8::from(!is_blastable(schema, fl)));
+    fields
+}
 
 /// Entrypoint of the codegen, runs after analysis.
 pub fn generate(schema: &ResolvedSchema) -> String {

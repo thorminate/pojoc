@@ -323,8 +323,31 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Tuple(elems) => {
             let infos: Vec<_> = elems.iter().map(type_info).collect();
+            // A tuple whose every element is a fixed-width, `Copy` scalar-like type
+            // is itself fixed-width. This lets the codegen group tuple fields (e.g.
+            // `(f32, f32, f32)` positions/velocities) into the single-bounds-check
+            // fixed block. FixedMap is fixed-size but not `Copy`, so tuples that
+            // contain one stay `Variable` to avoid an invalid `[default; N]` init.
+            let tuple_wire_size = {
+                let mut total = 0usize;
+                let mut all_fixed = true;
+                for (elem, info) in elems.iter().zip(&infos) {
+                    match info.wire_size {
+                        WireSize::Fixed(n) if !contains_fixed_map(elem) => total += n,
+                        _ => {
+                            all_fixed = false;
+                            break;
+                        }
+                    }
+                }
+                if all_fixed {
+                    WireSize::Fixed(total)
+                } else {
+                    WireSize::Variable
+                }
+            };
             TypeInfo {
-                wire_size: WireSize::Variable,
+                wire_size: tuple_wire_size,
                 rust_type: format!(
                     "({})",
                     infos
@@ -491,6 +514,18 @@ fn is_balanced(s: &str) -> bool {
         }
     }
     depth == 0
+}
+
+/// Whether `ty` is, or transitively contains, a `FixedMap` — the one fixed-width
+/// type whose Rust representation (`PojocFixedMap`) is not `Copy`. Used to keep
+/// such tuples out of the `Copy`-requiring fixed-array/fixed-block init paths.
+pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
+    match ty {
+        ResolvedTypeRef::FixedMap(..) => true,
+        ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
+        ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
+        _ => false,
+    }
 }
 
 pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {
