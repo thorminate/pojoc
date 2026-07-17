@@ -1,5 +1,7 @@
 use super::writer::CodeWriter;
-use crate::codegen::{emit_default, get_latest_versions};
+use crate::codegen::{
+    emit_default, get_latest_versions, is_blastable, ordered_wire_fields, wire_fixed_size,
+};
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
 use crate::schema::ir::lineage::*;
@@ -246,6 +248,21 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.dedent();
         w.line("}");
         w.blank();
+
+        // Unchecked variant for the single-checked fixed decode block.
+        w.line("#[allow(dead_code)]");
+        w.line(&format!(
+            "unsafe fn {fn_name}_unchecked(__buf: &[u8], __pos: &mut usize) -> {name} {{"
+        ));
+        w.indent();
+        w.line("// SAFETY: caller validated the fixed region before calling.");
+        w.line(&format!(
+            "let bytes = unsafe {{ read_fixed_bytes_unchecked::<{computed_len}>(__buf, __pos) }};"
+        ));
+        w.line(&format!("{name}(bytes)"));
+        w.dedent();
+        w.line("}");
+        w.blank();
     }
 }
 
@@ -313,8 +330,30 @@ fn emit_decode_fn(
         .count();
     emit_optional_header_read(optional_count, w);
 
+    // Reorder so blastable fixed-width fields form a contiguous leading block,
+    // then read that whole block behind a single bounds check via unchecked
+    // accessors. Everything else follows on the normal per-read checked path.
+    let ordered = ordered_wire_fields(schema, vl);
+    let fixed_prefix = ordered.partition_point(|fl| is_blastable(schema, fl));
+    let (blast, rest) = ordered.split_at(fixed_prefix);
+
+    let fixed_total: usize = blast
+        .iter()
+        .map(|fl| wire_fixed_size(&fl.source_ty).unwrap_or(0))
+        .sum();
+    if fixed_total > 0 {
+        w.line(&format!(
+            "let __fixed_end = __pos.checked_add({fixed_total}).ok_or(Error::UnexpectedEof)?;"
+        ));
+        w.line("if __fixed_end > __buf.len() { return Err(Error::UnexpectedEof); }");
+        w.line("// SAFETY: the check above validated __pos..__fixed_end; every read below stays within it.");
+    }
+    for &fl in blast {
+        emit_blastable_field_read(&fl.source_ty, &fl.mapping, w);
+    }
+
     let mut optional_counter = 0;
-    for fl in &vl.fields {
+    for &fl in rest {
         if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
             let byte_idx = optional_counter / 8;
             let bit_idx = optional_counter % 8;
@@ -527,6 +566,80 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         ResolvedTypeRef::ImportedSchema { .. } => {
             format!("{}(__buf, __pos)?", info.read_fn)
         }
+    }
+}
+
+/// Emit one field of the single-checked fixed block. The region has already
+/// been bounds-validated, so pass-throughs read via unchecked accessors and
+/// discards just advance the cursor.
+fn emit_blastable_field_read(
+    source_ty: &ResolvedTypeRef,
+    mapping: &FieldMapping,
+    w: &mut CodeWriter,
+) {
+    match mapping {
+        FieldMapping::Discard => {
+            let size = wire_fixed_size(source_ty).unwrap_or(0);
+            if size > 0 {
+                w.line(&format!("*__pos += {size};"));
+            }
+        }
+        FieldMapping::PassThrough { target_name } => {
+            let rust = type_info(source_ty).rust_type;
+            let expr = emit_read_expr_unchecked(source_ty);
+            w.line(&format!("let {target_name}: {rust} = {expr};"));
+        }
+        FieldMapping::Cast { .. } => unreachable!("casts are never blastable"),
+    }
+}
+
+/// Non-fallible read expression for a blastable fixed-width type, using the
+/// `*_unchecked` runtime accessors. Only reached for types accepted by
+/// [`is_blastable`](crate::codegen::is_blastable).
+fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
+    let info = type_info(ty);
+    match ty {
+        ResolvedTypeRef::Scalar(_) => {
+            format!("unsafe {{ {}_unchecked(__buf, __pos) }}", info.read_fn)
+        }
+        ResolvedTypeRef::Bitset(id, _) => {
+            format!(
+                "unsafe {{ read_{}_unchecked(__buf, __pos) }}",
+                id.name.to_snake_case()
+            )
+        }
+        ResolvedTypeRef::FixedString(n) => {
+            if *n == 0 {
+                "[]".to_string()
+            } else {
+                format!("unsafe {{ read_fixed_bytes_unchecked::<{n}>(__buf, __pos) }}")
+            }
+        }
+        ResolvedTypeRef::VFloat {
+            min, step, backing, ..
+        } => {
+            format!(
+                "(( unsafe {{ {}_unchecked(__buf, __pos) }} as f64) * {step}f64 + {min}f64) as f32",
+                backing.read_fn()
+            )
+        }
+        ResolvedTypeRef::FixedArray(inner, n) => {
+            if *n == 0 {
+                "[]".to_string()
+            } else {
+                let inner_expr = emit_read_expr_unchecked(inner);
+                format!("std::array::from_fn(|_| {inner_expr})")
+            }
+        }
+        ResolvedTypeRef::Tuple(elems) => {
+            let parts: Vec<String> = elems.iter().map(emit_read_expr_unchecked).collect();
+            if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            }
+        }
+        _ => unreachable!("emit_read_expr_unchecked called on a non-blastable type"),
     }
 }
 
@@ -981,12 +1094,12 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 pub fn emit_skip_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
     for vl in &schema.lineage.versions {
-        emit_skip_vn_fn(vl, w);
+        emit_skip_vn_fn(schema, vl, w);
         w.blank();
     }
 }
 
-fn emit_skip_vn_fn(vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
     let v = vl.version;
 
     w.line("#[allow(dead_code)]");
@@ -1002,8 +1115,24 @@ fn emit_skip_vn_fn(vl: &VersionLineage, w: &mut CodeWriter) {
         .count();
     emit_optional_header_read(optional_count, w);
 
+    // Mirror the reordered wire layout: collapse the blastable fixed-width prefix
+    // into a single bounds-checked advance, then skip the rest field-by-field.
+    let ordered = ordered_wire_fields(schema, vl);
+    let split = ordered.partition_point(|fl| is_blastable(schema, fl));
+    let (blast, rest) = ordered.split_at(split);
+    let fixed_total: usize = blast
+        .iter()
+        .map(|fl| wire_fixed_size(&fl.source_ty).unwrap_or(0))
+        .sum();
+    if fixed_total > 0 {
+        w.line(&format!(
+            "{{ let __end = __pos.checked_add({fixed_total}).ok_or(Error::UnexpectedEof)?; \
+             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} *__pos = __end; }}"
+        ));
+    }
+
     let mut optional_counter = 0;
-    for fl in &vl.fields {
+    for &fl in rest {
         if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
             if let Some(stmt) = emit_skip_stmt(inner) {
                 let byte_idx = optional_counter / 8;

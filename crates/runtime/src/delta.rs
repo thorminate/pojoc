@@ -44,6 +44,9 @@ pub trait DeltaElement: Copy + Default {
     fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error>;
     fn delta_to(self, prev: Self) -> i64;
     fn apply_delta(prev: Self, delta: i64) -> Self;
+    /// Encoded byte length of `value` written via [`write_first`](Self::write_first),
+    /// computed arithmetically (no scratch allocation).
+    fn first_encoded_size(value: Self) -> usize;
 }
 
 macro_rules! impl_delta_unsigned32 {
@@ -68,6 +71,10 @@ macro_rules! impl_delta_unsigned32 {
             #[inline]
             fn apply_delta(prev: Self, delta: i64) -> Self {
                 (prev as i64 + delta) as $t
+            }
+            #[inline]
+            fn first_encoded_size(value: Self) -> usize {
+                varint_size(value as u32 as usize)
             }
         }
     };
@@ -99,6 +106,10 @@ macro_rules! impl_delta_signed32 {
             fn apply_delta(prev: Self, delta: i64) -> Self {
                 (prev as i64 + delta) as $t
             }
+            #[inline]
+            fn first_encoded_size(value: Self) -> usize {
+                varint_size(zigzag_encode(value as i64) as usize)
+            }
         }
     };
 }
@@ -107,41 +118,60 @@ impl_delta_signed32!(i16);
 impl_delta_signed32!(i32);
 
 impl DeltaElement for u64 {
+    #[inline]
     fn write_first(out: &mut Vec<u8>, value: Self) {
         write_varint64(out, value);
     }
+    #[inline]
     fn read_first(buf: &[u8], pos: &mut usize) -> Result<Self, Error> {
         read_varint64(buf, pos)
     }
+    #[inline]
     fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
         skip_varint64(buf, pos)
     }
+    #[inline]
     fn delta_to(self, prev: Self) -> i64 {
         self.wrapping_sub(prev) as i64
     }
+    #[inline]
     fn apply_delta(prev: Self, delta: i64) -> Self {
         prev.wrapping_add(delta as u64)
+    }
+    #[inline]
+    fn first_encoded_size(value: Self) -> usize {
+        varint_size(value as usize)
     }
 }
 
 impl DeltaElement for i64 {
+    #[inline]
     fn write_first(out: &mut Vec<u8>, value: Self) {
         write_signed_varint(out, value);
     }
+    #[inline]
     fn read_first(buf: &[u8], pos: &mut usize) -> Result<Self, Error> {
         read_signed_varint(buf, pos)
     }
+    #[inline]
     fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
         skip_signed_varint(buf, pos)
     }
+    #[inline]
     fn delta_to(self, prev: Self) -> i64 {
         self.wrapping_sub(prev)
     }
+    #[inline]
     fn apply_delta(prev: Self, delta: i64) -> Self {
         prev.wrapping_add(delta)
     }
+    #[inline]
+    fn first_encoded_size(value: Self) -> usize {
+        varint_size(zigzag_encode(value) as usize)
+    }
 }
 
+#[inline]
 pub fn write_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) {
     write_varint32(out, items.len() as u32);
     if items.is_empty() {
@@ -155,6 +185,7 @@ pub fn write_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) {
     }
 }
 
+#[inline]
 pub fn read_delta_array<T: DeltaElement>(
     buf: &[u8],
     pos: &mut usize,
@@ -174,6 +205,7 @@ pub fn read_delta_array<T: DeltaElement>(
     Ok(out)
 }
 
+#[inline]
 pub fn skip_delta_array<T: DeltaElement>(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
     let len = read_varint32(buf, pos)? as usize;
     if len == 0 {
@@ -186,6 +218,7 @@ pub fn skip_delta_array<T: DeltaElement>(buf: &[u8], pos: &mut usize) -> Result<
     Ok(())
 }
 
+#[inline]
 pub fn write_fixed_delta_array<T: DeltaElement>(out: &mut Vec<u8>, items: &[T]) {
     if items.is_empty() {
         return;
@@ -230,24 +263,19 @@ pub fn skip_fixed_delta_array<T: DeltaElement, const N: usize>(
     Ok(())
 }
 
-fn first_size<T: DeltaElement>(v: T) -> usize {
-    let mut buf = Vec::new();
-    T::write_first(&mut buf, v);
-    buf.len()
-}
-
+/// Encoded byte length of a zigzag-varint-encoded delta, computed arithmetically.
+#[inline]
 fn signed_varint_size(delta: i64) -> usize {
-    let mut buf = Vec::new();
-    write_signed_varint(&mut buf, delta);
-    buf.len()
+    varint_size(zigzag_encode(delta) as usize)
 }
 
+#[inline]
 pub fn delta_array_size_hint<T: DeltaElement>(items: &[T]) -> usize {
     let mut size = varint_size(items.len());
     if items.is_empty() {
         return size;
     }
-    size += first_size(items[0]);
+    size += T::first_encoded_size(items[0]);
     let mut prev = items[0];
     for &item in &items[1..] {
         size += signed_varint_size(item.delta_to(prev));
@@ -256,11 +284,12 @@ pub fn delta_array_size_hint<T: DeltaElement>(items: &[T]) -> usize {
     size
 }
 
+#[inline]
 pub fn fixed_delta_array_size_hint<T: DeltaElement>(items: &[T]) -> usize {
     if items.is_empty() {
         return 0;
     }
-    let mut size = first_size(items[0]);
+    let mut size = T::first_encoded_size(items[0]);
     let mut prev = items[0];
     for &item in &items[1..] {
         size += signed_varint_size(item.delta_to(prev));

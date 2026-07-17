@@ -1,5 +1,5 @@
 use super::writer::CodeWriter;
-use crate::codegen::get_latest_versions;
+use crate::codegen::{get_latest_versions, ordered_wire_fields};
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
 use crate::schema::ir::lineage::*;
@@ -215,16 +215,32 @@ pub(crate) fn emit_write_expr(
 
         ResolvedTypeRef::Enum(id) => {
             if let Some(schema) = vn {
-                let max = schema
+                // The in-memory Rust enum is the latest version's definition. When
+                // encoding *this* version, the clamp maps any variant newer than
+                // the version's wire range down to 0. When `id` is the latest
+                // enum version, every representable variant is already in range, so
+                // the branch is provably dead — emit the direct write instead.
+                let latest_enum_version = schema
                     .enums
                     .enums
-                    .get(id)
-                    .and_then(|e| e.variants.iter().map(|v| v.wire_value).max())
-                    .unwrap_or(0);
-                w.line(&format!(
-                    "{{ let __disc = {accessor} as u32; \
-                     write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
-                ));
+                    .keys()
+                    .filter(|k| k.name == id.name)
+                    .map(|k| k.version)
+                    .max();
+                if latest_enum_version == Some(id.version) {
+                    w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
+                } else {
+                    let max = schema
+                        .enums
+                        .enums
+                        .get(id)
+                        .and_then(|e| e.variants.iter().map(|v| v.wire_value).max())
+                        .unwrap_or(0);
+                    w.line(&format!(
+                        "{{ let __disc = {accessor} as u32; \
+                         write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                    ));
+                }
             } else {
                 w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
             }
@@ -354,9 +370,11 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
     ));
     w.indent();
 
-    let opt_fields: Vec<&FieldLineage> = vl
-        .fields
+    // Same fixed-first reordering the decoder uses, so the wire order matches.
+    let ordered = ordered_wire_fields(schema, vl);
+    let opt_fields: Vec<&FieldLineage> = ordered
         .iter()
+        .copied()
         .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
         .collect();
     let header_bytes = opt_fields.len().div_ceil(8);
@@ -368,7 +386,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
         w.line("write_fixed_bytes(__buf, &__header);");
     }
 
-    for fl in &vl.fields {
+    for &fl in &ordered {
         if let ResolvedTypeRef::Optional(inner_src) = &fl.source_ty {
             emit_vn_optional_body(schema, fl, inner_src, w);
         } else {
