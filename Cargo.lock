@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "compact_str",
  "serde",
@@ -1431,54 +1431,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "pojoc-build"
+version = "0.3.0"
+dependencies = [
+ "compact_str",
+ "heck",
+ "thiserror",
+]
+
+[[package]]
 name = "pojoc-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
- "pojoc-codegen",
- "pojoc-schema",
-]
-
-[[package]]
-name = "pojoc-codegen"
-version = "0.2.0"
-dependencies = [
- "heck",
- "pojoc-core",
- "pojoc-schema",
-]
-
-[[package]]
-name = "pojoc-core"
-version = "0.2.0"
-dependencies = [
- "heck",
+ "pojoc-build",
 ]
 
 [[package]]
 name = "pojoc-lsp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
- "pojoc-core",
- "pojoc-schema",
+ "pojoc-build",
  "serde_json",
  "url",
 ]
 
 [[package]]
-name = "pojoc-schema"
-version = "0.2.0"
-dependencies = [
- "compact_str",
- "pojoc-core",
- "thiserror",
-]
-
-[[package]]
 name = "pojoc-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bebop",
  "bebop-tools",
@@ -1487,8 +1469,7 @@ dependencies = [
  "criterion",
  "flatbuffers",
  "pojoc",
- "pojoc-codegen",
- "pojoc-schema",
+ "pojoc-build",
  "prost",
  "prost-build",
  "serde",

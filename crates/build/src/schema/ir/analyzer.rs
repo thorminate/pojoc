@@ -2,10 +2,10 @@ use super::id_gen::*;
 use super::ir_types::*;
 use super::lineage::SchemaLineage;
 use super::resolver::*;
-use crate::ast::*;
-use crate::error::AnalysisError;
-use crate::span::Span;
-use pojoc_core::types::*;
+use crate::core::types::*;
+use crate::schema::ast::*;
+use crate::schema::error::AnalysisError;
+use crate::schema::span::Span;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,6 +39,7 @@ struct TemplateField {
     ty: TypeAst,
     default: TemplateDefault,
     lazy: bool,
+    doc: Vec<String>,
     span: Span,
     line: u32,
 }
@@ -48,6 +49,7 @@ struct TemplateConst {
     name: String,
     ty: TypeAst,
     value: DefaultValueAst,
+    doc: Vec<String>,
     span: Span,
     line: u32,
 }
@@ -62,6 +64,7 @@ struct TemplateShape {
     params: Vec<String>,
     fields: Vec<TemplateField>,
     consts: Vec<TemplateConst>,
+    doc: Vec<String>,
 }
 
 /// A generic instantiation discovered while resolving a field type, queued so
@@ -123,6 +126,7 @@ impl<'a> SchemaAnalyzer<'a> {
 
     #[allow(clippy::result_large_err)]
     pub fn run(&mut self) -> Result<(), AnalysisError> {
+        self.check_no_schema_name_collision()?;
         // we preregister unions so they can be referenced in types with no issues
         // enums and bitsets don't depend on any external types, so they don't need any special handling.
         self.collect_enums()?;
@@ -137,6 +141,56 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
+    /// The root struct codegen emits for the schema itself is named after
+    /// `ast.name` (see `ResolvedSchema::name_hint`), in the same Rust
+    /// namespace as every declared `type`/`enum`/`union`/`bitset` — so a
+    /// declaration reusing the schema's own name would silently produce two
+    /// conflicting struct/enum definitions in the generated code.
+    #[allow(clippy::result_large_err)]
+    fn check_no_schema_name_collision(&self) -> Result<(), AnalysisError> {
+        for version in &self.ast.versions {
+            for block in &version.blocks {
+                let (name, span, line) = match block {
+                    VersionBlockAst::TypeDef(td) => (td.name.as_str(), td.span, td.line),
+                    VersionBlockAst::EnumDef(EnumDefAst::Definition {
+                        name, span, line, ..
+                    })
+                    | VersionBlockAst::EnumDef(EnumDefAst::Extension {
+                        name, span, line, ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::UnionDef(UnionDefAst::Definition {
+                        name, span, line, ..
+                    })
+                    | VersionBlockAst::UnionDef(UnionDefAst::Extension {
+                        name, span, line, ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::BitsetDef(BitsetDefAst::Definition {
+                        name,
+                        span,
+                        line,
+                        ..
+                    })
+                    | VersionBlockAst::BitsetDef(BitsetDefAst::Extension {
+                        name,
+                        span,
+                        line,
+                        ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::Fields(_) | VersionBlockAst::Diff(_) => continue,
+                };
+                if name == self.ast.name {
+                    return Err(AnalysisError::TypeNameShadowsSchema {
+                        name: name.to_string(),
+                        version: version.version,
+                        span,
+                        line,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)]
     fn drain_pending_generics(&mut self) -> Result<(), AnalysisError> {
         while let Some(item) = self.pending_generics.pop() {
@@ -147,6 +201,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 ResolvedType {
                     fields,
                     const_fields,
+                    doc: item.shape.doc.clone(),
                 },
             );
         }
@@ -178,6 +233,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ResolvedType {
                             fields,
                             const_fields,
+                            doc: shape.doc.clone(),
                         },
                     );
                 }
@@ -192,10 +248,11 @@ impl<'a> SchemaAnalyzer<'a> {
             for block in &version.blocks {
                 if let VersionBlockAst::EnumDef(ed) = block {
                     let resolved = match ed {
-                        EnumDefAst::Definition { variants, .. } => {
+                        EnumDefAst::Definition { variants, doc, .. } => {
                             let mut resolved = vec![EnumVariant {
                                 name: "Unknown".into(),
                                 wire_value: 0,
+                                doc: Vec::new(),
                             }];
                             for (i, variant_node) in variants.iter().enumerate() {
                                 if variant_node.name == "Unknown" {
@@ -210,13 +267,21 @@ impl<'a> SchemaAnalyzer<'a> {
                                 resolved.push(EnumVariant {
                                     name: variant_node.name.clone(),
                                     wire_value: (i + 1) as u32,
+                                    doc: variant_node.doc.clone(),
                                 });
                             }
-                            ResolvedEnum { variants: resolved }
+                            ResolvedEnum {
+                                variants: resolved,
+                                doc: doc.clone(),
+                            }
                         }
 
                         EnumDefAst::Extension {
-                            name, base, ops, ..
+                            name,
+                            base,
+                            ops,
+                            doc,
+                            ..
                         } => {
                             if base.version >= version.version {
                                 return Err(AnalysisError::UnknownParentType {
@@ -244,6 +309,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                 })?;
 
                             let mut variants = parent.variants.clone();
+                            let parent_doc = parent.doc.clone();
 
                             for op in ops {
                                 match op {
@@ -267,7 +333,9 @@ impl<'a> SchemaAnalyzer<'a> {
                                         v.name = to.clone();
                                     }
                                     EnumVariantOpAst::Add {
-                                        name: variant_name, ..
+                                        name: variant_name,
+                                        doc: variant_doc,
+                                        ..
                                     } => {
                                         let wire_value = variants
                                             .iter()
@@ -278,12 +346,20 @@ impl<'a> SchemaAnalyzer<'a> {
                                         variants.push(EnumVariant {
                                             name: variant_name.clone(),
                                             wire_value,
+                                            doc: variant_doc.clone(),
                                         });
                                     }
                                 }
                             }
 
-                            ResolvedEnum { variants }
+                            ResolvedEnum {
+                                variants,
+                                doc: if doc.is_empty() {
+                                    parent_doc
+                                } else {
+                                    doc.clone()
+                                },
+                            }
                         }
                     };
 
@@ -307,10 +383,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         version: version.version,
                     };
                     // empty variants — collect_unions overwrites this with the real data
-                    self.union_registry
-                        .unions
-                        .entry(id)
-                        .or_insert(ResolvedUnion { variants: vec![] });
+                    self.union_registry.unions.entry(id).or_default();
                 }
             }
         }
@@ -323,13 +396,21 @@ impl<'a> SchemaAnalyzer<'a> {
                 if let VersionBlockAst::UnionDef(ud) = block {
                     let resolved = match ud {
                         UnionDefAst::Definition {
-                            name: _, variants, ..
+                            name: _,
+                            variants,
+                            doc,
+                            ..
                         } => ResolvedUnion {
                             variants: self.resolve_union_variants(variants, version.version)?,
+                            doc: doc.clone(),
                         },
 
                         UnionDefAst::Extension {
-                            name, base, ops, ..
+                            name,
+                            base,
+                            ops,
+                            doc,
+                            ..
                         } => {
                             if base.version >= version.version {
                                 return Err(AnalysisError::UnknownParentType {
@@ -357,12 +438,14 @@ impl<'a> SchemaAnalyzer<'a> {
                                 })?;
 
                             let mut variants = parent.variants.clone();
+                            let parent_doc = parent.doc.clone();
 
                             for op in ops {
                                 match op {
                                     UnionVariantOpAst::Add {
                                         name: vname,
                                         payload_ty,
+                                        doc: variant_doc,
                                         span,
                                         line,
                                     } => {
@@ -392,12 +475,20 @@ impl<'a> SchemaAnalyzer<'a> {
                                             name: vname.clone(),
                                             payload,
                                             discriminant,
+                                            doc: variant_doc.clone(),
                                         });
                                     }
                                 }
                             }
 
-                            ResolvedUnion { variants }
+                            ResolvedUnion {
+                                variants,
+                                doc: if doc.is_empty() {
+                                    parent_doc
+                                } else {
+                                    doc.clone()
+                                },
+                            }
                         }
                     };
 
@@ -428,6 +519,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     name: v.name.clone(),
                     payload,
                     discriminant: i as u64,
+                    doc: v.doc.clone(),
                 })
             })
             .collect()
@@ -439,11 +531,22 @@ impl<'a> SchemaAnalyzer<'a> {
             for block in &version.blocks {
                 if let VersionBlockAst::BitsetDef(bd) = block {
                     let resolved = match bd {
-                        BitsetDefAst::Definition { variants, .. } => ResolvedBitset {
-                            variants: variants.clone(),
+                        BitsetDefAst::Definition { variants, doc, .. } => ResolvedBitset {
+                            variants: variants
+                                .iter()
+                                .map(|v| BitsetVariant {
+                                    name: v.name.clone(),
+                                    doc: v.doc.clone(),
+                                })
+                                .collect(),
+                            doc: doc.clone(),
                         },
                         BitsetDefAst::Extension {
-                            name, base, ops, ..
+                            name,
+                            base,
+                            ops,
+                            doc,
+                            ..
                         } => {
                             if base.version >= version.version {
                                 return Err(AnalysisError::UnknownParentType {
@@ -471,20 +574,29 @@ impl<'a> SchemaAnalyzer<'a> {
                                 })?;
 
                             let mut variants = parent.variants.clone();
+                            let parent_doc = parent.doc.clone();
 
                             for op in ops {
                                 match op {
-                                    BitsetOpAst::Add { name: v_name, .. } => {
-                                        variants.push(v_name.clone());
+                                    BitsetOpAst::Add {
+                                        name: v_name,
+                                        doc: variant_doc,
+                                        ..
+                                    } => {
+                                        variants.push(BitsetVariant {
+                                            name: v_name.clone(),
+                                            doc: variant_doc.clone(),
+                                        });
                                     }
                                     BitsetOpAst::Remove {
                                         name: v_name,
                                         span,
                                         line,
                                     } => {
-                                        if let Some(idx) = variants.iter().position(|v| v == v_name)
+                                        if let Some(idx) =
+                                            variants.iter().position(|v| &v.name == v_name)
                                         {
-                                            variants[idx] = format!("__deprecated_{}", v_name);
+                                            variants[idx].name = format!("__deprecated_{}", v_name);
                                         } else {
                                             return Err(AnalysisError::FieldNotFound {
                                                 op: "remove",
@@ -499,7 +611,14 @@ impl<'a> SchemaAnalyzer<'a> {
                                 }
                             }
 
-                            ResolvedBitset { variants }
+                            ResolvedBitset {
+                                variants,
+                                doc: if doc.is_empty() {
+                                    parent_doc
+                                } else {
+                                    doc.clone()
+                                },
+                            }
                         }
                     };
 
@@ -570,6 +689,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: fa.ty.clone(),
                         default: TemplateDefault::Literal(fa.default.clone()),
                         lazy: fa.lazy,
+                        doc: fa.doc.clone(),
                         span: fa.span,
                         line: fa.line,
                     })
@@ -581,10 +701,12 @@ impl<'a> SchemaAnalyzer<'a> {
                         name: cf.name.clone(),
                         ty: cf.ty.clone(),
                         value: cf.value.clone(),
+                        doc: cf.doc.clone(),
                         span: cf.span,
                         line: cf.line,
                     })
                     .collect(),
+                doc: td.doc.clone(),
             },
             TypeBody::Diff(ops) => {
                 let extends = td
@@ -642,6 +764,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: substitute_ast(&f.ty, &rename),
                         default: f.default.clone(),
                         lazy: f.lazy,
+                        doc: f.doc.clone(),
                         span: f.span,
                         line: f.line,
                     })
@@ -653,6 +776,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         name: c.name.clone(),
                         ty: substitute_ast(&c.ty, &rename),
                         value: c.value.clone(),
+                        doc: c.doc.clone(),
                         span: c.span,
                         line: c.line,
                     })
@@ -694,6 +818,11 @@ impl<'a> SchemaAnalyzer<'a> {
                     params: td.params.clone(),
                     fields,
                     consts,
+                    doc: if td.doc.is_empty() {
+                        ancestor.doc.clone()
+                    } else {
+                        td.doc.clone()
+                    },
                 }
             }
         };
@@ -721,6 +850,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         name: c.name.clone(),
                         ty: c.ty.clone(),
                         value: c.value.clone(),
+                        doc: c.doc.clone(),
                         span: c.span,
                         line: c.line,
                     },
@@ -791,6 +921,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     ty,
                     default,
                     lazy: f.lazy,
+                    doc: f.doc.clone(),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -852,6 +983,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 ty,
                 default,
                 lazy: field.lazy,
+                doc: field.doc.clone(),
             });
         }
         for cf in &f.const_fields {
@@ -927,6 +1059,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty,
                         default,
                         lazy: field.lazy,
+                        doc: field.doc.clone(),
                     });
                 }
 
@@ -1014,6 +1147,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                 name: name.clone(),
                                 ty: ty.clone(),
                                 value: value.clone(),
+                                doc: c.doc.clone(),
                                 span: *span,
                                 line: *line,
                             },
@@ -1046,6 +1180,7 @@ impl<'a> SchemaAnalyzer<'a> {
                                 name: to.clone(),
                                 ty: ty.clone(),
                                 value: value.clone(),
+                                doc: c.doc.clone(),
                                 span: *span,
                                 line: *line,
                             },
@@ -1260,7 +1395,7 @@ impl<'a> SchemaAnalyzer<'a> {
                             }
                         })?;
                     for (flag_name, _) in &kvs {
-                        if !bitset_def.variants.contains(flag_name) {
+                        if !bitset_def.variants.iter().any(|v| &v.name == flag_name) {
                             return Err(AnalysisError::FieldNotFound {
                                 op: "default assignment",
                                 field: flag_name.clone(),
@@ -1722,6 +1857,7 @@ impl<'a> SchemaAnalyzer<'a> {
             bitsets: self.bitset_registry,
             imports: self.imports,
             lineage,
+            doc: self.ast.doc.clone(),
         })
     }
 }
@@ -1894,6 +2030,7 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
         name: field.name.clone(),
         rust_type,
         value,
+        doc: field.doc.clone(),
     })
 }
 
@@ -1941,6 +2078,7 @@ fn apply_template_diff_ops(
                     ty: field.ty.clone(),
                     default: TemplateDefault::AddedViaDiff(field.default.clone()),
                     lazy: field.lazy,
+                    doc: field.doc.clone(),
                     span: field.span,
                     line: field.line,
                 });
@@ -1962,6 +2100,7 @@ fn apply_template_diff_ops(
                     name: field.name.clone(),
                     ty: field.ty.clone(),
                     value: field.value.clone(),
+                    doc: field.doc.clone(),
                     span: field.span,
                     line: field.line,
                 });

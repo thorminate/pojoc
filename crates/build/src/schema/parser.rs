@@ -1,7 +1,7 @@
-use crate::ast::*;
-use crate::error::*;
-use crate::lexer::{Keyword, SpannedToken, Token};
-use crate::span::Span;
+use crate::schema::ast::*;
+use crate::schema::error::*;
+use crate::schema::lexer::{Keyword, SpannedToken, Token};
+use crate::schema::span::Span;
 use std::collections::{HashMap, HashSet};
 
 pub struct Parser {
@@ -125,6 +125,36 @@ impl Parser {
         }
     }
 
+    /// Consumes any consecutive `///` doc-comment lines at the current
+    /// position and returns their text, one entry per line, in source order.
+    /// Returns an empty `Vec` if there are none.
+    fn parse_doc_comments(&mut self) -> Vec<String> {
+        let mut doc = Vec::new();
+        while let Token::DocComment(s) = self.peek().clone() {
+            self.advance();
+            doc.push(s.to_string());
+        }
+        doc
+    }
+
+    /// Like `peek()`, but looks past any leading `///` doc-comment tokens —
+    /// for dispatch points that switch on the token itself (keyword, `+`/`-`/`~`,
+    /// etc.) while docs, if any, are consumed separately by whichever parse
+    /// function ends up handling the item they precede.
+    fn peek_significant(&self) -> Token {
+        let mut i = self.pos;
+        while matches!(
+            self.tokens.get(i).map(|t| &t.token),
+            Some(Token::DocComment(_))
+        ) {
+            i += 1;
+        }
+        self.tokens
+            .get(i)
+            .map(|t| t.token.clone())
+            .unwrap_or(Token::Eof)
+    }
+
     fn expect_number(&mut self) -> Result<i128, ParseError> {
         let (got, span, line) = self.advance_spanned();
         match got {
@@ -136,6 +166,7 @@ impl Parser {
     }
 
     pub fn parse_schema(&mut self) -> Result<SchemaAst, ParseError> {
+        let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Schema)?;
         let name = self.expect_ident()?;
@@ -182,6 +213,7 @@ impl Parser {
             name,
             imports,
             versions,
+            doc,
             span,
             line: start_line,
         })
@@ -273,7 +305,7 @@ impl Parser {
     }
 
     fn parse_version_block(&mut self) -> Result<VersionBlockAst, ParseError> {
-        match self.peek().clone() {
+        match self.peek_significant() {
             Token::Keyword(Keyword::Enum) => Ok(VersionBlockAst::EnumDef(self.parse_enum_def()?)),
             Token::Keyword(Keyword::Union) => {
                 Ok(VersionBlockAst::UnionDef(self.parse_union_def()?))
@@ -351,6 +383,7 @@ impl Parser {
     }
 
     fn parse_type_def(&mut self) -> Result<TypeDefAst, ParseError> {
+        let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Type)?;
         let name = self.expect_ident()?;
@@ -389,12 +422,14 @@ impl Parser {
             params,
             extends,
             body,
+            doc,
             span,
             line: start_line,
         })
     }
 
     fn parse_enum_def(&mut self) -> Result<EnumDefAst, ParseError> {
+        let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Enum)?;
         let name = self.expect_ident()?;
@@ -423,6 +458,7 @@ impl Parser {
                 name,
                 base,
                 ops,
+                doc,
                 span,
                 line: start_line,
             });
@@ -431,7 +467,8 @@ impl Parser {
         self.expect(Token::LBrace, "'{'")?;
         let mut variants = Vec::new();
         let mut seen = HashSet::new();
-        while matches!(self.peek(), Token::Identifier(_)) {
+        while matches!(self.peek(), Token::Identifier(_) | Token::DocComment(_)) {
+            let variant_doc = self.parse_doc_comments();
             let (v_span, v_line) = self.here();
             let variant = self.expect_ident()?;
             if !seen.insert(variant.clone()) {
@@ -442,6 +479,7 @@ impl Parser {
             }
             variants.push(EnumVariantNode {
                 name: variant,
+                doc: variant_doc,
                 span: v_span,
                 line: v_line,
             });
@@ -451,6 +489,7 @@ impl Parser {
         Ok(EnumDefAst::Definition {
             name,
             variants,
+            doc,
             span,
             line: start_line,
         })
@@ -460,13 +499,14 @@ impl Parser {
         let mut ops = Vec::new();
         let mut seen = HashSet::new();
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
+            let doc = self.parse_doc_comments();
             let (op_span, op_line) = self.here();
             let op = match self.peek().clone() {
                 Token::Plus => {
                     self.advance();
                     let name = self.expect_ident()?;
                     if matches!(self.peek(), Token::Comma) { self.advance(); }
-                    EnumVariantOpAst::Add { name, span: op_span.join(self.last_consumed_span()), line: op_line }
+                    EnumVariantOpAst::Add { name, doc, span: op_span.join(self.last_consumed_span()), line: op_line }
                 }
                 Token::Tilde => {
                     self.advance();
@@ -498,6 +538,7 @@ impl Parser {
     }
 
     fn parse_bitset_def(&mut self) -> Result<BitsetDefAst, ParseError> {
+        let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Bitset)?;
         let name = self.expect_ident()?;
@@ -526,6 +567,7 @@ impl Parser {
                 name,
                 base,
                 ops,
+                doc,
                 span,
                 line: start_line,
             });
@@ -535,7 +577,9 @@ impl Parser {
         let mut variants = Vec::new();
         let mut seen = HashSet::new();
 
-        while matches!(self.peek(), Token::Identifier(_)) {
+        while matches!(self.peek(), Token::Identifier(_) | Token::DocComment(_)) {
+            let variant_doc = self.parse_doc_comments();
+            let (v_span, v_line) = self.here();
             let v = self.expect_ident()?;
             if !seen.insert(v.clone()) {
                 return Err(self.err_invalid(format!("duplicate bitset variant `{}`", v)));
@@ -543,7 +587,12 @@ impl Parser {
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
             }
-            variants.push(v);
+            variants.push(BitsetVariantNode {
+                name: v,
+                doc: variant_doc,
+                span: v_span,
+                line: v_line,
+            });
         }
 
         self.expect(Token::RBrace, "'}'")?;
@@ -561,6 +610,7 @@ impl Parser {
         Ok(BitsetDefAst::Definition {
             name,
             variants,
+            doc,
             span,
             line: start_line,
         })
@@ -571,6 +621,7 @@ impl Parser {
         let mut seen = HashSet::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
+            let doc = self.parse_doc_comments();
             let (op_span, op_line) = self.here();
             let op = match self.peek().clone() {
                 Token::Plus => {
@@ -581,6 +632,7 @@ impl Parser {
                     }
                     BitsetOpAst::Add {
                         name,
+                        doc,
                         span: op_span.join(self.last_consumed_span()),
                         line: op_line,
                     }
@@ -620,6 +672,7 @@ impl Parser {
     }
 
     fn parse_union_def(&mut self) -> Result<UnionDefAst, ParseError> {
+        let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Union)?;
         let name = self.expect_ident()?;
@@ -648,6 +701,7 @@ impl Parser {
                 name,
                 base,
                 ops,
+                doc,
                 span,
                 line: start_line,
             });
@@ -657,7 +711,8 @@ impl Parser {
         let mut variants = Vec::new();
         let mut seen = HashSet::new();
 
-        while matches!(self.peek(), Token::Identifier(_)) {
+        while matches!(self.peek(), Token::Identifier(_) | Token::DocComment(_)) {
+            let variant_doc = self.parse_doc_comments();
             let (v_span, v_line) = self.here();
             let variant_name = self.expect_ident()?;
             if !seen.insert(variant_name.clone()) {
@@ -675,6 +730,7 @@ impl Parser {
             variants.push(UnionVariantAst {
                 name: variant_name,
                 payload_ty,
+                doc: variant_doc,
                 span,
                 line: v_line,
             });
@@ -692,6 +748,7 @@ impl Parser {
         Ok(UnionDefAst::Definition {
             name,
             variants,
+            doc,
             span,
             line: start_line,
         })
@@ -702,6 +759,7 @@ impl Parser {
         let mut seen = HashSet::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
+            let doc = self.parse_doc_comments();
             let (op_span, op_line) = self.here();
             match self.peek().clone() {
                 Token::Plus => {
@@ -724,6 +782,7 @@ impl Parser {
                     ops.push(UnionVariantOpAst::Add {
                         name,
                         payload_ty,
+                        doc,
                         span: op_span.join(self.last_consumed_span()),
                         line: op_line,
                     });
@@ -751,7 +810,8 @@ impl Parser {
         let mut const_fields = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
 
-        while matches!(self.peek(), Token::Identifier(_)) {
+        while matches!(self.peek(), Token::Identifier(_) | Token::DocComment(_)) {
+            let doc = self.parse_doc_comments();
             let (start_span, start_line) = self.here();
             let name = self.expect_ident()?;
             if !seen_names.insert(name.clone()) {
@@ -775,6 +835,7 @@ impl Parser {
                     name,
                     ty,
                     value,
+                    doc,
                     span,
                     line: start_line,
                 });
@@ -798,6 +859,7 @@ impl Parser {
                     ty,
                     default,
                     lazy,
+                    doc,
                     span,
                     line: start_line,
                 });
@@ -957,10 +1019,11 @@ impl Parser {
         let mut seen = HashSet::new();
 
         loop {
+            let doc = self.parse_doc_comments();
             match self.peek().clone() {
                 Token::RBrace | Token::Eof => break,
                 Token::Plus => {
-                    let op = self.parse_diff_add()?;
+                    let op = self.parse_diff_add(doc)?;
                     let name = match &op {
                         DiffAst::Add { field } => &field.name,
                         DiffAst::AddConst { field } => &field.name,
@@ -1011,7 +1074,7 @@ impl Parser {
         Ok(ops)
     }
 
-    fn parse_diff_add(&mut self) -> Result<DiffAst, ParseError> {
+    fn parse_diff_add(&mut self, doc: Vec<String>) -> Result<DiffAst, ParseError> {
         let (start_span, start_line) = self.here();
         self.advance();
         let name = self.expect_ident()?;
@@ -1034,6 +1097,7 @@ impl Parser {
                     name,
                     ty,
                     value,
+                    doc,
                     span: start_span.join(self.last_consumed_span()),
                     line: start_line,
                 },
@@ -1058,6 +1122,7 @@ impl Parser {
                     ty,
                     default,
                     lazy,
+                    doc,
                     span: start_span.join(self.last_consumed_span()),
                     line: start_line,
                 },

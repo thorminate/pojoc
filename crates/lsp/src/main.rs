@@ -1,10 +1,13 @@
 mod completion;
+mod hover;
 
 use crate::completion::{SchemaIndex, completions_for_position};
+use crate::hover::hover_for_position;
 use lsp_server::*;
 use lsp_types::*;
-use pojoc_schema::analyzer::SchemaAnalyzer;
-use pojoc_schema::{
+use pojoc_build::schema::analyzer::SchemaAnalyzer;
+use pojoc_build::schema::ir::ir_types::ResolvedSchema;
+use pojoc_build::schema::{
     AnalysisError, ImportOrchestrator, IndexableError, Lexer, LineIndex, ParseError, Parser,
     Position as SchemaPosition, SchemaAst, SchemaError, Span,
 };
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 struct DocStore {
     docs: HashMap<Uri, String>,
     last_good_ast: HashMap<Uri, SchemaAst>,
+    last_resolved: HashMap<Uri, ResolvedSchema>,
     import_versions: HashMap<Uri, HashMap<String, Vec<i128>>>,
 }
 
@@ -23,6 +27,7 @@ impl DocStore {
         Self {
             docs: HashMap::new(),
             last_good_ast: HashMap::new(),
+            last_resolved: HashMap::new(),
             import_versions: HashMap::new(),
         }
     }
@@ -36,6 +41,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![
                 ":".into(),
@@ -93,6 +99,43 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     .unwrap_or_default();
 
                     let result = serde_json::to_value(CompletionResponse::Array(items))?;
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: Some(result),
+                        error: None,
+                    }))?;
+                } else if req.method == "textDocument/hover" {
+                    let hover = (|| -> Option<Hover> {
+                        let params: HoverParams =
+                            serde_json::from_value(req.params.clone()).ok()?;
+                        let uri = &params.text_document_position_params.text_document.uri;
+                        let pos = params.text_document_position_params.position;
+                        let text = store.docs.get(uri)?;
+                        let offset = position_to_offset(text, pos);
+
+                        let idx = store
+                            .last_good_ast
+                            .get(uri)
+                            .map(SchemaIndex::build)
+                            .unwrap_or_default();
+                        let resolved = store.last_resolved.get(uri);
+
+                        let (markdown, start, end) =
+                            hover_for_position(text, offset, &idx, resolved)?;
+                        let line_index = LineIndex::new(text);
+                        Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: markdown,
+                            }),
+                            range: Some(Range {
+                                start: to_lsp_position(line_index.position(text, start)),
+                                end: to_lsp_position(line_index.position(text, end)),
+                            }),
+                        })
+                    })();
+
+                    let result = serde_json::to_value(hover)?;
                     connection.sender.send(Message::Response(Response {
                         id: req.id,
                         result: Some(result),
@@ -182,6 +225,7 @@ fn extract_span(err: &SchemaError, text: &str) -> Span {
         }
         SchemaError::Parse(e) => e.span(),
         SchemaError::Analysis(e) => e.span(),
+        SchemaError::Load(e) => e.span(),
     }
 }
 
@@ -213,7 +257,7 @@ fn analyze(
     own_path: &Path,
     store: &mut DocStore,
     uri: &Uri,
-) -> Result<(), SchemaError> {
+) -> Result<ResolvedSchema, SchemaError> {
     let mut orchestrator = ImportOrchestrator::new();
     let imports = orchestrator.resolve_imports_for(ast, own_path)?;
 
@@ -229,10 +273,10 @@ fn analyze(
 
     let mut ir = SchemaAnalyzer::new(ast, imports);
     ir.run()?;
-    ir.finish()?;
-    Ok(())
+    Ok(ir.finish()?)
 }
 
+#[allow(clippy::result_large_err)]
 fn handle_text_update(
     store: &mut DocStore,
     uri: Uri,
@@ -243,18 +287,27 @@ fn handle_text_update(
 
     let diagnostics = match parse_ast(&text) {
         Ok(ast) => {
-            let analysis_result = match &own_path {
+            let analysis_result: Result<ResolvedSchema, SchemaError> = match &own_path {
                 Some(p) => analyze(&ast, p, store, &uri),
-                None if ast.imports.is_empty() => Ok(()),
+                None if ast.imports.is_empty() => {
+                    let mut ir = SchemaAnalyzer::new(&ast, HashMap::new());
+                    ir.run()
+                        .map_err(SchemaError::from)
+                        .and_then(|_| ir.finish().map_err(SchemaError::from))
+                }
                 None => Err(SchemaError::Analysis(AnalysisError::ImportNotFound {
                     path: "<unsaved document>".to_string(),
+                    origin: PathBuf::from("<unsaved document>"),
                     span: ast.span,
                     line: ast.line,
                 })),
             };
             store.last_good_ast.insert(uri.clone(), ast);
             match analysis_result {
-                Ok(_) => Vec::new(),
+                Ok(resolved) => {
+                    store.last_resolved.insert(uri.clone(), resolved);
+                    Vec::new()
+                }
                 Err(err) => {
                     let line_index = LineIndex::new(&text);
                     vec![error_to_diagnostic(&err, &text, &line_index)]

@@ -2,12 +2,12 @@
 name = "pojoc-cli"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [[bin]]
 name = "pojoc"
 path = "src/main.rs"
 
 [dependencies]
-pojoc-schema   = { path = "../schema" }
-pojoc-codegen = { path = "../codegen" }
+pojoc-build = { path = "../build" }
 clap = { workspace = true, features = ["derive"] }

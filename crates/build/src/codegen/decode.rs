@@ -1,9 +1,9 @@
 use super::writer::CodeWriter;
-use crate::{emit_default, get_latest_versions};
+use crate::codegen::{emit_default, get_latest_versions};
+use crate::core::types::*;
+use crate::schema::ir::ir_types::*;
+use crate::schema::ir::lineage::*;
 use heck::ToSnakeCase;
-use pojoc_core::types::*;
-use pojoc_schema::ir::ir_types::*;
-use pojoc_schema::ir::lineage::*;
 use std::collections::{HashMap, HashSet};
 
 pub fn emit_decode_functions(
@@ -723,7 +723,7 @@ fn compute_bitset_literal_value(
     let mut value: u64 = 0;
     if let Some(bs) = bs {
         for (flag_name, set) in kvs {
-            if *set && let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
+            if *set && let Some(idx) = bs.variants.iter().position(|v| v.name == *flag_name) {
                 value |= 1u64 << idx;
             }
         }

@@ -1,10 +1,20 @@
 use super::writer::CodeWriter;
-use crate::encode::emit_write_expr;
-use crate::get_latest_versions;
+use crate::codegen::encode::emit_write_expr;
+use crate::codegen::get_latest_versions;
+use crate::core::types::{ResolvedTypeRef, type_info};
+use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
-use pojoc_core::types::{ResolvedTypeRef, type_info};
-use pojoc_schema::ir::ir_types::*;
 use std::collections::{HashMap, HashSet};
+
+fn emit_doc(doc: &[String], w: &mut CodeWriter) {
+    for line in doc {
+        if line.is_empty() {
+            w.line("///");
+        } else {
+            w.line(&format!("/// {line}"));
+        }
+    }
+}
 
 pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
     let mut latest: HashMap<String, (i128, &ResolvedType)> = HashMap::new();
@@ -24,6 +34,7 @@ pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut
             name,
             &resolved.fields,
             &resolved.const_fields,
+            &resolved.doc,
             infected,
             schema,
             w,
@@ -36,6 +47,7 @@ pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut
         &schema.name_hint,
         &latest_version.fields,
         &latest_version.const_fields,
+        &schema.doc,
         infected,
         schema,
         w,
@@ -58,6 +70,7 @@ pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     let has_default = !resolved.variants.is_empty();
+    emit_doc(&resolved.doc, w);
     if has_default {
         w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]");
     } else {
@@ -67,6 +80,7 @@ fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     w.line(&format!("pub enum {name} {{"));
     w.indent();
     for (i, variant) in resolved.variants.iter().enumerate() {
+        emit_doc(&variant.doc, w);
         if i == 0 && has_default {
             w.line("#[default]");
         }
@@ -111,10 +125,12 @@ pub fn emit_unions(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
+    emit_doc(&resolved.doc, w);
     w.line("#[derive(Debug, Clone, Serialize, Deserialize)]");
     w.line(&format!("pub enum {name} {{"));
     w.indent();
     for variant in &resolved.variants {
+        emit_doc(&variant.doc, w);
         w.line(&format!(
             "{}({}),",
             variant.name,
@@ -192,6 +208,7 @@ fn emit_bitset_struct(
 ) {
     let computed_len = bs.variants.len().div_ceil(8);
 
+    emit_doc(&bs.doc, w);
     // Added PartialOrd, Ord, and Hash so these can be sorted or used as keys in a HashMap/HashSet
     w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]");
     w.line(&format!("pub struct {name}(pub [u8; {computed_len}]);"));
@@ -202,10 +219,10 @@ fn emit_bitset_struct(
 
     // const flags
     for (idx, variant) in bs.variants.iter().enumerate() {
-        if variant.starts_with("__deprecated_") {
+        if variant.name.starts_with("__deprecated_") {
             continue;
         }
-        let upper = variant.to_shouty_snake_case();
+        let upper = variant.name.to_shouty_snake_case();
         let byte_idx = idx / 8;
         let bit_idx = idx % 8;
         let mut bytes = vec![0u8; computed_len];
@@ -215,6 +232,7 @@ fn emit_bitset_struct(
             .map(|b| format!("0x{b:02x}"))
             .collect::<Vec<_>>()
             .join(", ");
+        emit_doc(&variant.doc, w);
         w.line(&format!("pub const {upper}: Self = Self([{inner}]);"));
     }
     w.blank();
@@ -234,10 +252,10 @@ fn emit_bitset_struct(
 
     // getters, setters, builders (all decorated with #[inline])
     for (idx, variant) in bs.variants.iter().enumerate() {
-        if variant.starts_with("__deprecated_") {
+        if variant.name.starts_with("__deprecated_") {
             continue;
         }
-        let lower = variant.to_snake_case();
+        let lower = variant.name.to_snake_case();
         let byte_idx = idx / 8;
         let bit_idx = idx % 8;
 
@@ -271,7 +289,7 @@ fn emit_bitset_struct(
     let mut default_bytes = vec![0u8; computed_len];
     if let Some(DefaultValue::BitsetLiteral { kvs, .. }) = find_bitset_default(name, schema) {
         for (flag_name, flag_val) in kvs {
-            if *flag_val && let Some(idx) = bs.variants.iter().position(|v| v == flag_name) {
+            if *flag_val && let Some(idx) = bs.variants.iter().position(|v| v.name == *flag_name) {
                 default_bytes[idx / 8] |= 1 << (idx % 8);
             }
         }
@@ -391,6 +409,7 @@ fn emit_named_struct(
     name: &str,
     fields: &[FieldIR],
     consts: &[ResolvedConst],
+    doc: &[String],
     infected: &HashSet<String>,
     schema: &ResolvedSchema,
     w: &mut CodeWriter,
@@ -399,6 +418,7 @@ fn emit_named_struct(
     let struct_lt = if needs_lifetime { "<'buf>" } else { "" };
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
+    emit_doc(doc, w);
     w.line("#[allow(clippy::type_complexity)]");
     if needs_lifetime {
         w.line("#[derive(Debug, Clone)]");
@@ -421,6 +441,7 @@ fn emit_named_struct(
         } else {
             type_info(&field.ty).rust_type
         };
+        emit_doc(&field.doc, w);
         w.line(&format!("pub {}: {ty},", field.name));
     }
     w.dedent();
@@ -461,6 +482,7 @@ fn emit_named_struct(
         for c in consts {
             let const_name = c.name.to_shouty_snake_case();
             let value = render_const_value(&c.value);
+            emit_doc(&c.doc, w);
             w.line(&format!(
                 "pub const {const_name}: {} = {value};",
                 c.rust_type

@@ -1,7 +1,7 @@
 mod common;
 use common::*;
-use pojoc_core::types::ResolvedTypeRef;
-use pojoc_schema::ast::*;
+use pojoc_build::core::types::ResolvedTypeRef;
+use pojoc_build::schema::ast::*;
 
 const SAMPLE_SCHEMA: &str = r#"
 schema Player {
@@ -889,4 +889,292 @@ schema Test {
         1,
         "expected a single, shared BoxI32 registration"
     );
+}
+
+const DOC_SCHEMA: &str = r#"
+/// Root schema doc.
+schema DocDemo {
+  version 1 {
+    /// Enum doc.
+    enum Color {
+      /// Variant doc.
+      Red,
+      Green,
+    }
+
+    /// Bitset doc.
+    bitset Flags {
+      /// Flag doc.
+      Alpha,
+      Beta,
+    }
+
+    type Payload {
+      x: i32 = 0
+    }
+
+    /// Union doc.
+    union Action {
+      /// Union variant doc.
+      Move: Payload,
+    }
+
+    /// Type doc.
+    type Widget {
+      /// Field doc.
+      name: string = "w"
+      /// Const doc.
+      max_count: const i32 = 10
+    }
+  }
+
+  version 2 {
+    enum Color extends Color@1 {
+      /// Newly added variant doc.
+      + Blue
+    }
+
+    bitset Flags extends Flags@1 {
+      /// Newly added flag doc.
+      + Gamma
+    }
+
+    union Action extends Action@1 {
+      /// Newly added union variant doc.
+      + Jump: Payload
+    }
+
+    diff {
+      /// Newly added root field doc.
+      + extra: i32 = 0
+    }
+  }
+}
+"#;
+
+#[test]
+fn parses_schema_level_doc_comment() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    assert_eq!(ast.doc, vec!["Root schema doc.".to_string()]);
+}
+
+#[test]
+fn parses_type_and_field_doc_comments() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let v1 = &ast.versions[0];
+
+    let widget = v1
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::TypeDef(t) if t.name == "Widget" => Some(t),
+            _ => None,
+        })
+        .expect("Widget typedef not found");
+
+    assert_eq!(widget.doc, vec!["Type doc.".to_string()]);
+
+    match &widget.body {
+        TypeBody::Fields(fields) => {
+            let name_field = fields.fields.iter().find(|f| f.name == "name").unwrap();
+            assert_eq!(name_field.doc, vec!["Field doc.".to_string()]);
+
+            let const_field = fields
+                .const_fields
+                .iter()
+                .find(|c| c.name == "max_count")
+                .unwrap();
+            assert_eq!(const_field.doc, vec!["Const doc.".to_string()]);
+        }
+        TypeBody::Diff(_) => panic!("expected Fields body"),
+    }
+}
+
+#[test]
+fn parses_enum_and_variant_doc_comments() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let v1 = &ast.versions[0];
+
+    let color = v1
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::EnumDef(e) if e.name() == "Color" => Some(e),
+            _ => None,
+        })
+        .expect("Color enum not found");
+
+    match color {
+        EnumDefAst::Definition { doc, variants, .. } => {
+            assert_eq!(doc, &vec!["Enum doc.".to_string()]);
+            let red = variants.iter().find(|v| v.name == "Red").unwrap();
+            assert_eq!(red.doc, vec!["Variant doc.".to_string()]);
+        }
+        EnumDefAst::Extension { .. } => panic!("expected Definition"),
+    }
+}
+
+#[test]
+fn parses_bitset_and_flag_doc_comments() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let v1 = &ast.versions[0];
+
+    let flags = v1
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::BitsetDef(bd) if bd.name() == "Flags" => Some(bd),
+            _ => None,
+        })
+        .expect("Flags bitset not found");
+
+    match flags {
+        BitsetDefAst::Definition { doc, variants, .. } => {
+            assert_eq!(doc, &vec!["Bitset doc.".to_string()]);
+            let alpha = variants.iter().find(|v| v.name == "Alpha").unwrap();
+            assert_eq!(alpha.doc, vec!["Flag doc.".to_string()]);
+        }
+        BitsetDefAst::Extension { .. } => panic!("expected Definition"),
+    }
+}
+
+#[test]
+fn parses_union_and_variant_doc_comments() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let v1 = &ast.versions[0];
+
+    let action = v1
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::UnionDef(u) if u.name() == "Action" => Some(u),
+            _ => None,
+        })
+        .expect("Action union not found");
+
+    match action {
+        UnionDefAst::Definition { doc, variants, .. } => {
+            assert_eq!(doc, &vec!["Union doc.".to_string()]);
+            let mv = variants.iter().find(|v| v.name == "Move").unwrap();
+            assert_eq!(mv.doc, vec!["Union variant doc.".to_string()]);
+        }
+        UnionDefAst::Extension { .. } => panic!("expected Definition"),
+    }
+}
+
+#[test]
+fn parses_doc_comments_on_diff_add_ops() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let v2 = &ast.versions[1];
+
+    let color = v2
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::EnumDef(e) if e.name() == "Color" => Some(e),
+            _ => None,
+        })
+        .expect("Color enum extension not found");
+    match color {
+        EnumDefAst::Extension { ops, .. } => {
+            let add = ops
+                .iter()
+                .find(|op| matches!(op, EnumVariantOpAst::Add { name, .. } if name == "Blue"))
+                .unwrap();
+            match add {
+                EnumVariantOpAst::Add { doc, .. } => {
+                    assert_eq!(doc, &vec!["Newly added variant doc.".to_string()])
+                }
+                EnumVariantOpAst::Rename { .. } => panic!("expected Add"),
+            }
+        }
+        EnumDefAst::Definition { .. } => panic!("expected Extension"),
+    }
+
+    let flags = v2
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::BitsetDef(bd) if bd.name() == "Flags" => Some(bd),
+            _ => None,
+        })
+        .expect("Flags bitset extension not found");
+    match flags {
+        BitsetDefAst::Extension { ops, .. } => {
+            let add = ops
+                .iter()
+                .find(|op| matches!(op, BitsetOpAst::Add { name, .. } if name == "Gamma"))
+                .unwrap();
+            match add {
+                BitsetOpAst::Add { doc, .. } => {
+                    assert_eq!(doc, &vec!["Newly added flag doc.".to_string()])
+                }
+                BitsetOpAst::Remove { .. } => panic!("expected Add"),
+            }
+        }
+        BitsetDefAst::Definition { .. } => panic!("expected Extension"),
+    }
+
+    let action = v2
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::UnionDef(u) if u.name() == "Action" => Some(u),
+            _ => None,
+        })
+        .expect("Action union extension not found");
+    match action {
+        UnionDefAst::Extension { ops, .. } => {
+            let UnionVariantOpAst::Add { doc, .. } = ops
+                .iter()
+                .find(|op| matches!(op, UnionVariantOpAst::Add { name, .. } if name == "Jump"))
+                .unwrap();
+            assert_eq!(doc, &vec!["Newly added union variant doc.".to_string()]);
+        }
+        UnionDefAst::Definition { .. } => panic!("expected Extension"),
+    }
+
+    let diff = v2
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            VersionBlockAst::Diff(ops) => Some(ops),
+            _ => None,
+        })
+        .expect("root diff not found");
+    let add = diff
+        .iter()
+        .find(|op| matches!(op, DiffAst::Add { field } if field.name == "extra"))
+        .unwrap();
+    match add {
+        DiffAst::Add { field } => {
+            assert_eq!(field.doc, vec!["Newly added root field doc.".to_string()])
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+#[test]
+fn doc_comment_survives_analysis_and_reaches_resolved_ir() {
+    let ast = parse_schema(DOC_SCHEMA).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+
+    assert_eq!(schema.doc, vec!["Root schema doc.".to_string()]);
+
+    let widget = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "Widget")
+        .map(|(_, t)| t)
+        .expect("Widget not found in resolved types");
+    assert_eq!(widget.doc, vec!["Type doc.".to_string()]);
+    let name_field = widget.fields.iter().find(|f| f.name == "name").unwrap();
+    assert_eq!(name_field.doc, vec!["Field doc.".to_string()]);
+    let const_field = widget
+        .const_fields
+        .iter()
+        .find(|c| c.name == "max_count")
+        .unwrap();
+    assert_eq!(const_field.doc, vec!["Const doc.".to_string()]);
 }

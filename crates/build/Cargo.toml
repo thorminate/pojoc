@@ -1,0 +1,19 @@
+[package]
+name = "pojoc-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Compile .pojoc schema files from build.rs into Rust encode/decode code"
+readme = "../../README.md"
+keywords = ["serialization", "encoding", "binary", "schema", "codegen"]
+categories = ["encoding", "compilers"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+heck = { workspace = true }
+thiserror = { workspace = true }
+compact_str = { workspace = true }
