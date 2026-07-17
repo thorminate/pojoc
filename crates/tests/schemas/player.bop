@@ -112,17 +112,12 @@ message Player {
   17 -> Coordinates         coordinates;
   18 -> KillDeath           killDeath;
   19 -> string[]            recentZones;
-  20 -> string[]            chatHistory;
-  21 -> string              guildTag;
-  22 -> Point3D             spawnPoint;
-  23 -> uint32[]            achievementIds;
-  24 -> uint32              activePerks;
-  25 -> uint32              accountFlags;
-  26 -> map[string, int32]  questProgress;
-  27 -> map[int32, string]  quickSlots;
-  28 -> map[string, float32] skillLevels;
-  29 -> LoadoutEntry[]      loadout;
-  30 -> map[string, int64]  leaderboardScores;
-  31 -> uint32[]            partyMembers;
-  32 -> Point3D             lastPosition;
+  20 -> string              guildTag;
+  21 -> Point3D             spawnPoint;
+  22 -> uint32[]            achievementIds;
+  23 -> uint32              activePerks;
+  24 -> uint32              accountFlags;
+  25 -> LoadoutEntry[]      loadout;
+  26 -> uint32[]            partyMembers;
+  27 -> Point3D             lastPosition;
 }

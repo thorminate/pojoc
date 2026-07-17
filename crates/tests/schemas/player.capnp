@@ -76,29 +76,9 @@ struct Point3D {
   z @2 :Float32;
 }
 
-struct QuestProgressEntry {
-  key   @0 :Text;
-  value @1 :Int32;
-}
-
-struct QuickSlotsEntry {
-  key   @0 :Int32;
-  value @1 :Text;
-}
-
-struct SkillLevelsEntry {
-  key   @0 :Text;
-  value @1 :Float32;
-}
-
 struct LoadoutEntry {
   item     @0 :Text;
   quantity @1 :Int32;
-}
-
-struct LeaderboardScoresEntry {
-  key   @0 :Text;
-  value @1 :Int64;
 }
 
 struct Player {
@@ -123,17 +103,12 @@ struct Player {
   coordinates       @16 :Coordinates;
   killDeath         @17 :KillDeath;
   recentZones       @18 :List(Text);      # string(8)  — no fixed-len in capnp
-  chatHistory       @19 :List(Text);      # string(32) — no fixed-len in capnp
-  guildTag          @20 :Text;            # string(4)  — no fixed-len in capnp
-  spawnPoint        @21 :Point3D;
-  achievementIds    @22 :List(UInt32);
-  activePerks       @23 :UInt32 = 0;      # bitset Perks
-  accountFlags      @24 :UInt32 = 0;      # bitset Flags
-  questProgress     @25 :List(QuestProgressEntry);
-  quickSlots        @26 :List(QuickSlotsEntry); # map(10) limit handling
-  skillLevels       @27 :List(SkillLevelsEntry);
-  loadout           @28 :List(LoadoutEntry);    # loadout(4)
-  leaderboardScores @29 :List(LeaderboardScoresEntry);
-  partyMembers      @30 :List(UInt32);    # u32(4)
-  lastPosition      @31 :Point3D;
+  guildTag          @19 :Text;            # string(4)  — no fixed-len in capnp
+  spawnPoint        @20 :Point3D;
+  achievementIds    @21 :List(UInt32);
+  activePerks       @22 :UInt32 = 0;      # bitset Perks
+  accountFlags      @23 :UInt32 = 0;      # bitset Flags
+  loadout           @24 :List(LoadoutEntry);    # loadout(4)
+  partyMembers      @25 :List(UInt32);    # u32(4)
+  lastPosition      @26 :Point3D;
 }
