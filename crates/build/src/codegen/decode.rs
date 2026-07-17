@@ -1,9 +1,9 @@
 use super::writer::CodeWriter;
-use crate::{emit_default, get_latest_versions};
+use crate::codegen::{emit_default, get_latest_versions};
+use crate::core::types::*;
+use crate::schema::ir::ir_types::*;
+use crate::schema::ir::lineage::*;
 use heck::ToSnakeCase;
-use pojoc_core::types::*;
-use pojoc_schema::ir::ir_types::*;
-use pojoc_schema::ir::lineage::*;
 use std::collections::{HashMap, HashSet};
 
 pub fn emit_decode_functions(

@@ -1,9 +1,9 @@
 use crate::completion::{
     BlockKind, SchemaIndex, Tok, cursor_in_line_comment, scan, tokenize_prefix,
 };
-use pojoc_core::types::{ResolvedTypeRef, TypeId};
-use pojoc_schema::ast::TypeAst;
-use pojoc_schema::ir::ir_types::*;
+use pojoc_build::core::types::{ResolvedTypeRef, TypeId};
+use pojoc_build::schema::ast::TypeAst;
+use pojoc_build::schema::ir::ir_types::*;
 use std::collections::HashMap;
 
 /// What identifier the cursor is resolved to point at.
@@ -509,8 +509,8 @@ fn render_bitset_signature(name: &str, b: &ResolvedBitset) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pojoc_schema::ir::analyzer::SchemaAnalyzer;
-    use pojoc_schema::{Lexer, Parser};
+    use pojoc_build::schema::ir::analyzer::SchemaAnalyzer;
+    use pojoc_build::schema::{Lexer, Parser};
 
     /// `text_with_cursor` must contain exactly one `|` marking the hover
     /// position, and must form a complete, analyzable schema once stripped.

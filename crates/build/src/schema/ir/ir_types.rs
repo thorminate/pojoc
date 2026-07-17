@@ -1,6 +1,6 @@
 use super::lineage::SchemaLineage;
-use crate::ast::DefaultValueAst;
-use pojoc_core::types::*;
+use crate::core::types::*;
+use crate::schema::ast::DefaultValueAst;
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -1,9 +1,9 @@
 use super::writer::CodeWriter;
-use crate::get_latest_versions;
+use crate::codegen::get_latest_versions;
+use crate::core::types::*;
+use crate::schema::ir::ir_types::*;
+use crate::schema::ir::lineage::*;
 use heck::ToSnakeCase;
-use pojoc_core::types::*;
-use pojoc_schema::ir::ir_types::*;
-use pojoc_schema::ir::lineage::*;
 
 pub fn emit_encode_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_bitset_writers(schema, w);

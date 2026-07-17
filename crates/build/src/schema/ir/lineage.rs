@@ -1,5 +1,5 @@
 use super::ir_types::*;
-use pojoc_core::types::*;
+use crate::core::types::*;
 
 #[derive(Debug, Clone)]
 pub enum FieldMapping {

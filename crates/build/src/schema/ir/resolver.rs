@@ -1,5 +1,5 @@
-use crate::ast::*;
-use pojoc_core::types::*;
+use crate::core::types::*;
+use crate::schema::ast::*;
 
 #[derive(Debug)]
 pub struct Resolver<'a> {

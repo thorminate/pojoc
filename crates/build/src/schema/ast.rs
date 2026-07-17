@@ -1,4 +1,4 @@
-use crate::span::Span;
+use crate::schema::span::Span;
 
 #[derive(Debug)]
 pub struct SchemaAst {

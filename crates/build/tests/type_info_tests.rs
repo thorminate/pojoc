@@ -1,4 +1,4 @@
-use pojoc_core::types::*;
+use pojoc_build::core::types::*;
 
 fn id(name: &str) -> TypeId {
     TypeId {
