@@ -1,0 +1,13 @@
+[package]
+name = "pojoc-build"
+version.workspace = true
+edition.workspace = true
+description = "Call pojoc from build.rs without depending on pojoc-schema/pojoc-codegen directly"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+pojoc-schema = { path = "../schema" }
+pojoc-codegen = { path = "../codegen" }
+thiserror = { workspace = true }
