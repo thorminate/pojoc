@@ -1,7 +1,0 @@
-[package]
-name = "pojoc-core"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-heck = { workspace = true }

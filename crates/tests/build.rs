@@ -1,6 +1,6 @@
 use bebop_tools as bebop;
-use pojoc_codegen::generate;
-use pojoc_schema::ImportOrchestrator;
+use pojoc_build::codegen::generate;
+use pojoc_build::schema::ImportOrchestrator;
 use std::env;
 use std::fs;
 use std::path::PathBuf;

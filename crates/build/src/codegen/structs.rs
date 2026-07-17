@@ -1,9 +1,9 @@
 use super::writer::CodeWriter;
-use crate::encode::emit_write_expr;
-use crate::get_latest_versions;
+use crate::codegen::encode::emit_write_expr;
+use crate::codegen::get_latest_versions;
+use crate::core::types::{ResolvedTypeRef, type_info};
+use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
-use pojoc_core::types::{ResolvedTypeRef, type_info};
-use pojoc_schema::ir::ir_types::*;
 use std::collections::{HashMap, HashSet};
 
 fn emit_doc(doc: &[String], w: &mut CodeWriter) {

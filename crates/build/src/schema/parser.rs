@@ -1,7 +1,7 @@
-use crate::ast::*;
-use crate::error::*;
-use crate::lexer::{Keyword, SpannedToken, Token};
-use crate::span::Span;
+use crate::schema::ast::*;
+use crate::schema::error::*;
+use crate::schema::lexer::{Keyword, SpannedToken, Token};
+use crate::schema::span::Span;
 use std::collections::{HashMap, HashSet};
 
 pub struct Parser {

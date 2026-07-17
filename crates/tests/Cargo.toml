@@ -2,6 +2,7 @@
 name = "pojoc-tests"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 pojoc = { path = "../runtime" }
@@ -15,8 +16,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [build-dependencies]
-pojoc-codegen = {path = "../codegen"}
-pojoc-schema = { path = "../schema" }
+pojoc-build = { path = "../build" }
 prost-build = "0.14.3"
 capnpc = "0.26.0"
 bebop-tools = "3.2.3"
