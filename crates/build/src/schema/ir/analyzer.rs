@@ -2,10 +2,10 @@ use super::id_gen::*;
 use super::ir_types::*;
 use super::lineage::SchemaLineage;
 use super::resolver::*;
-use crate::ast::*;
-use crate::error::AnalysisError;
-use crate::span::Span;
-use pojoc_core::types::*;
+use crate::core::types::*;
+use crate::schema::ast::*;
+use crate::schema::error::AnalysisError;
+use crate::schema::span::Span;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -126,6 +126,7 @@ impl<'a> SchemaAnalyzer<'a> {
 
     #[allow(clippy::result_large_err)]
     pub fn run(&mut self) -> Result<(), AnalysisError> {
+        self.check_no_schema_name_collision()?;
         // we preregister unions so they can be referenced in types with no issues
         // enums and bitsets don't depend on any external types, so they don't need any special handling.
         self.collect_enums()?;
@@ -137,6 +138,56 @@ impl<'a> SchemaAnalyzer<'a> {
             self.process_version(version)?;
         }
         self.drain_pending_generics()?;
+        Ok(())
+    }
+
+    /// The root struct codegen emits for the schema itself is named after
+    /// `ast.name` (see `ResolvedSchema::name_hint`), in the same Rust
+    /// namespace as every declared `type`/`enum`/`union`/`bitset` — so a
+    /// declaration reusing the schema's own name would silently produce two
+    /// conflicting struct/enum definitions in the generated code.
+    #[allow(clippy::result_large_err)]
+    fn check_no_schema_name_collision(&self) -> Result<(), AnalysisError> {
+        for version in &self.ast.versions {
+            for block in &version.blocks {
+                let (name, span, line) = match block {
+                    VersionBlockAst::TypeDef(td) => (td.name.as_str(), td.span, td.line),
+                    VersionBlockAst::EnumDef(EnumDefAst::Definition {
+                        name, span, line, ..
+                    })
+                    | VersionBlockAst::EnumDef(EnumDefAst::Extension {
+                        name, span, line, ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::UnionDef(UnionDefAst::Definition {
+                        name, span, line, ..
+                    })
+                    | VersionBlockAst::UnionDef(UnionDefAst::Extension {
+                        name, span, line, ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::BitsetDef(BitsetDefAst::Definition {
+                        name,
+                        span,
+                        line,
+                        ..
+                    })
+                    | VersionBlockAst::BitsetDef(BitsetDefAst::Extension {
+                        name,
+                        span,
+                        line,
+                        ..
+                    }) => (name.as_str(), *span, *line),
+                    VersionBlockAst::Fields(_) | VersionBlockAst::Diff(_) => continue,
+                };
+                if name == self.ast.name {
+                    return Err(AnalysisError::TypeNameShadowsSchema {
+                        name: name.to_string(),
+                        version: version.version,
+                        span,
+                        line,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 

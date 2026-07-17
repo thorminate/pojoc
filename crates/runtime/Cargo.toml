@@ -2,6 +2,13 @@
 name = "pojoc"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Runtime support for Pojoc-generated encode/decode code: a compact binary wire format with first-class schema evolution"
+readme = "../../README.md"
+keywords = ["serialization", "encoding", "binary", "schema", "codegen"]
+categories = ["encoding"]
 
 [lib]
 path = "src/lib.rs"

@@ -1,4 +1,4 @@
-//! Call pojoc from a `build.rs` without reaching into `pojoc-schema`/`pojoc-codegen` directly.
+//! Call pojoc from a `build.rs` without depending on separate schema/codegen crates.
 //!
 //! ```no_run
 //! let out_dir = std::env::var("OUT_DIR").unwrap();
@@ -10,17 +10,24 @@
 //! actually changes. Include the generated file with
 //! `include!(concat!(env!("OUT_DIR"), "/<stem>.rs"))`.
 
+#[doc(hidden)]
+pub mod codegen;
+#[doc(hidden)]
+pub mod core;
+#[doc(hidden)]
+pub mod schema;
+
 use std::io;
 use std::path::{Path, PathBuf};
 
-use pojoc_schema::ImportOrchestrator;
+use schema::ImportOrchestrator;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to compile schema {path}: {source}")]
     Analysis {
         path: PathBuf,
-        source: Box<pojoc_schema::AnalysisError>,
+        source: Box<schema::AnalysisError>,
     },
 
     #[error("failed to read directory {path}: {source}")]
@@ -46,7 +53,7 @@ pub fn compile(schema: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<Pa
             source: Box::new(source),
         })?;
 
-    let code = pojoc_codegen::generate(&resolved);
+    let code = codegen::generate(&resolved);
 
     let stem = schema_path
         .file_stem()

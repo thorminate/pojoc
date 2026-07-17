@@ -2,17 +2,18 @@
 resolver = "2"
 members = [
     "crates/tests",
+    "crates/build",
     "crates/cli",
-    "crates/codegen",
     "crates/runtime",
-    "crates/schema",
-    "crates/core",
     "crates/lsp",
 ]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/thorminate/pojoc"
+homepage = "https://github.com/thorminate/pojoc"
 
 [workspace.dependencies]
 heck = "0.5.0"
