@@ -92,42 +92,6 @@ fn make_pojoc_player() -> Player {
             8
         ],
 
-        chat_history: pojvec![
-            "hello world",
-            "anyone here?",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "";
-            32
-        ],
-
         achievement_ids: pojvec![101u32, 204, 305, 412],
 
         party_members: pojvec![u32 => 2, 3, 0, 0; 4],
@@ -137,38 +101,6 @@ fn make_pojoc_player() -> Player {
         active_perks: Perks::TELEKINESIS | Perks::THIEVERY,
 
         account_flags: Flags::IS_VERIFIED | Flags::IS_PREMIUM,
-
-        quest_progress: pojmap!(
-            "main_quest_01" => 3,
-            "side_quest_forest" => 1,
-            "daily_kill_10" => 7,
-        ),
-
-        quick_slots: pojmap!(
-            1 => "sword",
-            2 => "shield",
-            3 => "healing_potion",
-            4 => "torch",
-            5 => "",
-            6 => "",
-            7 => "",
-            8 => "",
-            9 => "",
-            10 => "";
-            10
-        ),
-
-        skill_levels: pojmap!(
-            "swordsmanship" => 4.5f32,
-            "stealth" => 2.0f32,
-            "arcana" => 1.5f32,
-        ),
-
-        leaderboard_scores: pojmap!(
-            "kills" => 1042i64,
-            "score" => 88500i64,
-            "playtime_seconds" => 72400i64,
-        ),
 
         loadout: pojvec!(
             pojtup!("sword", 1),
@@ -266,12 +198,6 @@ fn make_proto_player() -> proto_player::Player {
             "".into(),
         ],
 
-        chat_history: {
-            let mut ch = vec!["hello world".into(), "anyone here?".into()];
-            ch.resize(32, "".into());
-            ch
-        },
-
         transform: Some(proto_player::Transform {
             position: Some(proto_player::Vector3 {
                 x: 10.0,
@@ -294,45 +220,6 @@ fn make_proto_player() -> proto_player::Player {
 
         active_perks: 0x01 | 0x02,
         account_flags: 0x01 | 0x02,
-
-        quest_progress: [
-            ("main_quest_01".to_string(), 3),
-            ("side_quest_forest".to_string(), 1),
-            ("daily_kill_10".to_string(), 7),
-        ]
-        .into_iter()
-        .collect(),
-
-        quick_slots: [
-            (1, "sword".to_string()),
-            (2, "shield".to_string()),
-            (3, "healing_potion".to_string()),
-            (4, "torch".to_string()),
-            (5, "".to_string()),
-            (6, "".to_string()),
-            (7, "".to_string()),
-            (8, "".to_string()),
-            (9, "".to_string()),
-            (10, "".to_string()),
-        ]
-        .into_iter()
-        .collect(),
-
-        skill_levels: [
-            ("swordsmanship".to_string(), 4.5f32),
-            ("stealth".to_string(), 2.0f32),
-            ("arcana".to_string(), 1.5f32),
-        ]
-        .into_iter()
-        .collect(),
-
-        leaderboard_scores: [
-            ("kills".to_string(), 1042i64),
-            ("score".to_string(), 88500i64),
-            ("playtime_seconds".to_string(), 72400i64),
-        ]
-        .into_iter()
-        .collect(),
 
         loadout: vec![
             proto_player::LoadoutEntry {
@@ -445,15 +332,6 @@ fn make_capnp_message() -> capnp::message::Builder<capnp::message::HeapAllocator
         }
 
         {
-            let mut ch = p.reborrow().init_chat_history(32);
-            ch.set(0, "hello world");
-            ch.set(1, "anyone here?");
-            for i in 2..32 {
-                ch.set(i, "");
-            }
-        }
-
-        {
             let mut aid = p.reborrow().init_achievement_ids(4);
             aid.set(0, 101);
             aid.set(1, 204);
@@ -506,65 +384,6 @@ fn make_capnp_message() -> capnp::message::Builder<capnp::message::HeapAllocator
             lp.set_x(10.0);
             lp.set_y(42.5);
             lp.set_z(-3.0);
-        }
-
-        {
-            let mut qp = p.reborrow().init_quest_progress(3);
-            let entries = [
-                ("main_quest_01", 3),
-                ("side_quest_forest", 1),
-                ("daily_kill_10", 7),
-            ];
-            for (i, &(k, v)) in entries.iter().enumerate() {
-                let mut entry = qp.reborrow().get(i as u32);
-                entry.set_key(k);
-                entry.set_value(v);
-            }
-        }
-
-        {
-            let mut qs = p.reborrow().init_quick_slots(10);
-            let slots = [
-                (1, "sword"),
-                (2, "shield"),
-                (3, "healing_potion"),
-                (4, "torch"),
-                (5, ""),
-                (6, ""),
-                (7, ""),
-                (8, ""),
-                (9, ""),
-                (10, ""),
-            ];
-            for (i, &(k, v)) in slots.iter().enumerate() {
-                let mut entry = qs.reborrow().get(i as u32);
-                entry.set_key(k);
-                entry.set_value(v);
-            }
-        }
-
-        {
-            let mut sl = p.reborrow().init_skill_levels(3);
-            let skills = [("swordsmanship", 4.5), ("stealth", 2.0), ("arcana", 1.5)];
-            for (i, &(k, v)) in skills.iter().enumerate() {
-                let mut entry = sl.reborrow().get(i as u32);
-                entry.set_key(k);
-                entry.set_value(v);
-            }
-        }
-
-        {
-            let mut ls = p.reborrow().init_leaderboard_scores(3);
-            let scores = [
-                ("kills", 1042),
-                ("score", 88500),
-                ("playtime_seconds", 72400),
-            ];
-            for (i, &(k, v)) in scores.iter().enumerate() {
-                let mut entry = ls.reborrow().get(i as u32);
-                entry.set_key(k);
-                entry.set_value(v);
-            }
         }
 
         {
@@ -630,101 +449,6 @@ fn make_fb_player(builder: &mut FlatBufferBuilder) {
             items.push(builder.create_string(""));
         }
         builder.create_vector(&items)
-    };
-
-    let chat_history_vec = {
-        let mut items = vec![
-            builder.create_string("hello world"),
-            builder.create_string("anyone here?"),
-        ];
-        for _ in 2..32 {
-            items.push(builder.create_string(""));
-        }
-        builder.create_vector(&items)
-    };
-
-    let quest_progress_vec = {
-        let mut entries = Vec::new();
-        for &(k, v) in &[
-            ("main_quest_01", 3),
-            ("side_quest_forest", 1),
-            ("daily_kill_10", 7),
-        ] {
-            let key = builder.create_string(k);
-            entries.push(fb_player::QuestProgressEntry::create(
-                builder,
-                &fb_player::QuestProgressEntryArgs {
-                    key: Some(key),
-                    value: v,
-                },
-            ));
-        }
-        builder.create_vector(&entries)
-    };
-
-    let quick_slots_vec = {
-        let mut entries = Vec::new();
-        let slots = [
-            (1, "sword"),
-            (2, "shield"),
-            (3, "healing_potion"),
-            (4, "torch"),
-            (5, ""),
-            (6, ""),
-            (7, ""),
-            (8, ""),
-            (9, ""),
-            (10, ""),
-        ];
-        for &(k, v) in &slots {
-            let val = builder.create_string(v);
-            entries.push(fb_player::QuickSlotsEntry::create(
-                builder,
-                &fb_player::QuickSlotsEntryArgs {
-                    key: k,
-                    value: Some(val),
-                },
-            ));
-        }
-        builder.create_vector(&entries)
-    };
-
-    let skill_levels_vec = {
-        let mut entries = Vec::new();
-        for &(k, v) in &[
-            ("swordsmanship", 4.5f32),
-            ("stealth", 2.0f32),
-            ("arcana", 1.5f32),
-        ] {
-            let key = builder.create_string(k);
-            entries.push(fb_player::SkillLevelsEntry::create(
-                builder,
-                &fb_player::SkillLevelsEntryArgs {
-                    key: Some(key),
-                    value: v,
-                },
-            ));
-        }
-        builder.create_vector(&entries)
-    };
-
-    let leaderboard_scores_vec = {
-        let mut entries = Vec::new();
-        for &(k, v) in &[
-            ("kills", 1042i64),
-            ("score", 88500i64),
-            ("playtime_seconds", 72400i64),
-        ] {
-            let key = builder.create_string(k);
-            entries.push(fb_player::LeaderboardScoresEntry::create(
-                builder,
-                &fb_player::LeaderboardScoresEntryArgs {
-                    key: Some(key),
-                    value: v,
-                },
-            ));
-        }
-        builder.create_vector(&entries)
     };
 
     let loadout_vec = {
@@ -798,17 +522,12 @@ fn make_fb_player(builder: &mut FlatBufferBuilder) {
             position: Some(&position),
             tags: Some(tags_vec),
             recent_zones: Some(recent_zones_vec),
-            chat_history: Some(chat_history_vec),
             transform: Some(&transform),
             achievement_ids: Some(achievement_ids_vec),
             party_members: Some(party_members_vec),
             is_nauseous: false,
             active_perks: 0x01 | 0x02,
             account_flags: 0x01 | 0x02,
-            quest_progress: Some(quest_progress_vec),
-            quick_slots: Some(quick_slots_vec),
-            skill_levels: Some(skill_levels_vec),
-            leaderboard_scores: Some(leaderboard_scores_vec),
             loadout: Some(loadout_vec),
         },
     );
@@ -883,11 +602,6 @@ fn make_bebop_player() -> player_bebop::Player<'static> {
             "",
             "",
         ]),
-        chat_history: Some({
-            let mut v = vec!["hello world", "anyone here?"];
-            v.resize(32, "");
-            v
-        }),
         guild_tag: Some("IRON"),
         spawn_point: Some(player_bebop::Point3D {
             x: 0.0,
@@ -897,40 +611,6 @@ fn make_bebop_player() -> player_bebop::Player<'static> {
         achievement_ids: Some(SliceWrapper::from_cooked(&[101, 204, 305, 412])),
         active_perks: Some(0x02 | 0x04),
         account_flags: Some(0x02 | 0x04),
-        quest_progress: Some(
-            [
-                ("main_quest_01", 3),
-                ("side_quest_forest", 1),
-                ("daily_kill_10", 7),
-            ]
-            .into_iter()
-            .collect(),
-        ),
-        quick_slots: Some(
-            [
-                (1, "sword"),
-                (2, "shield"),
-                (3, "healing_potion"),
-                (4, "torch"),
-                (5, ""),
-                (6, ""),
-                (7, ""),
-                (8, ""),
-                (9, ""),
-                (10, ""),
-            ]
-            .into_iter()
-            .collect(),
-        ),
-        skill_levels: Some(
-            [
-                ("swordsmanship", 4.5f32),
-                ("stealth", 2.0f32),
-                ("arcana", 1.5f32),
-            ]
-            .into_iter()
-            .collect(),
-        ),
         loadout: Some(vec![
             player_bebop::LoadoutEntry {
                 item: Some("sword"),
@@ -949,15 +629,6 @@ fn make_bebop_player() -> player_bebop::Player<'static> {
                 quantity: Some(3),
             },
         ]),
-        leaderboard_scores: Some(
-            [
-                ("kills", 1042i64),
-                ("score", 88500i64),
-                ("playtime_seconds", 72400i64),
-            ]
-            .into_iter()
-            .collect(),
-        ),
         party_members: Some(SliceWrapper::from_cooked(&[2, 3, 0, 0])),
         last_position: Some(player_bebop::Point3D {
             x: 10.0,

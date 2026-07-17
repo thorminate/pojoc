@@ -76,29 +76,9 @@ table Stats {
   resistance:   float = 0.0;
 }
 
-table QuestProgressEntry {
-  key:   string (key);
-  value: int;
-}
-
-table QuickSlotsEntry {
-  key:   int (key);
-  value: string;
-}
-
-table SkillLevelsEntry {
-  key:   string (key);
-  value: float;
-}
-
 table LoadoutEntry {
   item:     string;
   quantity: int;
-}
-
-table LeaderboardScoresEntry {
-  key:   string (key);
-  value: long;
 }
 
 table Player {
@@ -122,17 +102,12 @@ table Player {
   coordinates:        Coordinates;
   kill_death:         KillDeath;
   recent_zones:       [string];    // string(8)   — no fixed-len array in fbs
-  chat_history:       [string];    // string(32)  — no fixed-len array in fbs
   guild_tag:          string;      // string(4)   — no fixed-len string in fbs
   spawn_point:        Point3D;
   achievement_ids:    [uint];
   active_perks:       uint = 0;    // bitset Perks
   account_flags:      uint = 0;    // bitset Flags
-  quest_progress:     [QuestProgressEntry];
-  quick_slots:        [QuickSlotsEntry]; // map(10)
-  skill_levels:       [SkillLevelsEntry];
   loadout:            [LoadoutEntry];    // loadout(4)
-  leaderboard_scores: [LeaderboardScoresEntry];
   party_members:      [uint];      // u32(4)
   last_position:      Point3D;
 }
