@@ -54,7 +54,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 ",".into(),
                 "=".into(),
                 " ".into(),
-                "\n".into(),
             ]),
             ..Default::default()
         }),
