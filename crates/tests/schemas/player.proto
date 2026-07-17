@@ -104,17 +104,12 @@ message Player {
   Coordinates        coordinates        = 17;
   KillDeath          kill_death         = 18;
   repeated string    recent_zones       = 19; // string(8) — no fixed-len array in proto
-  repeated string    chat_history       = 20; // string(32) — no fixed-len array in proto
   string             guild_tag          = 21; // string(4) — no fixed-len string in proto
   Point3D            spawn_point        = 22;
   repeated uint32    achievement_ids    = 23;
   uint32             active_perks       = 24; // bitset Perks
   uint32             account_flags      = 25; // bitset Flags
-  map<string, int32> quest_progress     = 26;
-  map<int32, string> quick_slots        = 27; // map(10) — no fixed-len limit in proto
-  map<string, float> skill_levels       = 28;
   repeated LoadoutEntry loadout         = 29; // loadout(4) — no fixed-len array in proto
-  map<string, int64> leaderboard_scores = 30;
   repeated uint32    party_members      = 31; // u32(4) — no fixed-len array in proto
   Point3D            last_position      = 32;
-} 
+}

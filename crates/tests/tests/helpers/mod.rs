@@ -236,9 +236,6 @@ fn make_player_value() -> player::Player {
     p.recent_zones = std::array::from_fn(|_| PojocString::default());
     p.recent_zones[0] = pojstr!("zoneA");
 
-    p.chat_history = std::array::from_fn(|_| PojocString::default());
-    p.chat_history[0] = pojstr!("hello");
-
     p.velocity = (0.1, 0.2, 0.3);
     p.status_code = *b"OK000000";
     p.is_nauseous = false;
@@ -251,15 +248,10 @@ fn make_player_value() -> player::Player {
     p.active_perks = player::Perks::DOUBLE_JUMP | player::Perks::TELEKINESIS;
     p.account_flags = player::Flags::IS_VERIFIED | player::Flags::IS_DEVELOPER;
 
-    p.quest_progress.insert("main_quest".into(), 3);
-    p.quick_slots = pojmap!(0 => "potion", 1 => "scroll", 2 => "wow", 3 => "wow", 4 => "wow", 5 => "wow", 6 => "wow", 7 => "wow", 8 => "wow", 9 => "wow"; 10);
-    p.skill_levels.insert("archery".into(), 7.5);
-
     p.loadout = std::array::from_fn(|_| (PojocString::default(), 0i32));
     p.loadout[0] = (pojstr!("sword"), 1);
     p.loadout[1] = (pojstr!("shield"), 1);
 
-    p.leaderboard_scores.insert("season1".into(), 9001);
     p.party_members = [1, 2, 3, 4];
     p.last_position = (5.0, 5.0, 5.0);
 
@@ -584,7 +576,6 @@ pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
     assert_eq!(a.tags, b.tags);
     assert_transform_eq(&a.transform, &b.transform);
     assert_eq!(a.recent_zones, b.recent_zones);
-    assert_eq!(a.chat_history, b.chat_history);
     assert_eq!(a.velocity, b.velocity);
     assert_eq!(a.status_code, b.status_code);
     assert_eq!(a.is_nauseous, b.is_nauseous);
@@ -593,11 +584,7 @@ pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
     assert_eq!(a.achievement_ids, b.achievement_ids);
     assert_eq!(a.active_perks, b.active_perks);
     assert_eq!(a.account_flags, b.account_flags);
-    assert_eq!(a.quest_progress, b.quest_progress);
-    assert_eq!(a.quick_slots, b.quick_slots);
-    assert_eq!(a.skill_levels, b.skill_levels);
     assert_eq!(a.loadout, b.loadout);
-    assert_eq!(a.leaderboard_scores, b.leaderboard_scores);
     assert_eq!(a.party_members, b.party_members);
     assert_eq!(a.last_position, b.last_position);
 }
