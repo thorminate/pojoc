@@ -1,5 +1,7 @@
-use crate::lexer::Token;
-use crate::span::Span;
+use crate::schema::lexer::Token;
+use crate::schema::span::Span;
+use std::io;
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub trait IndexableError {
@@ -305,13 +307,40 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("import path '{path}' could not be found or read")]
-    ImportNotFound { path: String, span: Span, line: u32 },
+    #[error("import path '{path}' could not be found")]
+    ImportNotFound {
+        path: String,
+        origin: PathBuf,
+        span: Span,
+        line: u32,
+    },
 
-    #[error("circular import detected: '{path}'")]
-    CircularImport { path: String, span: Span, line: u32 },
+    #[error("import is not valid UTF-8: {path} (invalid byte at offset {offset})")]
+    ImportNotUtf8 {
+        path: String,
+        offset: usize,
+        origin: PathBuf,
+        span: Span,
+        line: u32,
+    },
 
-    // just the inner error message — path is shown by the renderer
+    #[error("failed to read import '{path}': {kind:?}")]
+    ImportReadFailed {
+        path: String,
+        origin: PathBuf,
+        span: Span,
+        line: u32,
+        kind: io::ErrorKind,
+    },
+
+    #[error("circular import detected: {chain}")]
+    CircularImport {
+        chain: String,
+        origin: PathBuf,
+        span: Span,
+        line: u32,
+    },
+
     #[error("{src}")]
     ImportParseFailed {
         path: String,
@@ -322,6 +351,16 @@ pub enum AnalysisError {
 
     #[error("schema must have at least one version")]
     NoVersions { span: Span, line: u32 },
+
+    #[error(
+        "type '{name}' in version {version} has the same name as its enclosing schema '{name}' — rename one of them"
+    )]
+    TypeNameShadowsSchema {
+        name: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl IndexableError for AnalysisError {
@@ -352,9 +391,12 @@ impl IndexableError for AnalysisError {
             AnalysisError::UnknownImportAlias { span, .. } => *span,
             AnalysisError::ImportVersionOutOfRange { span, .. } => *span,
             AnalysisError::ImportNotFound { span, .. } => *span,
+            AnalysisError::ImportNotUtf8 { span, .. } => *span,
+            AnalysisError::ImportReadFailed { span, .. } => *span,
             AnalysisError::CircularImport { span, .. } => *span,
             AnalysisError::ImportParseFailed { span, .. } => *span,
             AnalysisError::NoVersions { span, .. } => *span,
+            AnalysisError::TypeNameShadowsSchema { span, .. } => *span,
         }
     }
 
@@ -385,9 +427,40 @@ impl IndexableError for AnalysisError {
             AnalysisError::UnknownImportAlias { line, .. } => *line,
             AnalysisError::ImportVersionOutOfRange { line, .. } => *line,
             AnalysisError::ImportNotFound { line, .. } => *line,
+            AnalysisError::ImportNotUtf8 { line, .. } => *line,
+            AnalysisError::ImportReadFailed { line, .. } => *line,
             AnalysisError::CircularImport { line, .. } => *line,
             AnalysisError::ImportParseFailed { line, .. } => *line,
             AnalysisError::NoVersions { line, .. } => *line,
+            AnalysisError::TypeNameShadowsSchema { line, .. } => *line,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum LoadError {
+    #[error("file not found")]
+    NotFound,
+    #[error("not valid UTF-8 (invalid byte at offset {offset})")]
+    NotUtf8 { offset: usize },
+    #[error("read failed: {kind:?}")]
+    Io { kind: io::ErrorKind },
+}
+
+impl IndexableError for LoadError {
+    fn line(&self) -> u32 {
+        match self {
+            LoadError::NotFound => 0,
+            LoadError::NotUtf8 { .. } => 0,
+            LoadError::Io { .. } => 0,
+        }
+    }
+
+    fn span(&self) -> Span {
+        match self {
+            LoadError::NotFound => Span::new(0, 0),
+            LoadError::NotUtf8 { .. } => Span::new(0, 0),
+            LoadError::Io { .. } => Span::new(0, 0),
         }
     }
 }
@@ -400,4 +473,6 @@ pub enum SchemaError {
     Parse(#[from] ParseError),
     #[error(transparent)]
     Analysis(#[from] AnalysisError),
+    #[error(transparent)]
+    Load(#[from] LoadError),
 }

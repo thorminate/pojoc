@@ -1,5 +1,5 @@
-use crate::error::*;
-use crate::span::Span;
+use crate::schema::error::*;
+use crate::schema::span::Span;
 use compact_str::CompactString;
 
 #[derive(Debug, Clone, PartialEq)]

@@ -37,7 +37,7 @@ schema Player {
 }
 ```
 
-`cargo run -p pojoc-cli -- build player.pojoc --out-dir src/generated` turns that into a Rust module with `encode`/`decode`/`encode_for_version`/`supported_versions` — no hand-written migration code, no separate IDL runtime to link against.
+`cargo run -p pojoc-cli -- build player.pojoc --out-dir src/generated` turns that into a Rust module with `encode`/`decode`/`encode_for_version`/`supported_versions` — no hand-written migration code, no separate IDL runtime to link against. Or skip the CLI and call [`pojoc-build`](https://crates.io/crates/pojoc-build) directly from your own `build.rs`.
 
 ## What you get
 
@@ -51,15 +51,30 @@ schema Player {
 
 | Crate | What it is |
 |---|---|
-| `pojoc-core` | Shared resolved-type model used by both the analyzer and codegen |
-| `pojoc-schema` | Lexer, parser, and IR analyzer — `.pojoc` source in, resolved schema out |
-| `pojoc-codegen` | Resolved schema → generated Rust source |
 | `pojoc` | Runtime support library the generated code depends on (varints, wire types, the envelope format) |
-| `pojoc-cli` | `pojoc check` / `pojoc build` |
-| `pojoc-lsp` | Language server powering the editor extensions |
+| `pojoc-build` | Compile `.pojoc` files from `build.rs`; bundles the lexer/parser/IR analyzer/codegen internally |
+| `pojoc-cli` | `pojoc check` / `pojoc build`, thin wrapper over `pojoc-build` |
+| `pojoc-lsp` | Language server powering the editor extensions, also built on `pojoc-build` |
 | `pojoc-tests` | Round-trip tests and cross-format benchmarks |
 
 Editor tooling lives outside the Cargo workspace: `vscode-extension/` (TypeScript) and `jetbrains-plugin/` (Kotlin/Gradle).
+
+## Using it in your project
+
+```sh
+cargo add pojoc
+cargo add --build pojoc-build
+```
+
+```rust,no_run
+// build.rs
+fn main() {
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    pojoc_build::compile_dir("schemas", &out_dir).unwrap_or_else(|e| panic!("{e}"));
+}
+```
+
+Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module.
 
 ## Building
 

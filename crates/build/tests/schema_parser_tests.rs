@@ -1,7 +1,7 @@
 mod common;
 use common::*;
-use pojoc_core::types::ResolvedTypeRef;
-use pojoc_schema::ast::*;
+use pojoc_build::core::types::ResolvedTypeRef;
+use pojoc_build::schema::ast::*;
 
 const SAMPLE_SCHEMA: &str = r#"
 schema Player {

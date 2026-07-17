@@ -2,12 +2,18 @@
 name = "pojoc-build"
 version.workspace = true
 edition.workspace = true
-description = "Call pojoc from build.rs without depending on pojoc-schema/pojoc-codegen directly"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Compile .pojoc schema files from build.rs into Rust encode/decode code"
+readme = "../../README.md"
+keywords = ["serialization", "encoding", "binary", "schema", "codegen"]
+categories = ["encoding", "compilers"]
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-pojoc-schema = { path = "../schema" }
-pojoc-codegen = { path = "../codegen" }
+heck = { workspace = true }
 thiserror = { workspace = true }
+compact_str = { workspace = true }

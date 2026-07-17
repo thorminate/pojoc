@@ -1,6 +1,6 @@
 use lsp_types::*;
-use pojoc_core::types::is_delta_eligible_str;
-use pojoc_schema::ast::*;
+use pojoc_build::core::types::is_delta_eligible_str;
+use pojoc_build::schema::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -1862,7 +1862,7 @@ pub(crate) fn cursor_in_line_comment(text: &str, offset: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pojoc_schema::{Lexer, Parser};
+    use pojoc_build::schema::{Lexer, Parser};
 
     /// `text_with_cursor` must contain exactly one `|`, and must still form a
     /// *complete, parseable* schema once it's stripped out (mirroring how the

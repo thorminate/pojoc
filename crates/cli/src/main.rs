@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use pojoc_codegen::generate;
-use pojoc_schema::{AnalysisError, ImportOrchestrator, IndexableError};
+use pojoc_build::codegen::generate;
+use pojoc_build::schema::{AnalysisError, ImportOrchestrator, IndexableError};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -46,24 +46,25 @@ fn main() {
             input,
             out_dir,
             verbose,
-        } => {
-            build(input, out_dir, verbose);
-        }
-        Command::Check { input, verbose } => {
-            check(input, verbose);
-        }
-    }
+        } => build(input, out_dir, verbose),
+        Command::Check { input, verbose } => check(input, verbose),
+    };
 }
 
+/// Converts an error to a path of a schema file, if it is an
+/// import-related error, it returns the path of that schema file.
 fn error_source_path<'a>(err: &'a AnalysisError, root: &'a Path) -> &'a Path {
     match err {
-        AnalysisError::ImportParseFailed { path, .. }
-        | AnalysisError::ImportNotFound { path, .. }
-        | AnalysisError::CircularImport { path, .. } => Path::new(path.as_str()),
+        AnalysisError::ImportParseFailed { path, .. } => Path::new(path.as_str()),
+        AnalysisError::ImportNotFound { origin, .. }
+        | AnalysisError::ImportNotUtf8 { origin, .. }
+        | AnalysisError::ImportReadFailed { origin, .. }
+        | AnalysisError::CircularImport { origin, .. } => origin.as_path(),
         _ => root,
     }
 }
 
+/// Emits a neatly formatted error to stdout.
 fn render_error(err: &AnalysisError, root: &Path) {
     let source_path = error_source_path(err, root);
     let source = std::fs::read_to_string(source_path).unwrap_or_default();
@@ -72,16 +73,19 @@ fn render_error(err: &AnalysisError, root: &Path) {
     let span = err.span();
     let message = err.to_string();
 
+    // This is the path that will be displayed in the final output,
+    // it is cleansed of unwanted symbols and stuff.
     let display_path = source_path
         .canonicalize()
         .unwrap_or_else(|_| source_path.to_path_buf());
     let display_path = display_path.display().to_string();
     let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
 
-    let line_idx = line.saturating_sub(1);
     let lines: Vec<&str> = source.lines().collect();
+    let line_idx = line.saturating_sub(1);
     let line_text = lines.get(line_idx).copied().unwrap_or("");
 
+    // Gets a byte offset as to when the line starts.
     let line_start = line_start_offset(&source, line_idx);
 
     let col_start = span.start.saturating_sub(line_start);
@@ -91,6 +95,7 @@ fn render_error(err: &AnalysisError, root: &Path) {
     let gutter = line.to_string();
     let pad = " ".repeat(gutter.len());
 
+    // I don't feel like importing some ansi crate so raw ansi will do fine.
     eprintln!("\x1b[1;31merror\x1b[0m: {message}");
     eprintln!(" {pad}\x1b[34m-->\x1b[0m {display_path}:{line}:{col_start}");
     eprintln!(" {pad}\x1b[34m |\x1b[0m");
@@ -102,27 +107,33 @@ fn render_error(err: &AnalysisError, root: &Path) {
     );
 }
 
+/// Gets the byte offset of a string for the start of a certain line.
 fn line_start_offset(source: &str, line_idx: usize) -> usize {
-    let mut current_line = 0;
-    let mut offset = 0;
-    for b in source.bytes() {
-        if current_line == line_idx {
-            break;
-        }
-        offset += 1;
+    if line_idx == 0 {
+        return 0;
+    }
+    let mut seen = 0;
+    for (i, b) in source.bytes().enumerate() {
         if b == b'\n' {
-            current_line += 1;
+            seen += 1;
+            if seen == line_idx {
+                return i + 1;
+            }
         }
     }
-    offset
+    source.len()
 }
 
+/// Simply emits a log to stdout with a dark gray ansi
+/// color encoding and 2 whitespaces of filler.
 fn log(verbose: bool, msg: &str) {
     if verbose {
-        eprintln!("\x1b[2m  {msg}\x1b[0m");
+        println!("\x1b[2m  {msg}\x1b[0m");
     }
 }
 
+/// Builds a schema file into Rust code with conditionally verbose
+/// time diagnostics. Also returning an error code if something went wrong.
 fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
     let mut orchestrator = ImportOrchestrator::new();
 
@@ -179,6 +190,7 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
     0
 }
 
+/// Runs the analysis and resolution steps with no codegen and output.
 fn check(input: PathBuf, verbose: bool) -> i32 {
     let mut orchestrator = ImportOrchestrator::new();
 

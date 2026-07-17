@@ -5,9 +5,9 @@ use crate::completion::{SchemaIndex, completions_for_position};
 use crate::hover::hover_for_position;
 use lsp_server::*;
 use lsp_types::*;
-use pojoc_schema::analyzer::SchemaAnalyzer;
-use pojoc_schema::ir::ir_types::ResolvedSchema;
-use pojoc_schema::{
+use pojoc_build::schema::analyzer::SchemaAnalyzer;
+use pojoc_build::schema::ir::ir_types::ResolvedSchema;
+use pojoc_build::schema::{
     AnalysisError, ImportOrchestrator, IndexableError, Lexer, LineIndex, ParseError, Parser,
     Position as SchemaPosition, SchemaAst, SchemaError, Span,
 };
@@ -225,6 +225,7 @@ fn extract_span(err: &SchemaError, text: &str) -> Span {
         }
         SchemaError::Parse(e) => e.span(),
         SchemaError::Analysis(e) => e.span(),
+        SchemaError::Load(e) => e.span(),
     }
 }
 
@@ -296,6 +297,7 @@ fn handle_text_update(
                 }
                 None => Err(SchemaError::Analysis(AnalysisError::ImportNotFound {
                     path: "<unsaved document>".to_string(),
+                    origin: PathBuf::from("<unsaved document>"),
                     span: ast.span,
                     line: ast.line,
                 })),
