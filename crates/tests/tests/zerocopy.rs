@@ -34,10 +34,25 @@ fn sample() -> Player<'static> {
         velocity: (1.0, 0.0, -1.0),
         spawn_point: (0.0, 0.0, 0.0),
         last_position: (10.0, 42.5, -3.0),
-        position: Vector3 { x: 10.0, y: 42.5, z: -3.0, w: 1.0 },
+        position: Vector3 {
+            x: 10.0,
+            y: 42.5,
+            z: -3.0,
+            w: 1.0,
+        },
         transform: Transform {
-            position: Vector3 { x: 10.0, y: 42.5, z: -3.0, w: 1.0 },
-            bounds: AABB { min_x: 0.0, min_y: 0.0, max_x: 100.0, max_y: 100.0 },
+            position: Vector3 {
+                x: 10.0,
+                y: 42.5,
+                z: -3.0,
+                w: 1.0,
+            },
+            bounds: AABB {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 100.0,
+                max_y: 100.0,
+            },
         },
         tags: pojvec!["starter_zone", "pvp_enabled", "vip"],
         recent_zones: pojvec!["zone_forest", "zone_dungeon", "", "", "", "", "", ""; 8],
@@ -60,7 +75,10 @@ fn zerocopy_player_string_fields_roundtrip() {
     // scalar string
     assert_eq!(p.callsign, "NONE00");
     // variable-length array of strings
-    assert_eq!(p.inventory.as_slice(), &["sword", "shield", "healing_potion"]);
+    assert_eq!(
+        p.inventory.as_slice(),
+        &["sword", "shield", "healing_potion"]
+    );
     assert_eq!(p.tags.as_slice(), &["starter_zone", "pvp_enabled", "vip"]);
     // fixed-length arrays of strings
     assert_eq!(p.hotbar, ["sword", "healing_potion", "torch", "", "", ""]);
