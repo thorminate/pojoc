@@ -6,9 +6,9 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.i64_to_f32 = -987.65;
     e.bounds_enum = NumericBounds::ExtraVariant;
     e.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS;
-    e.nullified_str = Some("VersionTest".into());
+    e.nullified_str = Some("VersionTest");
     e.empty_arr.push("v");
-    e.root_struct.leaf.leaf_val = "leaf".into();
+    e.root_struct.leaf.leaf_val = "leaf";
     e.root_struct.leaf.leaf_numeric = 1;
     e.updated_imported_player.player_id = 12345.0;
     e.updated_imported_player.status = player::Status::Spectating;
@@ -16,17 +16,17 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     // Generics — monomorphized instantiations and the Mono/Duo/Mono
     // type-parameter-evolution chain.
     e.generic_box.value = 7;
-    e.generic_box.label = "probe".into();
+    e.generic_box.label = "probe";
     e.generic_pair.first = 1;
-    e.generic_pair.second = "probe-pair".into();
+    e.generic_pair.second = "probe-pair";
     e.generic_triple.first = 2;
-    e.generic_triple.second = "probe-triple".into();
+    e.generic_triple.second = "probe-triple";
     e.generic_triple.third = true;
     e.generic_flag_box.value = true;
-    e.generic_mono_v3.value = "probe-mono-v3".into();
-    e.generic_duo_v4.value = "probe-duo-v4".into();
+    e.generic_mono_v3.value = "probe-mono-v3";
+    e.generic_duo_v4.value = "probe-duo-v4";
     e.generic_duo_v4.secondary = Some(9);
-    e.generic_mono_v5.value = "probe-mono-v5".into();
+    e.generic_mono_v5.value = "probe-mono-v5";
 
     e
 }
@@ -45,8 +45,8 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.f64_neg_inf = f64::NEG_INFINITY;
 
     // Strings
-    e.nullified_str = Some("PojocSerialization".into());
-    e.spaces_str = "    ".into();
+    e.nullified_str = Some("PojocSerialization");
+    e.spaces_str = "    ";
     e.fixed_str_min = [10, 20, 30, 40, 50, 60, 70, 80];
 
     // Collections
@@ -63,16 +63,16 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.lazy_delta_log = LazyView::Owned(Some(pojvec!(100, 150, 120)));
 
     // Nested struct
-    e.root_struct.leaf.leaf_val = "LeafNode".into();
+    e.root_struct.leaf.leaf_val = "LeafNode";
     e.root_struct.leaf.leaf_numeric = 777;
     e.root_struct.weight = 3.14;
     e.root_struct.leaf_arr.push(NestedLeaf {
-        leaf_val: "ArrayLeaf".into(),
+        leaf_val: "ArrayLeaf",
         leaf_numeric: 11,
         leaf_rotation: 0f32,
     });
     e.root_struct.leaf_opt = Some(NestedLeaf {
-        leaf_val: "OptionalLeaf".into(),
+        leaf_val: "OptionalLeaf",
         leaf_numeric: 22,
         leaf_rotation: 180f32,
     });
@@ -82,17 +82,17 @@ pub fn make_populated_edge() -> Edge<'static> {
     // an explicitly-named instantiation (`Box<bool> as FlagBox`), plus the
     // Mono<A> -> Duo<A, B> -> Mono<A> type-parameter-evolution chain (v3/v4/v5).
     e.generic_box.value = 42;
-    e.generic_box.label = "meaning-of-life".into();
+    e.generic_box.label = "meaning-of-life";
     e.generic_pair.first = 3;
-    e.generic_pair.second = "third".into();
+    e.generic_pair.second = "third";
     e.generic_triple.first = -8;
-    e.generic_triple.second = "triple".into();
+    e.generic_triple.second = "triple";
     e.generic_triple.third = false;
     e.generic_flag_box.value = false;
-    e.generic_mono_v3.value = "mono-v3".into();
-    e.generic_duo_v4.value = "duo-v4".into();
+    e.generic_mono_v3.value = "mono-v3";
+    e.generic_duo_v4.value = "duo-v4";
     e.generic_duo_v4.secondary = Some(-17);
-    e.generic_mono_v5.value = "mono-v5".into();
+    e.generic_mono_v5.value = "mono-v5";
 
     // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
@@ -100,7 +100,7 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.u32_delta_seq = [500; 16];
 
     // Maps
-    e.basic_map.insert("ConfigKey".into(), "ConfigValue".into());
+    e.basic_map.insert("ConfigKey", "ConfigValue");
     e.fixed_map_populated = pojmap!("FixedMapKey1" => 5, "FixedMapKey2" => 30; 2);
     e.delta_value_map = pojmap!("DeltaMapKey1" => pojvec![10], "DeltaMapKey2" => pojvec![20]; 2);
 
@@ -167,7 +167,7 @@ pub fn make_populated_edge() -> Edge<'static> {
             reason_code: 4,
         }));
     e.control_map.insert(
-        "primary".into(),
+        "primary",
         Payload::Attack(AttackPayload {
             target_id: 5,
             damage: 99.9,
@@ -191,7 +191,7 @@ fn make_player_value() -> player::Player<'static> {
 
     p.inventory.push("Sword");
     p.inventory.push("Shield");
-    p.callsign = "Ghost".into();
+    p.callsign = "Ghost";
 
     p.stats = player::Stats {
         strength: 10,

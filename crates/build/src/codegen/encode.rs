@@ -904,14 +904,9 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            if normalize_type(&id.name) == "string" {
-                w.line(&format!(
-                    "{}(__buf, &{});",
-                    info.write_fn, info.default_expr
-                ));
-            } else {
-                w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
-            }
+            // Borrowed-string defaults (`""`) are already `&str`; every other
+            // primitive default is a plain value. Neither needs a `&`.
+            w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
         }
         ResolvedTypeRef::Scalar(id) => {
             w.line("{");
