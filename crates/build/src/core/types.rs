@@ -1,4 +1,29 @@
 use heck::ToSnakeCase;
+use std::cell::RefCell;
+use std::collections::HashSet;
+
+thread_local! {
+    /// Names of lifetime-infected types (structs that carry a `<'buf>` because
+    /// they transitively hold a borrowed `&'buf str` or a `lazy` field), plus
+    /// module-qualified imported roots (`"player::Player"`) that are infected.
+    /// Set once per [`crate::codegen::generate`] invocation; read by
+    /// [`type_info`] so infected type names render with `<'buf>` *everywhere*
+    /// they nest — inside arrays, maps, tuples, generics, and imports — not just
+    /// as a direct struct field. Codegen is single-threaded per `generate`.
+    static INFECTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Install the set of lifetime-infected type names for subsequent code
+/// generation on this thread. Returns the previous set so callers can restore
+/// it around nested `generate` calls (imported submodules).
+pub fn set_infected(names: HashSet<String>) -> HashSet<String> {
+    INFECTED.with(|c| c.replace(names))
+}
+
+/// Whether `name` is a lifetime-infected type in the current generation.
+pub fn is_infected(name: &str) -> bool {
+    INFECTED.with(|c| c.borrow().contains(name))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeId {
@@ -149,15 +174,18 @@ impl TypeInfo {
         match self.wire_size {
             WireSize::Fixed(n) => n.to_string(),
             WireSize::Variable => {
-                if self.rust_type == "PojocString" {
+                if self.rust_type == "PojocString" || self.rust_type == "&'buf str" {
                     format!("varint_size({accessor}.len()) + {accessor}.len()")
                 } else if let Some(ref f) = self.size_fn {
                     format!("{f}({accessor} as usize)")
                 } else {
                     let borrow_symbol = if is_ref { "" } else { "&" };
+                    // Strip any `<'buf>` before deriving the helper name so an
+                    // infected `NestedLeaf<'buf>` maps to `size_hint_nested_leaf`.
+                    let base = self.rust_type.split('<').next().unwrap_or(&self.rust_type);
                     format!(
                         "size_hint_{}({borrow_symbol}{accessor})",
-                        self.rust_type.to_snake_case()
+                        base.to_snake_case()
                     )
                 }
             }
@@ -323,8 +351,31 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Tuple(elems) => {
             let infos: Vec<_> = elems.iter().map(type_info).collect();
+            // A tuple whose every element is a fixed-width, `Copy` scalar-like type
+            // is itself fixed-width. This lets the codegen group tuple fields (e.g.
+            // `(f32, f32, f32)` positions/velocities) into the single-bounds-check
+            // fixed block. FixedMap is fixed-size but not `Copy`, so tuples that
+            // contain one stay `Variable` to avoid an invalid `[default; N]` init.
+            let tuple_wire_size = {
+                let mut total = 0usize;
+                let mut all_fixed = true;
+                for (elem, info) in elems.iter().zip(&infos) {
+                    match info.wire_size {
+                        WireSize::Fixed(n) if !contains_fixed_map(elem) => total += n,
+                        _ => {
+                            all_fixed = false;
+                            break;
+                        }
+                    }
+                }
+                if all_fixed {
+                    WireSize::Fixed(total)
+                } else {
+                    WireSize::Variable
+                }
+            };
             TypeInfo {
-                wire_size: WireSize::Variable,
+                wire_size: tuple_wire_size,
                 rust_type: format!(
                     "({})",
                     infos
@@ -382,14 +433,22 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             version,
         } => {
             let module = alias.to_snake_case();
-            let rust_type = format!("{module}::{root_name}");
+            // An imported root that is itself lifetime-infected (e.g. it now
+            // holds borrowed strings) is tracked in `INFECTED` under its
+            // module-qualified name, so the field type carries `<'buf>`.
+            let qualified = format!("{module}::{root_name}");
+            let rust_type = if is_infected(&qualified) {
+                format!("{qualified}<'buf>")
+            } else {
+                qualified.clone()
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: rust_type.clone(),
                 skip_stmt: format!("{module}::skip_v{version}(__buf, __pos)?;"),
                 read_fn: format!("{module}::decode_v{version}"),
                 write_fn: format!("{module}::encode_v{version}"),
-                default_expr: format!("{rust_type}::default()"),
+                default_expr: format!("{qualified}::default()"),
                 size_fn: None,
             }
         }
@@ -443,18 +502,27 @@ fn scalar_info(name: &str) -> TypeInfo {
         },
         "string" => TypeInfo {
             wire_size: WireSize::Variable,
-            rust_type: "PojocString".into(),
+            rust_type: "&'buf str".into(),
             skip_stmt: "skip_string(__buf, __pos)?;".into(),
-            read_fn: "read_pojoc_string".into(),
-            write_fn: "write_pojoc_string".into(),
-            default_expr: "PojocString::default()".into(),
+            read_fn: "read_string".into(),
+            write_fn: "write_string".into(),
+            default_expr: "\"\"".into(),
             size_fn: None,
         },
         other => {
             let lower = other.to_snake_case();
+            // A named struct that is lifetime-infected renders with `<'buf>`
+            // wherever it appears — as a field, or nested inside an array/map/
+            // tuple/generic. Helper fn names (`read_*`) stay lifetime-free; the
+            // lifetime is inferred at the call site.
+            let rust_type = if is_infected(other) {
+                format!("{other}<'buf>")
+            } else {
+                other.into()
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
-                rust_type: other.into(),
+                rust_type,
                 skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
@@ -491,6 +559,18 @@ fn is_balanced(s: &str) -> bool {
         }
     }
     depth == 0
+}
+
+/// Whether `ty` is, or transitively contains, a `FixedMap` — the one fixed-width
+/// type whose Rust representation (`PojocFixedMap`) is not `Copy`. Used to keep
+/// such tuples out of the `Copy`-requiring fixed-array/fixed-block init paths.
+pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
+    match ty {
+        ResolvedTypeRef::FixedMap(..) => true,
+        ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
+        ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
+        _ => false,
+    }
 }
 
 pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {
