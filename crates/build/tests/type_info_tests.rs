@@ -126,7 +126,7 @@ fn type_info_scalar_primitives_have_fixed_or_variable_wire_size() {
 
     let string_info = type_info(&ResolvedTypeRef::Scalar(id("string")));
     assert_eq!(string_info.wire_size, WireSize::Variable);
-    assert_eq!(string_info.rust_type, "PojocString");
+    assert_eq!(string_info.rust_type, "&'buf str");
 
     let varint_info = type_info(&ResolvedTypeRef::Scalar(id("varint32")));
     assert_eq!(varint_info.wire_size, WireSize::Variable);
@@ -184,7 +184,7 @@ fn type_info_map_and_fixed_map() {
         Box::new(ResolvedTypeRef::Scalar(id("string"))),
         Box::new(ResolvedTypeRef::Scalar(id("i32"))),
     ));
-    assert_eq!(map.rust_type, "PojocMap<PojocString, i32>");
+    assert_eq!(map.rust_type, "PojocMap<&'buf str, i32>");
     assert_eq!(map.wire_size, WireSize::Variable);
 
     let fixed_map = type_info(&ResolvedTypeRef::FixedMap(
@@ -203,7 +203,7 @@ fn type_info_tuple_combines_element_rust_types_and_defaults() {
     ]));
     assert_eq!(tuple.rust_type, "(i32, bool)");
     assert_eq!(tuple.default_expr, "(0i32, false)");
-    assert_eq!(tuple.wire_size, WireSize::Variable);
+    assert_eq!(tuple.wire_size, WireSize::Fixed(5));
 }
 
 #[test]
