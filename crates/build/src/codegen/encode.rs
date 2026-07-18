@@ -1296,7 +1296,12 @@ fn emit_size_expr(
     }
 }
 
-fn emit_size_hint_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: &mut CodeWriter) {
+fn emit_size_hint_vn_fn(
+    schema: &ResolvedSchema,
+    vl: &VersionLineage,
+    lt: &str,
+    w: &mut CodeWriter,
+) {
     let name = &schema.name_hint;
     let v = vl.version;
 
