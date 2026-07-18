@@ -350,7 +350,6 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
- "serde",
  "static_assertions",
 ]
 
@@ -1424,7 +1423,6 @@ dependencies = [
 name = "pojoc"
 version = "0.2.0"
 dependencies = [
- "compact_str",
  "serde",
  "serde_bytes",
  "smallvec",

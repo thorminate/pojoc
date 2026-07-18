@@ -1,4 +1,4 @@
-use crate::{Error, PojocResult, PojocString, read_varint64};
+use crate::{Error, PojocResult, read_varint64};
 
 /// Read a single `u8`.
 #[inline]
@@ -129,6 +129,85 @@ pub fn read_fixed_array<
     Ok(arr)
 }
 
+// --- Unchecked fixed-width readers ---
+//
+// These skip the per-read bounds check. Generated `decode_vN` groups all
+// statically-fixed-size fields into one contiguous leading block, validates the
+// whole span with a single `checked_add`/`len()` check, then reads through it
+// with these accessors. Reading `*(ptr as *const [u8; N])` is sound for any
+// pointer because `[u8; N]` has alignment 1; the LE reinterpret via
+// `from_le_bytes` keeps the wire format endian-portable.
+
+/// Read a `u8` without bounds checking.
+///
+/// # Safety
+/// Caller must guarantee `*pos < buf.len()`.
+#[inline]
+pub unsafe fn read_u8_unchecked(buf: &[u8], pos: &mut usize) -> u8 {
+    let p = *pos;
+    *pos = p + 1;
+    // SAFETY: caller guarantees `p < buf.len()`.
+    unsafe { *buf.get_unchecked(p) }
+}
+
+/// Read a `bool` without bounds checking.
+///
+/// # Safety
+/// Caller must guarantee `*pos < buf.len()`.
+#[inline]
+pub unsafe fn read_bool_unchecked(buf: &[u8], pos: &mut usize) -> bool {
+    // SAFETY: forwarded to caller's invariant.
+    unsafe { read_u8_unchecked(buf, pos) != 0 }
+}
+
+/// Read an `i8` without bounds checking.
+///
+/// # Safety
+/// Caller must guarantee `*pos < buf.len()`.
+#[inline]
+pub unsafe fn read_i8_unchecked(buf: &[u8], pos: &mut usize) -> i8 {
+    // SAFETY: forwarded to caller's invariant.
+    unsafe { read_u8_unchecked(buf, pos) as i8 }
+}
+
+macro_rules! unchecked_le {
+    ($name:ident, $ty:ty, $n:literal) => {
+        /// Read a fixed little-endian value without bounds checking.
+        ///
+        /// # Safety
+        /// Caller must guarantee `*pos + N <= buf.len()`.
+        #[inline]
+        pub unsafe fn $name(buf: &[u8], pos: &mut usize) -> $ty {
+            let p = *pos;
+            *pos = p + $n;
+            // SAFETY: caller guarantees `p + N <= buf.len()`; `[u8; N]` is align 1.
+            let bytes = unsafe { *(buf.as_ptr().add(p) as *const [u8; $n]) };
+            <$ty>::from_le_bytes(bytes)
+        }
+    };
+}
+
+unchecked_le!(read_u16_unchecked, u16, 2);
+unchecked_le!(read_u32_unchecked, u32, 4);
+unchecked_le!(read_u64_unchecked, u64, 8);
+unchecked_le!(read_i16_unchecked, i16, 2);
+unchecked_le!(read_i32_unchecked, i32, 4);
+unchecked_le!(read_i64_unchecked, i64, 8);
+unchecked_le!(read_f32_unchecked, f32, 4);
+unchecked_le!(read_f64_unchecked, f64, 8);
+
+/// Read a fixed-length byte array without bounds checking.
+///
+/// # Safety
+/// Caller must guarantee `*pos + N <= buf.len()`.
+#[inline]
+pub unsafe fn read_fixed_bytes_unchecked<const N: usize>(buf: &[u8], pos: &mut usize) -> [u8; N] {
+    let p = *pos;
+    *pos = p + N;
+    // SAFETY: caller guarantees `p + N <= buf.len()`; `[u8; N]` is align 1.
+    unsafe { *(buf.as_ptr().add(p) as *const [u8; N]) }
+}
+
 /// Read a length-prefixed UTF-8 string.
 #[inline]
 pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
@@ -140,12 +219,6 @@ pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
 #[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
     Ok(read_varint64(buf, pos)? as usize)
-}
-
-/// Read a length-prefixed UTF-8 string from `buf` at `*pos` and return it as a [`PojocString`].
-#[inline]
-pub fn read_pojoc_string(buf: &[u8], pos: &mut usize) -> PojocResult<PojocString> {
-    Ok(PojocString::from(read_string(buf, pos)?))
 }
 
 /// A decoded message envelope.

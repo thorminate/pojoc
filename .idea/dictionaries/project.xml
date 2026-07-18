@@ -17,6 +17,7 @@
       <w>partialord</w>
       <w>pojmap</w>
       <w>pojoc</w>
+      <w>pojoc's</w>
       <w>pojstr</w>
       <w>pojtup</w>
       <w>pojvec</w>
@@ -33,6 +34,7 @@
       <w>vsce</w>
       <w>vscode</w>
       <w>vsix</w>
+      <w>zerocopy</w>
     </words>
   </dictionary>
 </component>

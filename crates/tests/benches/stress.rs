@@ -42,6 +42,7 @@ fn make_inventory(n: usize) -> Vec<String> {
 
 fn make_pojoc_buf(n: usize) -> Vec<u8> {
     let mut buf = Vec::new();
+    let inv = make_inventory(n);
     pojoc_player::encode(
         &mut buf,
         &Player {
@@ -60,7 +61,7 @@ fn make_pojoc_buf(n: usize) -> Vec<u8> {
                 resistance: 0.25,
             },
 
-            inventory: make_inventory(n).iter().map(|x| x.into()).collect(),
+            inventory: inv.iter().map(|s| s.as_str()).collect(),
 
             hotbar: pojvec![
                 "sword",
@@ -72,7 +73,7 @@ fn make_pojoc_buf(n: usize) -> Vec<u8> {
                 6
             ],
 
-            callsign: pojstr!("NONE00"),
+            callsign: "NONE00",
             session_token: pojstr!("SESSION000000000", 16),
             guild_tag: pojstr!("IRON", 4),
             status_code: pojstr!("00000000", 8),
@@ -701,7 +702,7 @@ fn stress_encode(c: &mut Criterion) {
                     resistance: 0.25,
                 },
 
-                inventory: inv.iter().map(|s| s.into()).collect(),
+                inventory: inv.iter().map(|s| s.as_str()).collect(),
 
                 hotbar: pojvec![
                     "sword",
@@ -713,7 +714,7 @@ fn stress_encode(c: &mut Criterion) {
                     6
                 ],
 
-                callsign: pojstr!("NONE00"),
+                callsign: "NONE00",
                 session_token: pojstr!("SESSION000000000", 16),
                 guild_tag: pojstr!("IRON", 4),
                 status_code: pojstr!("00000000", 8),
@@ -998,7 +999,7 @@ fn stress_roundtrip(c: &mut Criterion) {
                 resistance: 0.25,
             },
 
-            inventory: inv.iter().map(|s| s.into()).collect(),
+            inventory: inv.iter().map(|s| s.as_str()).collect(),
 
             hotbar: pojvec![
                 "sword",
@@ -1010,7 +1011,7 @@ fn stress_roundtrip(c: &mut Criterion) {
                 6
             ],
 
-            callsign: pojstr!("NONE00"),
+            callsign: "NONE00",
             session_token: pojstr!("SESSION000000000", 16),
             guild_tag: pojstr!("IRON", 4),
             status_code: pojstr!("00000000", 8),
