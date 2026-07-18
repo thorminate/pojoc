@@ -1,4 +1,4 @@
-use crate::{PojocString, write_varint64};
+use crate::write_varint64;
 
 /// Write a single `u8`.
 #[inline]
@@ -101,12 +101,6 @@ pub fn write_string(buf: &mut Vec<u8>, value: &str) {
 #[inline]
 pub fn write_array_len(buf: &mut Vec<u8>, len: usize) {
     write_varint64(buf, len as u64);
-}
-
-/// Write a [`PojocString`] as a length-prefixed UTF-8 string.
-#[inline]
-pub fn write_pojoc_string(buf: &mut Vec<u8>, value: &PojocString) {
-    write_string(buf, value.as_str());
 }
 
 /// Write the start of a message envelope: `[version:varint] [len:u32 placeholder]`.

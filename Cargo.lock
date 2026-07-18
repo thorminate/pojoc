@@ -350,7 +350,6 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
- "serde",
  "static_assertions",
 ]
 
@@ -1422,9 +1421,8 @@ dependencies = [
 
 [[package]]
 name = "pojoc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
- "compact_str",
  "serde",
  "serde_bytes",
  "smallvec",
@@ -1432,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-build"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compact_str",
  "heck",
@@ -1441,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "pojoc-build",
@@ -1449,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-lsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1460,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bebop",
  "bebop-tools",

@@ -6,9 +6,9 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.i64_to_f32 = -987.65;
     e.bounds_enum = NumericBounds::ExtraVariant;
     e.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS;
-    e.nullified_str = Some("VersionTest".into());
-    e.empty_arr.push(pojstr!("v"));
-    e.root_struct.leaf.leaf_val = "leaf".into();
+    e.nullified_str = Some("VersionTest");
+    e.empty_arr.push("v");
+    e.root_struct.leaf.leaf_val = "leaf";
     e.root_struct.leaf.leaf_numeric = 1;
     e.updated_imported_player.player_id = 12345.0;
     e.updated_imported_player.status = player::Status::Spectating;
@@ -16,17 +16,17 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     // Generics — monomorphized instantiations and the Mono/Duo/Mono
     // type-parameter-evolution chain.
     e.generic_box.value = 7;
-    e.generic_box.label = "probe".into();
+    e.generic_box.label = "probe";
     e.generic_pair.first = 1;
-    e.generic_pair.second = "probe-pair".into();
+    e.generic_pair.second = "probe-pair";
     e.generic_triple.first = 2;
-    e.generic_triple.second = "probe-triple".into();
+    e.generic_triple.second = "probe-triple";
     e.generic_triple.third = true;
     e.generic_flag_box.value = true;
-    e.generic_mono_v3.value = "probe-mono-v3".into();
-    e.generic_duo_v4.value = "probe-duo-v4".into();
+    e.generic_mono_v3.value = "probe-mono-v3";
+    e.generic_duo_v4.value = "probe-duo-v4";
     e.generic_duo_v4.secondary = Some(9);
-    e.generic_mono_v5.value = "probe-mono-v5".into();
+    e.generic_mono_v5.value = "probe-mono-v5";
 
     e
 }
@@ -45,13 +45,13 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.f64_neg_inf = f64::NEG_INFINITY;
 
     // Strings
-    e.nullified_str = Some("PojocSerialization".into());
-    e.spaces_str = "    ".into();
+    e.nullified_str = Some("PojocSerialization");
+    e.spaces_str = "    ";
     e.fixed_str_min = [10, 20, 30, 40, 50, 60, 70, 80];
 
     // Collections
-    e.empty_arr.push(pojstr!("FirstElement"));
-    e.empty_arr.push(pojstr!("SecondElement"));
+    e.empty_arr.push("FirstElement");
+    e.empty_arr.push("SecondElement");
     e.array_to_map.insert(5, 25);
     e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
@@ -63,16 +63,16 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.lazy_delta_log = LazyView::Owned(Some(pojvec!(100, 150, 120)));
 
     // Nested struct
-    e.root_struct.leaf.leaf_val = "LeafNode".into();
+    e.root_struct.leaf.leaf_val = "LeafNode";
     e.root_struct.leaf.leaf_numeric = 777;
     e.root_struct.weight = 3.14;
     e.root_struct.leaf_arr.push(NestedLeaf {
-        leaf_val: "ArrayLeaf".into(),
+        leaf_val: "ArrayLeaf",
         leaf_numeric: 11,
         leaf_rotation: 0f32,
     });
     e.root_struct.leaf_opt = Some(NestedLeaf {
-        leaf_val: "OptionalLeaf".into(),
+        leaf_val: "OptionalLeaf",
         leaf_numeric: 22,
         leaf_rotation: 180f32,
     });
@@ -82,17 +82,17 @@ pub fn make_populated_edge() -> Edge<'static> {
     // an explicitly-named instantiation (`Box<bool> as FlagBox`), plus the
     // Mono<A> -> Duo<A, B> -> Mono<A> type-parameter-evolution chain (v3/v4/v5).
     e.generic_box.value = 42;
-    e.generic_box.label = "meaning-of-life".into();
+    e.generic_box.label = "meaning-of-life";
     e.generic_pair.first = 3;
-    e.generic_pair.second = "third".into();
+    e.generic_pair.second = "third";
     e.generic_triple.first = -8;
-    e.generic_triple.second = "triple".into();
+    e.generic_triple.second = "triple";
     e.generic_triple.third = false;
     e.generic_flag_box.value = false;
-    e.generic_mono_v3.value = "mono-v3".into();
-    e.generic_duo_v4.value = "duo-v4".into();
+    e.generic_mono_v3.value = "mono-v3";
+    e.generic_duo_v4.value = "duo-v4";
     e.generic_duo_v4.secondary = Some(-17);
-    e.generic_mono_v5.value = "mono-v5".into();
+    e.generic_mono_v5.value = "mono-v5";
 
     // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
@@ -100,7 +100,7 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.u32_delta_seq = [500; 16];
 
     // Maps
-    e.basic_map.insert("ConfigKey".into(), "ConfigValue".into());
+    e.basic_map.insert("ConfigKey", "ConfigValue");
     e.fixed_map_populated = pojmap!("FixedMapKey1" => 5, "FixedMapKey2" => 30; 2);
     e.delta_value_map = pojmap!("DeltaMapKey1" => pojvec![10], "DeltaMapKey2" => pojvec![20]; 2);
 
@@ -167,7 +167,7 @@ pub fn make_populated_edge() -> Edge<'static> {
             reason_code: 4,
         }));
     e.control_map.insert(
-        "primary".into(),
+        "primary",
         Payload::Attack(AttackPayload {
             target_id: 5,
             damage: 99.9,
@@ -180,7 +180,7 @@ pub fn make_populated_edge() -> Edge<'static> {
     e
 }
 
-fn make_player_value() -> player::Player {
+fn make_player_value() -> player::Player<'static> {
     let mut p = player::Player::default();
 
     p.player_id = 42.0;
@@ -189,9 +189,9 @@ fn make_player_value() -> player::Player {
     p.class = player::Class::Necromancer;
     p.region = player::Region::Void;
 
-    p.inventory.push(pojstr!("Sword"));
-    p.inventory.push(pojstr!("Shield"));
-    p.callsign = "Ghost".into();
+    p.inventory.push("Sword");
+    p.inventory.push("Shield");
+    p.callsign = "Ghost";
 
     p.stats = player::Stats {
         strength: 10,
@@ -202,9 +202,9 @@ fn make_player_value() -> player::Player {
         resistance: 3.5,
     };
 
-    p.hotbar = std::array::from_fn(|_| PojocString::default());
-    p.hotbar[0] = pojstr!("sword");
-    p.hotbar[1] = pojstr!("shield");
+    p.hotbar = std::array::from_fn(|_| "");
+    p.hotbar[0] = "sword";
+    p.hotbar[1] = "shield";
 
     p.session_token = *b"PLAYERTOKEN12345";
     p.coordinates = (1.5, 2.5);
@@ -216,7 +216,7 @@ fn make_player_value() -> player::Player {
     };
     p.kill_death = (5, 2);
 
-    p.tags.push(pojstr!("vip"));
+    p.tags.push("vip");
 
     p.transform = player::Transform {
         position: player::Vector3 {
@@ -233,11 +233,8 @@ fn make_player_value() -> player::Player {
         },
     };
 
-    p.recent_zones = std::array::from_fn(|_| PojocString::default());
-    p.recent_zones[0] = pojstr!("zoneA");
-
-    p.chat_history = std::array::from_fn(|_| PojocString::default());
-    p.chat_history[0] = pojstr!("hello");
+    p.recent_zones = std::array::from_fn(|_| "");
+    p.recent_zones[0] = "zoneA";
 
     p.velocity = (0.1, 0.2, 0.3);
     p.status_code = *b"OK000000";
@@ -251,15 +248,10 @@ fn make_player_value() -> player::Player {
     p.active_perks = player::Perks::DOUBLE_JUMP | player::Perks::TELEKINESIS;
     p.account_flags = player::Flags::IS_VERIFIED | player::Flags::IS_DEVELOPER;
 
-    p.quest_progress.insert("main_quest".into(), 3);
-    p.quick_slots = pojmap!(0 => "potion", 1 => "scroll", 2 => "wow", 3 => "wow", 4 => "wow", 5 => "wow", 6 => "wow", 7 => "wow", 8 => "wow", 9 => "wow"; 10);
-    p.skill_levels.insert("archery".into(), 7.5);
+    p.loadout = std::array::from_fn(|_| ("", 0i32));
+    p.loadout[0] = ("sword", 1);
+    p.loadout[1] = ("shield", 1);
 
-    p.loadout = std::array::from_fn(|_| (PojocString::default(), 0i32));
-    p.loadout[0] = (pojstr!("sword"), 1);
-    p.loadout[1] = (pojstr!("shield"), 1);
-
-    p.leaderboard_scores.insert("season1".into(), 9001);
     p.party_members = [1, 2, 3, 4];
     p.last_position = (5.0, 5.0, 5.0);
 
@@ -324,7 +316,10 @@ pub fn assert_sensor_frame_eq(a: &SensorFrame, b: &SensorFrame) {
     assert_eq!(a.sample_ids, b.sample_ids);
 }
 
-pub fn assert_deep_complex_wrapper_eq(a: &DeepComplexWrapper, b: &DeepComplexWrapper) {
+pub fn assert_deep_complex_wrapper_eq<'buf>(
+    a: &DeepComplexWrapper<'buf>,
+    b: &DeepComplexWrapper<'buf>,
+) {
     assert_eq!(a.frame_deltas, b.frame_deltas);
     assert_eq!(a.matrix, b.matrix);
 }
@@ -393,7 +388,7 @@ pub fn assert_control_signal_eq(a: &ControlSignal, b: &ControlSignal) {
     }
 }
 
-pub fn assert_edge_eq(a: &Edge, b: &Edge) {
+pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     // Scalar integer and varint conversions
     assert_eq!(a.u8_to_i64, b.u8_to_i64);
     assert_eq!(a.i64_to_f32, b.i64_to_f32);
@@ -584,7 +579,6 @@ pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
     assert_eq!(a.tags, b.tags);
     assert_transform_eq(&a.transform, &b.transform);
     assert_eq!(a.recent_zones, b.recent_zones);
-    assert_eq!(a.chat_history, b.chat_history);
     assert_eq!(a.velocity, b.velocity);
     assert_eq!(a.status_code, b.status_code);
     assert_eq!(a.is_nauseous, b.is_nauseous);
@@ -593,11 +587,7 @@ pub fn assert_player_eq(a: &player::Player, b: &player::Player) {
     assert_eq!(a.achievement_ids, b.achievement_ids);
     assert_eq!(a.active_perks, b.active_perks);
     assert_eq!(a.account_flags, b.account_flags);
-    assert_eq!(a.quest_progress, b.quest_progress);
-    assert_eq!(a.quick_slots, b.quick_slots);
-    assert_eq!(a.skill_levels, b.skill_levels);
     assert_eq!(a.loadout, b.loadout);
-    assert_eq!(a.leaderboard_scores, b.leaderboard_scores);
     assert_eq!(a.party_members, b.party_members);
     assert_eq!(a.last_position, b.last_position);
 }

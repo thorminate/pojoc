@@ -1,7 +1,7 @@
 use super::writer::CodeWriter;
 use crate::codegen::encode::emit_write_expr;
 use crate::codegen::get_latest_versions;
-use crate::core::types::{ResolvedTypeRef, type_info};
+use crate::core::types::type_info;
 use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use std::collections::{HashMap, HashSet};
@@ -429,15 +429,12 @@ fn emit_named_struct(
     w.line(&format!("pub struct {name}{struct_lt} {{"));
     w.indent();
     for field in fields {
+        // `type_info` already renders infected named types (and borrowed
+        // strings) with `<'buf>` wherever they nest, so a plain lookup is
+        // correct for every non-lazy field; only lazy needs the wrapper.
         let ty = if field.lazy {
             let inner = type_info(&field.ty).rust_type;
             format!("LazyView<'buf, {inner}>")
-        } else if let ResolvedTypeRef::Scalar(id) = &field.ty {
-            if infected.contains(&id.name) {
-                format!("{}<'buf>", id.name)
-            } else {
-                type_info(&field.ty).rust_type
-            }
         } else {
             type_info(&field.ty).rust_type
         };

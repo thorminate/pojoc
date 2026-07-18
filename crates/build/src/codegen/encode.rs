@@ -1,5 +1,5 @@
 use super::writer::CodeWriter;
-use crate::codegen::get_latest_versions;
+use crate::codegen::{get_latest_versions, ordered_wire_fields};
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
 use crate::schema::ir::lineage::*;
@@ -11,9 +11,18 @@ pub fn emit_encode_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_union_writers(schema, w);
 }
 
-pub fn emit_encode_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_encode_vn_functions(
+    schema: &ResolvedSchema,
+    infected: &std::collections::HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let lt = if infected.contains(schema.name_hint.as_str()) {
+        "<'buf>"
+    } else {
+        ""
+    };
     for vl in &schema.lineage.versions {
-        emit_encode_vn_fn(schema, vl, w);
+        emit_encode_vn_fn(schema, vl, lt, w);
         w.blank();
     }
 }
@@ -23,9 +32,18 @@ pub fn emit_size_hint_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_union_size_hints(schema, w);
 }
 
-pub fn emit_size_hint_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_size_hint_vn_functions(
+    schema: &ResolvedSchema,
+    infected: &std::collections::HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let lt = if infected.contains(schema.name_hint.as_str()) {
+        "<'buf>"
+    } else {
+        ""
+    };
     for vl in &schema.lineage.versions {
-        emit_size_hint_vn_fn(schema, vl, w);
+        emit_size_hint_vn_fn(schema, vl, lt, w);
         w.blank();
     }
 }
@@ -116,9 +134,10 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         } else {
             ("__buf", "__value")
         };
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}({__buf}: &mut Vec<u8>, {val}: &{name}) {{",
+            "fn write_{}{lt}({__buf}: &mut Vec<u8>, {val}: &{name}{lt}) {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -203,11 +222,9 @@ pub(crate) fn emit_write_expr(
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
-                w.line(&format!(
-                    "{}(__buf, {}{accessor});",
-                    info.write_fn,
-                    if is_ref { "" } else { "&" }
-                ));
+                // Field is already a `&str`; pass it straight through.
+                // Deref coercion collapses any `&&str` from array iterators.
+                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             } else {
                 w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             }
@@ -215,16 +232,32 @@ pub(crate) fn emit_write_expr(
 
         ResolvedTypeRef::Enum(id) => {
             if let Some(schema) = vn {
-                let max = schema
+                // The in-memory Rust enum is the latest version's definition. When
+                // encoding *this* version, the clamp maps any variant newer than
+                // the version's wire range down to 0. When `id` is the latest
+                // enum version, every representable variant is already in range, so
+                // the branch is provably dead — emit the direct write instead.
+                let latest_enum_version = schema
                     .enums
                     .enums
-                    .get(id)
-                    .and_then(|e| e.variants.iter().map(|v| v.wire_value).max())
-                    .unwrap_or(0);
-                w.line(&format!(
-                    "{{ let __disc = {accessor} as u32; \
-                     write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
-                ));
+                    .keys()
+                    .filter(|k| k.name == id.name)
+                    .map(|k| k.version)
+                    .max();
+                if latest_enum_version == Some(id.version) {
+                    w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
+                } else {
+                    let max = schema
+                        .enums
+                        .enums
+                        .get(id)
+                        .and_then(|e| e.variants.iter().map(|v| v.wire_value).max())
+                        .unwrap_or(0);
+                    w.line(&format!(
+                        "{{ let __disc = {accessor} as u32; \
+                         write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                    ));
+                }
             } else {
                 w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
             }
@@ -345,18 +378,20 @@ pub(crate) fn emit_write_expr(
     }
 }
 
-fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let v = vl.version;
 
     w.line(&format!(
-        "pub fn encode_v{v}(__buf: &mut Vec<u8>, __value: &{name}) {{"
+        "pub fn encode_v{v}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}) {{"
     ));
     w.indent();
 
-    let opt_fields: Vec<&FieldLineage> = vl
-        .fields
+    // Same fixed-first reordering the decoder uses, so the wire order matches.
+    let ordered = ordered_wire_fields(schema, vl);
+    let opt_fields: Vec<&FieldLineage> = ordered
         .iter()
+        .copied()
         .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
         .collect();
     let header_bytes = opt_fields.len().div_ceil(8);
@@ -368,7 +403,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeW
         w.line("write_fixed_bytes(__buf, &__header);");
     }
 
-    for fl in &vl.fields {
+    for &fl in &ordered {
         if let ResolvedTypeRef::Optional(inner_src) = &fl.source_ty {
             emit_vn_optional_body(schema, fl, inner_src, w);
         } else {
@@ -869,14 +904,9 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            if normalize_type(&id.name) == "string" {
-                w.line(&format!(
-                    "{}(__buf, &{});",
-                    info.write_fn, info.default_expr
-                ));
-            } else {
-                w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
-            }
+            // Borrowed-string defaults (`""`) are already `&str`; every other
+            // primitive default is a plain value. Neither needs a `&`.
+            w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
         }
         ResolvedTypeRef::Scalar(id) => {
             w.line("{");
@@ -990,10 +1020,11 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
     names.sort();
     for name in names {
         let (_, resolved) = latest[name];
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
         w.line("#[allow(dead_code)]");
         w.line("#[allow(unused_variables)]");
         w.line(&format!(
-            "fn size_hint_{}(__value: &{name}) -> usize {{",
+            "fn size_hint_{}{lt}(__value: &{name}{lt}) -> usize {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -1260,12 +1291,17 @@ fn emit_size_expr(
     }
 }
 
-fn emit_size_hint_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_size_hint_vn_fn(
+    schema: &ResolvedSchema,
+    vl: &VersionLineage,
+    lt: &str,
+    w: &mut CodeWriter,
+) {
     let name = &schema.name_hint;
     let v = vl.version;
 
     w.line(&format!(
-        "pub fn size_hint_v{v}(__value: &{name}) -> usize {{"
+        "pub fn size_hint_v{v}{lt}(__value: &{name}{lt}) -> usize {{"
     ));
     w.indent();
 

@@ -1,8 +1,8 @@
 # Pojoc
 
-A schema compiler for a compact binary wire format, built around one idea: **your schema should be allowed to change shape over time without breaking data you already wrote.**
+A schema compiler for a compact binary wire format, built around first-class schema evolution over time. It allows you to encode and decode to and from any version defined in the schema.
 
-You describe your data as a sequence of `version N { ... }` blocks. Each version can add, remove, rename, or retype fields relative to the last. Pojoc compiles that into a single Rust struct (always reflecting the latest shape) plus per-version encode/decode functions that know how to translate old wire data into it — so a `v1` blob you serialized years ago still decodes cleanly against your `v9` code.
+Here is an example of a schema in pojoc:
 
 ```pojoc
 schema Player {
@@ -23,41 +23,33 @@ schema Player {
   }
 
   version 2 {
-    // Stats@1 -> Stats@2: grew a field, same identity
+    // you can even evolve types with diff syntax!
     type Stats extends Stats@1 {
       + luck: i32 = 0
     }
 
     diff {
-      ~ name -> display_name: string   // renamed, same wire slot
-      + level: i32 = 1                 // new field, old data defaults to 1
-      ~ stats: Stats                   // re-pin to the v2 shape
+      ~ name -> display_name: string   // renamed
+      + level: i32 = 1                 // new field, decoding older data makes this field decode to 1.
+      ~ stats: Stats                   // even if you evolved the type,
+        // it still counts as a new type 
+        // so you have to retype the field 
+        // for it to take effect
     }
   }
 }
 ```
 
-`cargo run -p pojoc-cli -- build player.pojoc --out-dir src/generated` turns that into a Rust module with `encode`/`decode`/`encode_for_version`/`supported_versions` — no hand-written migration code, no separate IDL runtime to link against. Or skip the CLI and call [`pojoc-build`](https://crates.io/crates/pojoc-build) directly from your own `build.rs`.
+Running the build command in the cli (`pojoc build <file.pojoc>`) will generate a .rs file in the out dir (default is `out/`, can be changed with the --out-dir argument) with encoding and decoding functions to convert the generated structs into `Vec<u8>` and then decode from `&[u8]`.
+
+See [`docs/schema.md`](docs/schema.md) for the full schema language reference.
 
 ## What you get
 
-- **Schema evolution as a first-class concept** — `extends`/`diff` for structs, enums, unions, and bitsets, with stable field identity preserved across renames so old and new wire data stay compatible.
-- **Generics** — `type Box<T> { value: T }`, monomorphized at compile time into ordinary structs, including generic-aware evolution (`extends` can cross template names, add or drop type parameters) and `as Alias` when you want to name an instantiation yourself.
-- **A wire format built for size**, not just speed: varint integers, delta-encoded integer arrays, quantized floats (`vfloat(min, max, step)` packs a bounded float into as few bits as the range needs), fixed-size arrays/strings/maps with no length prefix, and lazy fields that skip decoding entirely until touched.
-- **Cross-schema imports** (`import "other.pojoc" as Other`) compiled as nested modules, no extra build step.
-- **Editor support** — a language server (`pojoc-lsp`) with real completions (including type-parameter- and generic-aware suggestions) backing both a VS Code extension and a JetBrains plugin.
-
-## Project layout
-
-| Crate | What it is |
-|---|---|
-| `pojoc` | Runtime support library the generated code depends on (varints, wire types, the envelope format) |
-| `pojoc-build` | Compile `.pojoc` files from `build.rs`; bundles the lexer/parser/IR analyzer/codegen internally |
-| `pojoc-cli` | `pojoc check` / `pojoc build`, thin wrapper over `pojoc-build` |
-| `pojoc-lsp` | Language server powering the editor extensions, also built on `pojoc-build` |
-| `pojoc-tests` | Round-trip tests and cross-format benchmarks |
-
-Editor tooling lives outside the Cargo workspace: `vscode-extension/` (TypeScript) and `jetbrains-plugin/` (Kotlin/Gradle).
+- **Schema evolution working perfectly out of the box**, you can decode from and encode to any version.
+- **An uber-compact wire format**: varint integers, delta-encoded integer arrays, quantized floats (`vfloat(min, max, step)` packs a ranged float into as few bytes as the range needs), fixed-size arrays/strings/maps with no length prefix, and lazy fields that skip decoding entirely until touched.
+- **Cross-schema imports** (`import "other.pojoc" as Other`) compiled as nested modules, can then be referenced as a type via `field: Other@1`.
+- **Editor support**. A language server (`pojoc-lsp`) with real completions and hover support, used in both a VS Code extension and a JetBrains plugin.
 
 ## Using it in your project
 
@@ -76,40 +68,52 @@ fn main() {
 
 Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module.
 
-## Building
+## Building n' Testing
+
+plain ole' cargo, nothing special here.
 
 ```sh
-cargo build --workspace
-cargo test --workspace
+cargo build
+cargo test 
 ```
-
-See `CLAUDE.md` for the less-obvious parts of the build (external tools needed by the benchmark/comparison crate, rebuilding the editor extensions' bundled LSP binary, etc.).
 
 ## Benchmarks
 
-Measured with [Criterion](https://github.com/bheisler/criterion.rs) against the same `Player` schema encoded in Protobuf, Cap'n Proto, FlatBuffers, and Bebop (`cargo bench -p pojoc-tests`). Numbers are one machine, one run — treat them as a shape, not a guarantee, and re-run locally if it matters for your decision.
+Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo bench` to see these results yourself. The schema definitions are in `/crates/tests/schemas` and benches themselves are in `/crates/tests/benches` if you want to review them.
 
-**Serialized size** (identical populated message, bytes — smaller is better):
+**Serialized size** (identical populated message, bytes. Smaller is better):
 
-| Format | Bytes |
-|---|---|
-| **Pojoc** | **719** |
-| Protobuf | 842 |
-| Bebop | 1,099 |
-| FlatBuffers | 2,000 |
-| Cap'n Proto | 2,128 |
+| Format      | Bytes   |
+|-------------|---------|
+| **Pojoc**   | **429** |
+| Protobuf    | 463     |
+| Bebop       | 634     |
+| FlatBuffers | 944     |
+| Cap'n Proto | 1,008   |
 
 **Encode / decode / full round-trip** (nanoseconds, lower is better):
 
-| Format | Encode | Decode | Round-trip |
-|---|---:|---:|---:|
-| Cap'n Proto | 1,077 | **112** | 1,152 |
-| **Pojoc** | **853** | 1,129 | 2,263 |
-| Bebop | 1,401 | 983 | 2,772 |
-| FlatBuffers | 2,324 | 2,072 | 4,457 |
-| Protobuf | 3,099 | 3,368 | 6,241 |
+| Format      |  Encode | Decode | Round-trip |
+|-------------|--------:|-------:|-----------:|
+| **Pojoc**   | **233** |    250 |    **492** |
+| Cap'n Proto |     532 | **90** |        628 |
+| Bebop       |     554 |    322 |        857 |
+| FlatBuffers |     920 |    690 |      1,680 |
+| Protobuf    |     903 |  1,517 |      2,630 |
 
-Cap'n Proto's decode is essentially free because it's zero-copy (reading is pointer arithmetic over the wire buffer, not deserialization) — that's a real, deliberate design trade-off on its part, not a fluke. Pojoc trades that zero-copy property for a smaller wire size and still comes out fastest on encode and second-fastest end-to-end; `lazy` fields exist specifically for cases where you want decode-on-demand back for the fields that need it, without giving it up everywhere.
+Cap'n Proto gets a slight edge here because they are zero-copy (flatbuffers is too, no idea why they are so slow tho). Pojoc isn't, so they naturally get an edge there. However, with pojoc's lazy keyword you can theoretically get near zero-copy speeds and defer actually loading them until needed. Also with Cap'n Proto's zero-copy approach, they end up copying the entire memory profile plus lookup tables into the output, severely bloating its results. With pojoc being unbelievably efficient in encoding it is still the **fastest end-to-end**.
+
+## Project Layout
+
+| Crate         | What it is                                                             |
+|---------------|------------------------------------------------------------------------|
+| `pojoc`       | Runtime support library the generated code depends on.                 |
+| `pojoc-build` | Compile `.pojoc` files.                                                |
+| `pojoc-cli`   | `pojoc check` / `pojoc build`, thin wrapper over `pojoc-build`         |
+| `pojoc-lsp`   | Language server powering the editor extensions, built on `pojoc-build` |
+| `pojoc-tests` | Round-trip tests and cross-format benchmarks                           |
+
+Editor tooling lives outside the Cargo workspace: `vscode-extension/` (TypeScript) and `jetbrains-plugin/` (Kotlin/Gradle).
 
 ## License
 

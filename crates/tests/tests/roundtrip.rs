@@ -3,12 +3,21 @@ use helpers::*;
 use pojoc::{LazyView, pojvec};
 use pojoc_tests::pojoc_edge::*;
 
+/// Decode into a `'static` value by leaking a copy of the buffer. Decoded
+/// strings are borrowed (`&'buf str`), so to compare a decoded `Edge` against a
+/// `'static`-built original with plain `assert_eq!` (homogeneous `PartialEq`),
+/// both must share the `'static` lifetime. Test-only; the leak is reclaimed at
+/// process exit.
+fn decode_static(buf: &[u8]) -> Edge<'static> {
+    decode(Vec::leak(buf.to_vec())).expect("decode failed")
+}
+
 #[test]
 fn test_roundtrip_default() {
     let original = Edge::default();
     let mut buf = Vec::new();
     encode(&mut buf, &original);
-    let decoded = decode(&buf).expect("decode failed");
+    let decoded = decode_static(&buf);
     assert_edge_eq(&original, &decoded);
 }
 
@@ -17,7 +26,7 @@ fn test_roundtrip_populated() {
     let original = make_populated_edge();
     let mut buf = Vec::new();
     encode(&mut buf, &original);
-    let decoded = decode(&buf).expect("decode failed");
+    let decoded = decode_static(&buf);
     assert_edge_eq(&original, &decoded);
 }
 
@@ -53,7 +62,7 @@ fn test_encode_for_version_populated_stable_fields_survive_all_versions() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)
             .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
-        let decoded = decode(&buf).unwrap_or_else(|e| panic!("v{version}: decode failed: {e:?}"));
+        let decoded = decode_static(&buf);
 
         assert_eq!(
             decoded.u8_to_i64, original.u8_to_i64,
@@ -239,7 +248,7 @@ fn test_lazy_field_owned_roundtrip() {
 
     let mut buf = Vec::new();
     encode(&mut buf, &e);
-    let decoded = decode(&buf).expect("decode failed");
+    let decoded = decode_static(&buf);
 
     let value = decoded.lazy_audit_log.get().expect("lazy get failed");
     assert_eq!(value, expected);

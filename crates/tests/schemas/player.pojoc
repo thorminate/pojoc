@@ -104,7 +104,6 @@
       ~ callsign: string
       ~ region: Region
       + recent_zones: [string](8) = [..""]
-      + chat_history: [string](32) = [..""]
     }
   }
 
@@ -141,9 +140,6 @@
     diff {
       + active_perks: Perks = 0
       + account_flags: Flags = 0
-      + quest_progress: map<string, i32> = {}
-      + quick_slots: map<i32, string>(8) = {1: "", 2: "", 3: "", 4: "", 5: "", 6: "", 7: "", 8: ""}
-      + skill_levels: map<string, f32> = {}
       + loadout: [(string, i32)](4) = [..("", 0)]
     }
   }
@@ -169,8 +165,6 @@
       ~ active_perks: Perks
       ~ account_flags: Flags
       ~ stats: Stats
-      + leaderboard_scores: map<string, i64> = {}
-      ~ quick_slots: map<i32, string>(10)
       + party_members: [u32](4) = [..0]
       + last_position: (f32, f32, f32) = (0.0, 0.0, 0.0)
     }
