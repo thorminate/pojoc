@@ -48,7 +48,7 @@ fn make_pojoc_buf() -> Vec<u8> {
                 6
             ],
 
-            callsign: pojstr!("NONE00"),
+            callsign: "NONE00",
             session_token: pojstr!("SESSION000000000", 16),
             guild_tag: pojstr!("IRON", 4),
             status_code: pojstr!("00000000", 8),

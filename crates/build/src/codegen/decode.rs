@@ -36,9 +36,14 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     for name in names {
         let (_, resolved) = latest[name];
         let fn_name = format!("read_{}", name.to_snake_case());
+        let (lt, buf_ty) = if is_infected(name) {
+            ("<'buf>", "&'buf [u8]")
+        } else {
+            ("", "&[u8]")
+        };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
+            "fn {fn_name}{lt}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lt}> {{"
         ));
         w.indent();
 
@@ -157,6 +162,15 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
                     variant.name
                 );
             }
+            // A borrowed `&'buf str` payload would require the union enum to
+            // carry `<'buf>`, which isn't generated. Fail loudly instead of
+            // emitting code that won't compile.
+            assert!(
+                !crate::codegen::field_carries_borrowed_string(&variant.payload),
+                "union `{name}` variant `{}` carries a borrowed string payload — \
+                 borrowed strings inside union payloads aren't supported yet",
+                variant.name
+            );
         }
 
         let fn_name = format!("read_{}", name.to_snake_case());
@@ -1064,10 +1078,19 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let rust_ty = type_info(ty).rust_type;
 
         let some_name = format!("{target_name}_read");
+        // If the decoded value borrows the buffer (`&'buf str` or an infected
+        // nested type), the reader must be generic over the input lifetime and
+        // tie it to the output, so it coerces to `LazyView`'s `fn(&'buf [u8])
+        // -> PojocResult<T>` pointer.
+        let (lt, buf_ty) = if rust_ty.contains("'buf") {
+            ("<'buf>", "&'buf [u8]")
+        } else {
+            ("", "&[u8]")
+        };
         if emitted.insert(some_name.clone()) {
             w.line("#[allow(dead_code)]");
             w.line(&format!(
-                "fn {some_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{rust_ty}> {{"
+                "fn {some_name}{lt}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{rust_ty}> {{"
             ));
             w.indent();
             if is_optional {

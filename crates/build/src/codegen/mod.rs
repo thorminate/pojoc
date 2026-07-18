@@ -4,7 +4,10 @@ mod encode;
 mod structs;
 pub mod writer;
 
-use crate::core::types::{ResolvedTypeRef, WireSize, contains_fixed_map, is_primitive, type_info};
+use crate::core::types::{
+    ResolvedTypeRef, WireSize, contains_fixed_map, is_primitive, normalize_type, set_infected,
+    type_info,
+};
 use crate::schema::ir::ir_types::{DefaultValue, ResolvedSchema};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
@@ -77,9 +80,22 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.line("use serde::{Serialize, Deserialize};");
     w.blank();
 
-    // this gets a set of all structs that need to have a lifetime for the buffer.
-    // lifetimes are needed for lazy-loaded fields so the buffer can be read in a memory-safe way.
+    // Types that need a `<'buf>` lifetime: those holding a `lazy` field or a
+    // borrowed `&'buf str` (directly or transitively). `type_info` renders these
+    // names with `<'buf>` wherever they nest, via the thread-local set installed
+    // below. The set also carries module-qualified imported roots that are
+    // infected (e.g. `player::Player`), so imported fields carry the lifetime.
     let infected = compute_lifetime_infected(schema);
+    let mut infected_types = infected.clone();
+    for (alias, imported) in &schema.imports {
+        let imp_inf = compute_lifetime_infected(imported);
+        if imp_inf.contains(imported.name_hint.as_str()) {
+            infected_types.insert(format!("{}::{}", alias.to_snake_case(), imported.name_hint));
+        }
+    }
+    // Install our set; nested `generate` calls for imported submodules swap in
+    // their own set and restore ours on return, so ordering is safe.
+    let prev = set_infected(infected_types);
 
     emit_imported_submodules(schema, &mut w);
 
@@ -91,11 +107,13 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     emit_dispatcher(schema, &infected, &mut w);
     w.blank();
     encode::emit_size_hint_helpers(schema, &mut w);
-    encode::emit_size_hint_vn_functions(schema, &mut w);
+    encode::emit_size_hint_vn_functions(schema, &infected, &mut w);
     encode::emit_encode_helpers(schema, &mut w);
-    encode::emit_encode_vn_functions(schema, &mut w);
+    encode::emit_encode_vn_functions(schema, &infected, &mut w);
 
-    w.finish()
+    let result = w.finish();
+    set_infected(prev);
+    result
 }
 
 fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
@@ -127,8 +145,9 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
     w.line("}");
     w.blank();
 
+    let ref_lt = if needs_lifetime { "<'_>" } else { "" };
     w.line(&format!(
-        "pub fn encode(buf: &mut Vec<u8>, value: &{name}) {{"
+        "pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) {{"
     ));
     w.indent();
     w.line(&format!("buf.reserve(size_hint_v{latest}(value));"));
@@ -144,7 +163,7 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
     w.blank();
 
     w.line(&format!(
-        "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}, version: u64) -> PojocResult<()> {{"
+        "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}{ref_lt}, version: u64) -> PojocResult<()> {{"
     ));
     w.indent();
     w.line("let hint = match version {");
@@ -200,7 +219,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 f.to_string()
             }
         }
-        DefaultValue::Str(s) => format!("PojocString::const_new({s:?})"),
+        DefaultValue::Str(s) => format!("{s:?}"),
         DefaultValue::Array(els) => {
             if els.is_empty() {
                 "PojocVec::new()".to_string()
@@ -312,19 +331,46 @@ where
     latest
 }
 
+/// A field that (directly or nested) carries a borrowed `&'buf str` forces its
+/// container to carry the `'buf` lifetime — exactly like a `lazy` field does.
+/// Only meaningful under [`borrow_strings`]; named-type nesting is handled by
+/// the propagation loop below via [`field_type_name`].
+pub(crate) fn field_carries_borrowed_string(ty: &ResolvedTypeRef) -> bool {
+    match ty {
+        ResolvedTypeRef::Scalar(id) => normalize_type(&id.name) == "string",
+        ResolvedTypeRef::Array(inner)
+        | ResolvedTypeRef::FixedArray(inner, _)
+        | ResolvedTypeRef::Optional(inner) => field_carries_borrowed_string(inner),
+        ResolvedTypeRef::Tuple(elems) => elems.iter().any(field_carries_borrowed_string),
+        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
+            field_carries_borrowed_string(k) || field_carries_borrowed_string(v)
+        }
+        _ => false,
+    }
+}
+
 fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
     let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
 
     let mut infected: HashSet<String> = latest
         .iter()
-        .filter(|(_, (_, resolved))| resolved.fields.iter().any(|f| f.lazy))
+        .filter(|(_, (_, resolved))| {
+            resolved
+                .fields
+                .iter()
+                .any(|f| f.lazy || field_carries_borrowed_string(&f.ty))
+        })
         .map(|(name, _)| name.clone())
         .collect();
 
     if schema
         .versions
         .last()
-        .map(|v| v.fields.iter().any(|f| f.lazy))
+        .map(|v| {
+            v.fields
+                .iter()
+                .any(|f| f.lazy || field_carries_borrowed_string(&f.ty))
+        })
         .unwrap_or(false)
     {
         infected.insert(schema.name_hint.clone());
@@ -337,9 +383,9 @@ fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
                 continue;
             }
             let newly_infected = resolved.fields.iter().any(|f| {
-                field_type_name(&f.ty)
-                    .map(|n| infected.contains(n))
-                    .unwrap_or(false)
+                let mut names = Vec::new();
+                field_type_names(&f.ty, &mut names);
+                names.iter().any(|n| infected.contains(n))
             });
             if newly_infected {
                 infected.insert(name.clone());
@@ -354,13 +400,23 @@ fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
     infected
 }
 
-fn field_type_name(ty: &ResolvedTypeRef) -> Option<&str> {
+/// Names of infected named types this field transitively references, so a
+/// struct/map/tuple holding an infected named type is itself infected. (Direct
+/// borrowed strings are handled separately by `field_carries_borrowed_string`.)
+fn field_type_names(ty: &ResolvedTypeRef, out: &mut Vec<String>) {
     match ty {
-        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Some(&id.name),
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => out.push(id.name.clone()),
         ResolvedTypeRef::Array(inner)
         | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::Optional(inner) => field_type_name(inner),
-        _ => None,
+        | ResolvedTypeRef::DeltaArray(inner)
+        | ResolvedTypeRef::FixedDeltaArray(inner, _)
+        | ResolvedTypeRef::Optional(inner) => field_type_names(inner, out),
+        ResolvedTypeRef::Tuple(elems) => elems.iter().for_each(|e| field_type_names(e, out)),
+        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
+            field_type_names(k, out);
+            field_type_names(v, out);
+        }
+        _ => {}
     }
 }
 

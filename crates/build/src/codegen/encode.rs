@@ -11,9 +11,18 @@ pub fn emit_encode_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_union_writers(schema, w);
 }
 
-pub fn emit_encode_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_encode_vn_functions(
+    schema: &ResolvedSchema,
+    infected: &std::collections::HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let lt = if infected.contains(schema.name_hint.as_str()) {
+        "<'buf>"
+    } else {
+        ""
+    };
     for vl in &schema.lineage.versions {
-        emit_encode_vn_fn(schema, vl, w);
+        emit_encode_vn_fn(schema, vl, lt, w);
         w.blank();
     }
 }
@@ -23,9 +32,18 @@ pub fn emit_size_hint_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     emit_union_size_hints(schema, w);
 }
 
-pub fn emit_size_hint_vn_functions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_size_hint_vn_functions(
+    schema: &ResolvedSchema,
+    infected: &std::collections::HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let lt = if infected.contains(schema.name_hint.as_str()) {
+        "<'buf>"
+    } else {
+        ""
+    };
     for vl in &schema.lineage.versions {
-        emit_size_hint_vn_fn(schema, vl, w);
+        emit_size_hint_vn_fn(schema, vl, lt, w);
         w.blank();
     }
 }
@@ -116,9 +134,10 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         } else {
             ("__buf", "__value")
         };
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}({__buf}: &mut Vec<u8>, {val}: &{name}) {{",
+            "fn write_{}{lt}({__buf}: &mut Vec<u8>, {val}: &{name}{lt}) {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -203,11 +222,9 @@ pub(crate) fn emit_write_expr(
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
-                w.line(&format!(
-                    "{}(__buf, {}{accessor});",
-                    info.write_fn,
-                    if is_ref { "" } else { "&" }
-                ));
+                // Field is already a `&str`; pass it straight through.
+                // Deref coercion collapses any `&&str` from array iterators.
+                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             } else {
                 w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             }
@@ -361,12 +378,12 @@ pub(crate) fn emit_write_expr(
     }
 }
 
-fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let v = vl.version;
 
     w.line(&format!(
-        "pub fn encode_v{v}(__buf: &mut Vec<u8>, __value: &{name}) {{"
+        "pub fn encode_v{v}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}) {{"
     ));
     w.indent();
 
@@ -1008,10 +1025,11 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
     names.sort();
     for name in names {
         let (_, resolved) = latest[name];
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
         w.line("#[allow(dead_code)]");
         w.line("#[allow(unused_variables)]");
         w.line(&format!(
-            "fn size_hint_{}(__value: &{name}) -> usize {{",
+            "fn size_hint_{}{lt}(__value: &{name}{lt}) -> usize {{",
             name.to_snake_case()
         ));
         w.indent();
@@ -1278,12 +1296,12 @@ fn emit_size_expr(
     }
 }
 
-fn emit_size_hint_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+fn emit_size_hint_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let v = vl.version;
 
     w.line(&format!(
-        "pub fn size_hint_v{v}(__value: &{name}) -> usize {{"
+        "pub fn size_hint_v{v}{lt}(__value: &{name}{lt}) -> usize {{"
     ));
     w.indent();
 
