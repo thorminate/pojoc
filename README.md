@@ -42,7 +42,7 @@ schema Player {
 
 Running the build command in the cli (`pojoc build <file.pojoc>`) will generate a .rs file in the out dir (default is `out/`, can be changed with the --out-dir argument) with encoding and decoding functions to convert the generated structs into `Vec<u8>` and then decode from `&[u8]`.
 
-See [`docs/schema.md`](docs/schema.md) for the full schema language reference — every type, modifier, default, and the evolution syntax.
+See [`docs/schema.md`](docs/schema.md) for the full schema language reference.
 
 ## What you get
 
