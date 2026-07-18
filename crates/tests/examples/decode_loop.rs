@@ -23,7 +23,7 @@ fn make_pojoc_buf() -> Vec<u8> {
             stats: Stats { strength: 14, agility: 8, intelligence: 11, endurance: 10, charisma: 6, resistance: 0.25 },
             inventory: pojvec!["sword", "shield", "healing_potion", "torch", "rope"],
             hotbar: pojvec!["sword", "healing_potion", "torch", "", "", ""; 6],
-            callsign: pojstr!("NONE00"),
+            callsign: "NONE00",
             session_token: pojstr!("SESSION000000000", 16),
             guild_tag: pojstr!("IRON", 4),
             status_code: pojstr!("00000000", 8),

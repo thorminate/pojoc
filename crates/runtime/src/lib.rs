@@ -11,7 +11,6 @@ pub use error::*;
 use std::borrow::Borrow;
 pub use varint::*;
 
-pub use compact_str::CompactString as PojocString;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -181,14 +180,21 @@ pub use serde_bytes::Bytes as SerdeBytes;
 pub enum LazyView<'buf, T> {
     Raw {
         buf: &'buf [u8],
-        decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>,
+        // Input is `&'buf [u8]` (not an elided/fresh lifetime) so that a decoded
+        // `T` which itself borrows the buffer (e.g. `Foo<'buf>` with zero-copy
+        // strings) type-checks: a generic reader `for<'a> fn(&'a [u8]) -> Foo<'a>`
+        // coerces to this fixed-`'buf` pointer, and owned readers coerce too.
+        decode_fn: fn(&'buf [u8], &mut usize) -> PojocResult<T>,
     },
     Owned(T),
 }
 
 impl<'buf, T> LazyView<'buf, T> {
     #[inline]
-    pub const fn new(buf: &'buf [u8], decode_fn: fn(&[u8], &mut usize) -> PojocResult<T>) -> Self {
+    pub const fn new(
+        buf: &'buf [u8],
+        decode_fn: fn(&'buf [u8], &mut usize) -> PojocResult<T>,
+    ) -> Self {
         Self::Raw { buf, decode_fn }
     }
 
@@ -286,6 +292,10 @@ macro_rules! pojvec {
     }};
 }
 
+/// Build a fixed-size byte array (`[u8; N]`) for a `FixedString` field from a
+/// string literal, asserting the length matches at compile time. Non-fixed
+/// `string` fields decode as borrowed `&str`, so a plain string literal is used
+/// for those directly — there is no owned-string constructor.
 #[macro_export]
 macro_rules! pojstr {
     ($s:literal, $n:expr) => {{
@@ -295,8 +305,6 @@ macro_rules! pojstr {
         );
         *$s.as_bytes().first_chunk::<$n>().unwrap()
     }};
-
-    ($s:expr) => {{ $crate::PojocString::from($s) }};
 }
 
 #[macro_export]

@@ -7,7 +7,7 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.bounds_enum = NumericBounds::ExtraVariant;
     e.system_perms = SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS;
     e.nullified_str = Some("VersionTest".into());
-    e.empty_arr.push(pojstr!("v"));
+    e.empty_arr.push("v");
     e.root_struct.leaf.leaf_val = "leaf".into();
     e.root_struct.leaf.leaf_numeric = 1;
     e.updated_imported_player.player_id = 12345.0;
@@ -50,8 +50,8 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.fixed_str_min = [10, 20, 30, 40, 50, 60, 70, 80];
 
     // Collections
-    e.empty_arr.push(pojstr!("FirstElement"));
-    e.empty_arr.push(pojstr!("SecondElement"));
+    e.empty_arr.push("FirstElement");
+    e.empty_arr.push("SecondElement");
     e.array_to_map.insert(5, 25);
     e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
@@ -180,7 +180,7 @@ pub fn make_populated_edge() -> Edge<'static> {
     e
 }
 
-fn make_player_value() -> player::Player {
+fn make_player_value() -> player::Player<'static> {
     let mut p = player::Player::default();
 
     p.player_id = 42.0;
@@ -189,8 +189,8 @@ fn make_player_value() -> player::Player {
     p.class = player::Class::Necromancer;
     p.region = player::Region::Void;
 
-    p.inventory.push(pojstr!("Sword"));
-    p.inventory.push(pojstr!("Shield"));
+    p.inventory.push("Sword");
+    p.inventory.push("Shield");
     p.callsign = "Ghost".into();
 
     p.stats = player::Stats {
@@ -202,9 +202,9 @@ fn make_player_value() -> player::Player {
         resistance: 3.5,
     };
 
-    p.hotbar = std::array::from_fn(|_| PojocString::default());
-    p.hotbar[0] = pojstr!("sword");
-    p.hotbar[1] = pojstr!("shield");
+    p.hotbar = std::array::from_fn(|_| "");
+    p.hotbar[0] = "sword";
+    p.hotbar[1] = "shield";
 
     p.session_token = *b"PLAYERTOKEN12345";
     p.coordinates = (1.5, 2.5);
@@ -216,7 +216,7 @@ fn make_player_value() -> player::Player {
     };
     p.kill_death = (5, 2);
 
-    p.tags.push(pojstr!("vip"));
+    p.tags.push("vip");
 
     p.transform = player::Transform {
         position: player::Vector3 {
@@ -233,8 +233,8 @@ fn make_player_value() -> player::Player {
         },
     };
 
-    p.recent_zones = std::array::from_fn(|_| PojocString::default());
-    p.recent_zones[0] = pojstr!("zoneA");
+    p.recent_zones = std::array::from_fn(|_| "");
+    p.recent_zones[0] = "zoneA";
 
     p.velocity = (0.1, 0.2, 0.3);
     p.status_code = *b"OK000000";
@@ -248,9 +248,9 @@ fn make_player_value() -> player::Player {
     p.active_perks = player::Perks::DOUBLE_JUMP | player::Perks::TELEKINESIS;
     p.account_flags = player::Flags::IS_VERIFIED | player::Flags::IS_DEVELOPER;
 
-    p.loadout = std::array::from_fn(|_| (PojocString::default(), 0i32));
-    p.loadout[0] = (pojstr!("sword"), 1);
-    p.loadout[1] = (pojstr!("shield"), 1);
+    p.loadout = std::array::from_fn(|_| ("", 0i32));
+    p.loadout[0] = ("sword", 1);
+    p.loadout[1] = ("shield", 1);
 
     p.party_members = [1, 2, 3, 4];
     p.last_position = (5.0, 5.0, 5.0);
@@ -316,7 +316,10 @@ pub fn assert_sensor_frame_eq(a: &SensorFrame, b: &SensorFrame) {
     assert_eq!(a.sample_ids, b.sample_ids);
 }
 
-pub fn assert_deep_complex_wrapper_eq(a: &DeepComplexWrapper, b: &DeepComplexWrapper) {
+pub fn assert_deep_complex_wrapper_eq<'buf>(
+    a: &DeepComplexWrapper<'buf>,
+    b: &DeepComplexWrapper<'buf>,
+) {
     assert_eq!(a.frame_deltas, b.frame_deltas);
     assert_eq!(a.matrix, b.matrix);
 }
@@ -385,7 +388,7 @@ pub fn assert_control_signal_eq(a: &ControlSignal, b: &ControlSignal) {
     }
 }
 
-pub fn assert_edge_eq(a: &Edge, b: &Edge) {
+pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     // Scalar integer and varint conversions
     assert_eq!(a.u8_to_i64, b.u8_to_i64);
     assert_eq!(a.i64_to_f32, b.i64_to_f32);

@@ -1,4 +1,4 @@
-use crate::{Error, PojocResult, PojocString, read_varint64};
+use crate::{Error, PojocResult, read_varint64};
 
 /// Read a single `u8`.
 #[inline]
@@ -219,12 +219,6 @@ pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
 #[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
     Ok(read_varint64(buf, pos)? as usize)
-}
-
-/// Read a length-prefixed UTF-8 string from `buf` at `*pos` and return it as a [`PojocString`].
-#[inline]
-pub fn read_pojoc_string(buf: &[u8], pos: &mut usize) -> PojocResult<PojocString> {
-    Ok(PojocString::from(read_string(buf, pos)?))
 }
 
 /// A decoded message envelope.

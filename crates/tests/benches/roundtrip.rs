@@ -13,7 +13,7 @@ use pojoc_tests::{
 };
 use prost::Message;
 
-fn make_pojoc_player() -> Player {
+fn make_pojoc_player() -> Player<'static> {
     Player {
         player_id: 1.0,
         level: 12.5,
@@ -42,7 +42,7 @@ fn make_pojoc_player() -> Player {
             6
         ],
 
-        callsign: pojstr!("NONE00"),
+        callsign: "NONE00",
         session_token: pojstr!("SESSION000000000", 16),
         guild_tag: pojstr!("IRON", 4),
         status_code: pojstr!("00000000", 8),
