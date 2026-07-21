@@ -1,5 +1,11 @@
 # Pojoc
 
+[![CI](https://github.com/thorminate/pojoc/actions/workflows/ci.yml/badge.svg)](https://github.com/thorminate/pojoc/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/pojoc.svg)](https://crates.io/crates/pojoc)
+[![crates.io](https://img.shields.io/crates/v/pojoc-build.svg?label=pojoc-build)](https://crates.io/crates/pojoc-build)
+[![Release](https://img.shields.io/github/v/release/thorminate/pojoc)](https://github.com/thorminate/pojoc/releases)
+[![License](https://img.shields.io/github/license/thorminate/pojoc)](LICENSE)
+
 A schema compiler for a compact binary wire format, built around first-class schema evolution over time. It allows you to encode and decode to and from any version defined in the schema.
 
 Here is an example of a schema in pojoc:
