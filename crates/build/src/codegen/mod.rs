@@ -76,8 +76,10 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.blank();
     w.line("pub mod runtime { pub use pojoc::*; }");
     w.line("use runtime::*;");
-    w.line("#[allow(unused_imports)]");
-    w.line("use serde::{Serialize, Deserialize};");
+    if cfg!(feature = "serde") {
+        w.line("#[allow(unused_imports)]");
+        w.line("use serde::{Serialize, Deserialize};");
+    }
     w.blank();
 
     // Types that need a `<'buf>` lifetime: those holding a `lazy` field or a

@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! let out_dir = std::env::var("OUT_DIR").unwrap();
-//! pojoc_build::compile_dir("schemas", &out_dir).unwrap_or_else(|e| panic!("{e}"));
+//! pojoc_build::compile_dir("schemas", &out_dir).unwrap_or_else(|e| panic!("\n{}", e.render()));
 //! ```
 //!
 //! Writes one `<stem>.rs` per `.pojoc` file into `out_dir`, and emits the
@@ -38,6 +38,25 @@ pub enum Error {
 
     #[error("schema path {0} has no file stem")]
     NoFileStem(PathBuf),
+}
+
+impl Error {
+    /// Renders this error with source context where available: a `file:line:col`
+    /// location and a caret pointing at the offending span, matching `pojoc
+    /// check`/`pojoc build`'s output. Other error kinds (I/O, missing file stem)
+    /// fall back to the plain message. Intended for `build.rs`:
+    ///
+    /// ```no_run
+    /// let out_dir = std::env::var("OUT_DIR").unwrap();
+    /// pojoc_build::compile_dir("schemas", &out_dir)
+    ///     .unwrap_or_else(|e| panic!("\n{}", e.render()));
+    /// ```
+    pub fn render(&self) -> String {
+        match self {
+            Error::Analysis { path, source } => source.render(path),
+            other => other.to_string(),
+        }
+    }
 }
 
 /// Compiles a single `.pojoc` file, writing `out_dir/<stem>.rs`. Returns the path written to.

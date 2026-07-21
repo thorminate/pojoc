@@ -3,6 +3,7 @@
 [![CI](https://github.com/thorminate/pojoc/actions/workflows/ci.yml/badge.svg)](https://github.com/thorminate/pojoc/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/pojoc.svg)](https://crates.io/crates/pojoc)
 [![crates.io](https://img.shields.io/crates/v/pojoc-build.svg?label=pojoc-build)](https://crates.io/crates/pojoc-build)
+[![crates.io](https://img.shields.io/crates/v/pojoc-cli.svg?label=pojoc-cli)](https://crates.io/crates/pojoc-cli)
 [![Release](https://img.shields.io/github/v/release/thorminate/pojoc)](https://github.com/thorminate/pojoc/releases)
 [![License](https://img.shields.io/github/license/thorminate/pojoc)](LICENSE)
 
@@ -64,26 +65,67 @@ See [`docs/schema.md`](docs/schema.md) for the full schema language reference.
 ```sh
 cargo add pojoc
 cargo add --build pojoc-build
+cargo add serde --features derive
+```
+
+Want to compile schemas from the command line instead (CI checks, editor-less
+validation, etc.)? Install the CLI:
+
+```sh
+cargo install pojoc-cli
+pojoc build schemas/player.pojoc   # writes out/player.rs
+pojoc check schemas/player.pojoc   # validate without writing output
 ```
 
 ```rust,no_run
 // build.rs
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    pojoc_build::compile_dir("schemas", &out_dir).unwrap_or_else(|e| panic!("{e}"));
+    pojoc_build::compile_dir("schemas", &out_dir).unwrap_or_else(|e| panic!("\n{}", e.render()));
 }
 ```
 
-Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module.
+`Error::render` gives the same `file:line:col` + caret-pointing-at-the-mistake
+output as `pojoc check`, so a broken schema fails the build with something
+readable instead of a bare one-line message.
+
+Generated types derive `Serialize`/`Deserialize`, so `serde` (with the `derive`
+feature) needs to be a direct dependency too. If you don't want that, disable
+it: `cargo add pojoc --no-default-features` and
+`cargo add --build pojoc-build --no-default-features` (the `pojoc`/`pojoc-build`
+`serde` feature must be turned off on *both* to stay consistent).
+
+Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module. That gives you `encode_vN(&mut Vec<u8>, &T)` / `decode_vN(&[u8], &mut usize) -> PojocResult<T>` for the latest and every prior version:
+
+```rust,no_run
+include!(concat!(env!("OUT_DIR"), "/player.rs"));
+
+fn main() {
+    let player = Player::default();
+
+    let mut bytes = Vec::new();
+    encode_v2(&mut bytes, &player);
+
+    let mut pos = 0;
+    let decoded = decode_v2(&bytes, &mut pos).unwrap();
+    assert_eq!(decoded.level, player.level);
+}
+```
 
 ## Building n' Testing
 
-plain ole' cargo, nothing special here.
+The compiler itself (`pojoc`, `pojoc-build`, `pojoc-cli`) is plain cargo, nothing special:
 
 ```sh
-cargo build
-cargo test 
+cargo build -p pojoc -p pojoc-build -p pojoc-cli
+cargo test -p pojoc -p pojoc-build
 ```
+
+`cargo build`/`cargo test` at the workspace root also pulls in `crates/tests`,
+which round-trip-tests and benchmarks Pojoc against Protobuf, Cap'n Proto,
+FlatBuffers, and Bebop from equivalent schemas — that requires `protoc`,
+`capnp`, and the `flatc` CLI on `PATH`. Skip it by scoping to the crates above
+if you don't need those comparisons.
 
 ## Benchmarks
 

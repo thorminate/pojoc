@@ -15,5 +15,12 @@ path = "src/lib.rs"
 
 [dependencies]
 smallvec = { workspace = true, features = ["const_new"] }
-serde = { workspace = true }
-serde_bytes = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_bytes = { workspace = true, optional = true }
+
+[features]
+default = ["serde"]
+# Derives Serialize/Deserialize on runtime types (PojocFixedMap, SerdeBytes)
+# to match pojoc-build-generated code. Disable on both crates together if you
+# don't want serde in your dependency tree.
+serde = ["dep:serde", "dep:serde_bytes", "smallvec/serde"]

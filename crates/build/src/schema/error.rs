@@ -475,6 +475,83 @@ impl IndexableError for AnalysisError {
     }
 }
 
+impl AnalysisError {
+    /// The file this error should be reported against — usually `root`, but
+    /// import-related errors point at the importing/imported file instead.
+    fn source_path<'a>(&'a self, root: &'a std::path::Path) -> &'a std::path::Path {
+        match self {
+            AnalysisError::ImportParseFailed { path, .. } => std::path::Path::new(path.as_str()),
+            AnalysisError::ImportNotFound { origin, .. }
+            | AnalysisError::ImportNotUtf8 { origin, .. }
+            | AnalysisError::ImportReadFailed { origin, .. }
+            | AnalysisError::CircularImport { origin, .. } => origin.as_path(),
+            _ => root,
+        }
+    }
+
+    /// Renders this error with source context: a `file:line:col` location and
+    /// a caret pointing at the offending span, matching what `pojoc check`/`pojoc
+    /// build` print. `root` is the entry-point `.pojoc` file passed to
+    /// [`compile`](crate::compile)/[`compile_dir`](crate::compile_dir) — used as
+    /// the file to read from unless this error points elsewhere (e.g. into an
+    /// import). Reads the source file from disk to build the snippet, so it may
+    /// diverge if the file changed since the error was produced.
+    pub fn render(&self, root: &std::path::Path) -> String {
+        use std::fmt::Write;
+
+        let source_path = self.source_path(root);
+        let source = std::fs::read_to_string(source_path).unwrap_or_default();
+
+        let line = self.line() as usize;
+        let span = self.span();
+        let message = self.to_string();
+
+        let display_path = source_path
+            .canonicalize()
+            .unwrap_or_else(|_| source_path.to_path_buf());
+        let display_path = display_path.display().to_string();
+        let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
+
+        let lines: Vec<&str> = source.lines().collect();
+        let line_idx = line.saturating_sub(1);
+        let line_text = lines.get(line_idx).copied().unwrap_or("");
+
+        let mut line_start = 0;
+        if line_idx > 0 {
+            let mut seen = 0;
+            for (i, b) in source.bytes().enumerate() {
+                if b == b'\n' {
+                    seen += 1;
+                    if seen == line_idx {
+                        line_start = i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let col_start = span.start.saturating_sub(line_start);
+        let col_end = span.end.saturating_sub(line_start);
+        let caret_len = col_end.saturating_sub(col_start).max(1);
+
+        let gutter = line.to_string();
+        let pad = " ".repeat(gutter.len());
+
+        let mut out = String::new();
+        let _ = writeln!(out, "error: {message}");
+        let _ = writeln!(out, " {pad} --> {display_path}:{line}:{col_start}");
+        let _ = writeln!(out, " {pad} |");
+        let _ = writeln!(out, " {gutter} | {line_text}");
+        let _ = writeln!(
+            out,
+            " {pad} | {}{}",
+            " ".repeat(col_start),
+            "^".repeat(caret_len)
+        );
+        out
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum LoadError {
     #[error("file not found")]

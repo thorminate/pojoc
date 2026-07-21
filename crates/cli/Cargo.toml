@@ -2,12 +2,18 @@
 name = "pojoc-cli"
 version.workspace = true
 edition.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Command-line compiler for .pojoc schema files (`pojoc build` / `pojoc check`)"
+readme = "../../README.md"
+keywords = ["serialization", "encoding", "binary", "schema", "codegen"]
+categories = ["encoding", "compilers", "command-line-utilities"]
 
 [[bin]]
 name = "pojoc"
 path = "src/main.rs"
 
 [dependencies]
-pojoc-build = { path = "../build" }
+pojoc-build = { path = "../build", version = "0.5.2" }
 clap = { workspace = true, features = ["derive"] }

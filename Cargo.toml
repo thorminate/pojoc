@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/thorminate/pojoc"
@@ -18,7 +18,7 @@ homepage = "https://github.com/thorminate/pojoc"
 [workspace.dependencies]
 heck = "0.5.0"
 compact_str = { version =  "0.9.1" }
-smallvec = { version = "1.15.1", features = ["serde", "union"] }
+smallvec = { version = "1.15.1", features = ["union"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_bytes = "0.11.19"

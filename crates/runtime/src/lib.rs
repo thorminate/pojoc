@@ -13,6 +13,7 @@ pub use intern::*;
 use std::borrow::Borrow;
 pub use varint::*;
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -22,7 +23,8 @@ pub type PojocVec<T> = SmallVec<[T; 8]>;
 /// A map for `map<K, V>(N)` fields, backed by a linear `PojocVec<(K, V)>`
 /// rather than hashing — lookups are O(n), which is fine for the small `N`
 /// fixed maps are declared with.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PojocFixedMap<K, V, const N: usize = 0> {
     pub inner: PojocVec<(K, V)>,
 }
@@ -182,6 +184,7 @@ impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
 
 pub use std::collections::HashMap as PojocMap;
 
+#[cfg(feature = "serde")]
 pub use serde_bytes::Bytes as SerdeBytes;
 
 /// A `lazy` field's value: either unread bytes plus the decoder to run on
