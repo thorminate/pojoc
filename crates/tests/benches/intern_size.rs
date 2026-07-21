@@ -113,10 +113,15 @@ fn main() {
     println!("Bebop:            {} bytes", bebop_buf.len());
     println!(
         "\npojoc (intern) is {:.1}x smaller than the next smallest competitor",
-        [proto_buf.len(), capnp_buf.len(), fb_buf.len(), bebop_buf.len()]
-            .into_iter()
-            .min()
-            .unwrap() as f64
+        [
+            proto_buf.len(),
+            capnp_buf.len(),
+            fb_buf.len(),
+            bebop_buf.len()
+        ]
+        .into_iter()
+        .min()
+        .unwrap() as f64
             / pojoc_interned_buf.len() as f64
     );
     println!("=====================================================================\n");
