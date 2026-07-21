@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+msg_file="${1:-.git/COMMIT_EDITMSG}"
+
+[ -f "$msg_file" ] || exit 0
+
+if grep -qiE '^Co-Authored-By:' "$msg_file"; then
+  echo "Error: commit message contains a Co-Authored-By trailer."
+  exit 1
+fi
+
+if grep -qiE '^Claude-Session:' "$msg_file"; then
+  echo "Error: commit message contains a Claude-Session trailer."
+  exit 1
+fi

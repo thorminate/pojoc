@@ -1,5 +1,5 @@
 use lsp_types::*;
-use pojoc_build::core::types::is_delta_eligible_str;
+use pojoc_build::core::types::{is_delta_eligible_str, is_primitive, normalize_type};
 use pojoc_build::schema::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -701,6 +701,7 @@ enum Ctx {
         version: Option<i128>,
     },
     VFloatParam,
+    ConstraintParam,
     BitsetLiteralField {
         bitset_name: String,
         used: HashSet<String>,
@@ -775,6 +776,7 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
     if let Some((owner, bracket, is_extends_args)) = enclosing_call(pending) {
         match (owner.as_deref(), bracket) {
             (Some("vfloat"), '(') => return Ctx::VFloatParam,
+            (Some(name), '(') if is_constrainable_scalar(name) => return Ctx::ConstraintParam,
             (Some(name), '(') if idx.bitset_names.contains(name) => {
                 let used = find_enclosing_open_paren(pending)
                     .map(|open_idx| used_bitset_flags(pending, open_idx))
@@ -1112,6 +1114,17 @@ pub fn completions_for_position(
             })
             .collect(),
 
+        Ctx::ConstraintParam => ["min", "max"]
+            .iter()
+            .map(|p| CompletionItem {
+                label: format!("{p}:"),
+                insert_text: Some(format!("{p}: $0")),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                kind: Some(CompletionItemKind::PROPERTY),
+                ..Default::default()
+            })
+            .collect(),
+
         Ctx::BitsetLiteralField {
             bitset_name,
             used,
@@ -1156,7 +1169,7 @@ pub fn completions_for_position(
         }
 
         Ctx::ArraySuffixModifier { delta_eligible } => {
-            if delta_eligible {
+            let mut items = if delta_eligible {
                 vec![
                     CompletionItem {
                         label: "delta".to_string(),
@@ -1175,7 +1188,18 @@ pub fn completions_for_position(
                 ]
             } else {
                 Vec::new()
-            }
+            };
+            // Same suffix slot also accepts `(min:, max:)`, bounding the
+            // array's element count — orthogonal to delta-eligibility.
+            items.extend(["min", "max"].iter().map(|p| CompletionItem {
+                label: format!("{p}:"),
+                insert_text: Some(format!("{p}: $0")),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some("bounds this array's element count".into()),
+                ..Default::default()
+            }));
+            items
         }
         Ctx::FileRoot => vec![snippet(
             "schema",
@@ -1402,6 +1426,12 @@ fn type_position_items(
         ..Default::default()
     });
     items.push(CompletionItem {
+        label: "intern".into(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        detail: Some("intern string — dedups repeated values into a shared table".into()),
+        ..Default::default()
+    });
+    items.push(CompletionItem {
         label: "vfloat(min, max, step)".into(),
         insert_text: Some("vfloat(min: $1, max: $2, step: $3)".into()),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
@@ -1415,8 +1445,24 @@ fn type_position_items(
         kind: Some(CompletionItemKind::SNIPPET),
         ..Default::default()
     });
+    items.push(CompletionItem {
+        label: "box<T>".into(),
+        insert_text: Some("box<$1>".into()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some("heap indirection, required for self-referencing types".into()),
+        ..Default::default()
+    });
 
     items
+}
+
+/// Whether `(min:, max:)` can follow this bare type name — every primitive
+/// except `bool` (numbers bound the value; `string` bounds byte length).
+/// Arrays/maps take the same suffix too, but that's detected separately via
+/// `array_suffix_info` since their constraint sits after a `]`, not a name.
+fn is_constrainable_scalar(name: &str) -> bool {
+    is_primitive(name) && normalize_type(name) != "bool"
 }
 
 #[derive(Debug, Clone)]
@@ -2063,5 +2109,65 @@ schema Test {
 "#,
         );
         assert!(!labels(&items).contains(&"T"));
+    }
+
+    #[test]
+    fn suggests_intern_and_box_at_type_position() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    fields {
+      x: |i32
+    }
+  }
+}
+"#,
+        );
+        assert!(labels(&items).contains(&"intern"));
+        let boxed = items
+            .iter()
+            .find(|i| i.label == "box<T>")
+            .expect("box<T> snippet not offered");
+        assert_eq!(boxed.insert_text.as_deref(), Some("box<$1>"));
+        assert_eq!(boxed.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    }
+
+    #[test]
+    fn suggests_min_max_inside_scalar_constraint_suffix() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    fields {
+      count: u8(|min: 0) = 0
+    }
+  }
+}
+"#,
+        );
+        let labels = labels(&items);
+        assert!(labels.contains(&"min:"));
+        assert!(labels.contains(&"max:"));
+        // `step` is vfloat-only, not a valid constraint parameter
+        assert!(!labels.contains(&"step:"));
+    }
+
+    #[test]
+    fn suggests_min_max_inside_array_constraint_suffix() {
+        let items = complete(
+            r#"
+schema Test {
+  version 1 {
+    fields {
+      tags: [string](|min: 0, max: 5) = []
+    }
+  }
+}
+"#,
+        );
+        let labels = labels(&items);
+        assert!(labels.contains(&"min:"));
+        assert!(labels.contains(&"max:"));
     }
 }
