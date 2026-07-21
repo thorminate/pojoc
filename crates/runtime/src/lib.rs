@@ -2,19 +2,26 @@ pub mod decode;
 pub mod delta;
 pub mod encode;
 pub mod error;
+pub mod intern;
 pub mod varint;
 
 pub use decode::*;
 pub use delta::*;
 pub use encode::*;
 pub use error::*;
+pub use intern::*;
 use std::borrow::Borrow;
 pub use varint::*;
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+/// A vector that stores up to 8 elements inline before spilling to the heap.
 pub type PojocVec<T> = SmallVec<[T; 8]>;
+
+/// A map for `map<K, V>(N)` fields, backed by a linear `PojocVec<(K, V)>`
+/// rather than hashing — lookups are O(n), which is fine for the small `N`
+/// fixed maps are declared with.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PojocFixedMap<K, V, const N: usize = 0> {
     pub inner: PojocVec<(K, V)>,
@@ -177,6 +184,8 @@ pub use std::collections::HashMap as PojocMap;
 
 pub use serde_bytes::Bytes as SerdeBytes;
 
+/// A `lazy` field's value: either unread bytes plus the decoder to run on
+/// [`get`](Self::get), or an already-decoded/constructed value.
 pub enum LazyView<'buf, T> {
     Raw {
         buf: &'buf [u8],
@@ -236,6 +245,20 @@ impl<'buf, T> std::fmt::Debug for LazyView<'buf, T> {
     }
 }
 
+/// Build a [`PojocVec`], or a fixed-size array when a `; N` length is given,
+/// converting each element with `Into` when a target element type is named.
+///
+/// ```
+/// use pojoc::{PojocVec, pojvec};
+///
+/// let empty: PojocVec<i32> = pojvec![];
+/// let typed_empty: PojocVec<u32> = pojvec![u32 =>];
+/// let filled: [u32; 4] = pojvec![u32 =>; 4];
+/// let typed: PojocVec<u32> = pojvec![u32 => 1, 2, 3];
+/// let typed_arr: [u32; 3] = pojvec![u32 => 1, 2, 3; 3];
+/// let arr: [i32; 3] = pojvec![1, 2, 3; 3];
+/// let inferred: PojocVec<i32> = pojvec![1, 2, 3];
+/// ```
 #[macro_export]
 macro_rules! pojvec {
     // pojvec![]
@@ -296,6 +319,13 @@ macro_rules! pojvec {
 /// string literal, asserting the length matches at compile time. Non-fixed
 /// `string` fields decode as borrowed `&str`, so a plain string literal is used
 /// for those directly — there is no owned-string constructor.
+///
+/// ```
+/// use pojoc::pojstr;
+///
+/// let name: [u8; 5] = pojstr!("hello", 5);
+/// assert_eq!(&name, b"hello");
+/// ```
 #[macro_export]
 macro_rules! pojstr {
     ($s:literal, $n:expr) => {{
@@ -307,6 +337,19 @@ macro_rules! pojstr {
     }};
 }
 
+/// Build a [`PojocMap`], or a [`PojocFixedMap`] when an `N` capacity is given,
+/// converting each key/value with `Into`.
+///
+/// ```
+/// use pojoc::{PojocFixedMap, PojocMap, pojmap};
+///
+/// let empty: PojocMap<i32, i32> = pojmap!();
+/// let typed_empty: PojocMap<i32, i32> = pojmap!(i32, i32);
+/// let map: PojocMap<i32, i32> = pojmap!(1 => 10, 2 => 20);
+/// let fixed_empty: PojocFixedMap<i32, i32> = pojmap!(2);
+/// let fixed_typed_empty: PojocFixedMap<i32, i32> = pojmap!(i32, i32; 2);
+/// let fixed: PojocFixedMap<i32, i32> = pojmap!(1 => 10, 2 => 20; 2);
+/// ```
 #[macro_export]
 macro_rules! pojmap {
     () => {{
@@ -350,6 +393,16 @@ macro_rules! pojmap {
     }};
 }
 
+/// Build a tuple, converting each element with `Into`.
+///
+/// ```
+/// use pojoc::pojtup;
+///
+/// let pair: (i64, i64) = pojtup!(1i32, 2i32);
+/// let triple: (i64, i64, i64) = pojtup!(1i32, 2i32, 3i32);
+/// assert_eq!(pair, (1, 2));
+/// assert_eq!(triple, (1, 2, 3));
+/// ```
 #[macro_export]
 macro_rules! pojtup {
     ($($x:expr),+ $(,)?) => {{

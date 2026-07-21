@@ -13,7 +13,7 @@ This is a reference for the schema language itself. For benchmarks and setup see
 - [Declared types](#declared-types-enum-struct-union-bitset)
 - [Generics](#generics)
 - [Defaults](#defaults)
-- [Modifiers: `const` and `lazy`](#modifiers-const-and-lazy)
+- [Modifiers: `const`, `lazy`, and `intern`](#modifiers-const-lazy-and-intern)
 - [Schema evolution](#schema-evolution)
 - [Imports](#imports)
 - [Comments](#comments)
@@ -155,6 +155,48 @@ action: Payload          // a union
 perms:  SystemPrivileges // a bitset
 ```
 
+### Constraints (`min`/`max`)
+
+```pojoc
+count:  u8(min: 0, max: 10)          = 1
+tags:   [string](min: 0, max: 5)     = []
+label:  string(min: 1, max: 20)      = "x"
+```
+
+Bounds a numeric value, or an array/map/string's element **count**/byte
+**length**. Enforced on both encode and decode — violating a bound is a
+runtime error (`Error::ConstraintViolation`), not a silent clamp.
+
+- On numbers: bounds the value itself.
+- On `string`: bounds the byte length.
+- On `[T]` / `map<K, V>`: bounds the element count.
+- Composes with everything else a type supports, e.g. `[string(min: 1, max: 20)]`.
+
+> The generated `Default` impl zero-inits every field, so a constrained
+> field's `min` should generally include `0` — otherwise `T::default()`
+> violates its own field's constraint.
+
+### `box<T>` — recursive types
+
+```pojoc
+type Node {
+  value: i32 = 0
+  next: box<Node>?
+}
+```
+
+A type that references itself — directly, or through a cycle of types — must
+go through `box<T>`, which heap-allocates the field (`Box<T>` in the
+generated struct). Referencing a type from itself **without** `box`, plain or
+as `T?`, is a compile-time error, since the generated struct would otherwise
+need infinite size.
+
+- `box<T>` alone doesn't terminate a recursive chain — pair it with `?` (as
+  above) so the chain can end.
+- Composes with everything else: `box<T>?`, `[box<T>]`, `Mono<box<T>>`, etc.
+- On the wire, `box<T>` is transparent — it costs nothing beyond `T` itself;
+  it only changes the Rust representation.
+
 ---
 
 ## Declared types (`enum`, `type`, `union`, `bitset`)
@@ -271,7 +313,7 @@ perks:     Perks         = 0
 
 ---
 
-## Modifiers: `const` and `lazy`
+## Modifiers: `const`, `lazy`, and `intern`
 
 ### `const`
 
@@ -297,6 +339,35 @@ decoding.
 
 > A `lazy` field **added in a `diff`** must be optional (`?`), so that older
 > messages lacking it decode to `None`.
+
+### `intern`
+
+```pojoc
+label:   intern string           = ""
+tags:    [intern string]         = []
+wrapped: Mono<intern string>     // composes as a generic argument too
+```
+
+Unlike `const`/`lazy` (field-level modifiers), `intern` is a **type-level**
+wrapper — it can wrap a bare `string` anywhere a type can appear: a plain
+field, inside an array/map, or as a generic argument.
+
+Repeated string values across the whole encoded message are deduped into a
+single shared lookup table (one table per top-level message, not per-field or
+per-struct) and referenced elsewhere by index — essentially free compression
+whenever the same strings recur, e.g. tags, labels, or enum-like string values
+drawn from a small pool.
+
+- Decodes to the same `&'buf str` as a plain string — no API difference at the
+  call site.
+- Encoding does a hash-map lookup-or-insert per interned value (a small CPU
+  cost); decoding a table index is *cheaper* than reading a plain string, so
+  `intern` is close to a pure win whenever a value repeats.
+- Can't combine with `lazy` on the same field — `lazy` skips decoding the
+  field's bytes entirely, which conflicts with participating in a table built
+  once per message.
+- Must wrap a bare `string` — not `string?`, not `string(N)`, not any other
+  type.
 
 ---
 

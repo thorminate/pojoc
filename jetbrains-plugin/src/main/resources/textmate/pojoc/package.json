@@ -2,7 +2,7 @@
   "name": "pojoc",
   "displayName": "Pojoc Schema Language",
   "description": "Syntax highlighting for .pojoc schema files",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "engines": { "vscode": "^1.60.0" },
   "contributes": {
     "languages": [

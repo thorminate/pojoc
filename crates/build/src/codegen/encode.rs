@@ -1,5 +1,5 @@
 use super::writer::CodeWriter;
-use crate::codegen::{get_latest_versions, ordered_wire_fields};
+use crate::codegen::{emit_constraint_guard, get_latest_versions, ordered_wire_fields};
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
 use crate::schema::ir::lineage::*;
@@ -135,14 +135,30 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
             ("__buf", "__value")
         };
         let lt = if is_infected(name) { "<'buf>" } else { "" };
+        let fallible = is_constraint_infected(name);
+        let ret = if fallible { " -> PojocResult<()>" } else { "" };
+        let interning = is_intern_infected(name);
+        let extra_param = if interning {
+            ", __interner: &mut InternBuilder<'buf>"
+        } else {
+            ""
+        };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}{lt}({__buf}: &mut Vec<u8>, {val}: &{name}{lt}) {{",
+            "fn write_{}{lt}({__buf}: &mut Vec<u8>, {val}: &{name}{lt}{extra_param}){ret} {{",
             name.to_snake_case()
         ));
         w.indent();
+        if fallible {
+            for field in &resolved.fields {
+                emit_constraint_guard(field, &format!("{val}.{}", field.name), w);
+            }
+        }
         emit_optional_header_write(&resolved.fields, w);
         emit_fields_write_loop(schema, &resolved.fields, w);
+        if fallible {
+            w.line("Ok(())");
+        }
         w.dedent();
         w.line("}");
         w.blank();
@@ -279,9 +295,15 @@ pub(crate) fn emit_write_expr(
             ));
         }
 
-        ResolvedTypeRef::Scalar(_) => {
+        ResolvedTypeRef::Scalar(id) => {
+            let q = if is_constraint_infected(&id.name) { "?" } else { "" };
+            let extra = if is_intern_infected(&id.name) {
+                ", __interner"
+            } else {
+                ""
+            };
             w.line(&format!(
-                "{}(__buf, {}{accessor});",
+                "{}(__buf, {}{accessor}{extra}){q};",
                 info.write_fn,
                 if is_ref { "" } else { "&" }
             ));
@@ -372,6 +394,38 @@ pub(crate) fn emit_write_expr(
             w.line("}");
         }
 
+        ResolvedTypeRef::Boxed(inner) => {
+            // `deref_if_copy` needs a `&T` expression to conditionally strip
+            // down to a bare `T` for Copy primitives (mirroring how
+            // `Optional` derives `__val: &T` via its `Some(__val)` match) —
+            // a `Box<T>` has no pattern-matching sugar for that, so build it
+            // by hand: two derefs (outer reference, then `Box`'s `Deref`)
+            // re-referenced back to `&T`.
+            let t_ref = if is_ref {
+                format!("&**{accessor}")
+            } else {
+                format!("&*{accessor}")
+            };
+            emit_write_expr(inner, &deref_if_copy(inner, &t_ref), vn, true, w);
+        }
+
+        // Transparent on the wire — the constraint check itself is emitted
+        // separately, around the field write, by the caller.
+        ResolvedTypeRef::Constrained { inner, .. } => {
+            emit_write_expr(inner, accessor, vn, is_ref, w)
+        }
+
+        // `accessor` is always already a `&str` value here — a `string`
+        // scalar's Rust type never needs an extra `&`/deref (see the
+        // primitive-string branch above), and `Interned` always wraps a bare
+        // `string` (enforced at analysis time), so no dereffing needed
+        // regardless of `is_ref`.
+        ResolvedTypeRef::Interned(_) => {
+            w.line(&format!(
+                "write_varint64(__buf, __interner.intern({accessor}) as u64);"
+            ));
+        }
+
         ResolvedTypeRef::ImportedSchema { .. } => {
             w.line(&format!("{}(__buf, &{accessor});", info.write_fn));
         }
@@ -381,11 +435,45 @@ pub(crate) fn emit_write_expr(
 fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: &mut CodeWriter) {
     let name = &schema.name_hint;
     let v = vl.version;
+    let fallible = is_constraint_infected(name);
+    let ret = if fallible { " -> PojocResult<()>" } else { "" };
+    // Per-*version* check, not the global `is_intern_infected(name)` — this
+    // function emits version `v`'s own historical wire format, which must
+    // not gain an intern-table header just because a *later* version added
+    // an interned field. See `version_uses_intern`.
+    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
     w.line(&format!(
-        "pub fn encode_v{v}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}) {{"
+        "pub fn encode_v{v}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}){ret} {{"
     ));
     w.indent();
+
+    if fallible {
+        // Validated once against the *current* (latest-schema) struct,
+        // regardless of which historical version's wire format this
+        // particular `encode_vN` produces — see `emit_constraint_guard`.
+        for field in &schema.versions.last().unwrap().fields {
+            emit_constraint_guard(field, &format!("__value.{}", field.name), w);
+        }
+    }
+
+    if interning {
+        // The string table must precede the fields on the wire, but it can
+        // only be built by visiting every `intern` field first — so encode
+        // the fields into a scratch buffer (shadowing `__buf`, so every
+        // existing write statement below is unaffected), then prepend the
+        // now-complete table to the real output.
+        // `__interner` is always threaded as `&mut InternBuilder` (never the
+        // owned value), so a call-site injection like `, __interner` is
+        // valid identically at the root and in any nested `write_*` — Rust
+        // auto-reborrows a `&mut T` passed where `&mut T` is expected.
+        w.line("let mut __interner_owned = InternBuilder::new();");
+        w.line("let __interner = &mut __interner_owned;");
+        w.line("let mut __scratch: Vec<u8> = Vec::new();");
+        w.line("{");
+        w.indent();
+        w.line("let __buf = &mut __scratch;");
+    }
 
     // Same fixed-first reordering the decoder uses, so the wire order matches.
     let ordered = ordered_wire_fields(schema, vl);
@@ -411,6 +499,16 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
         }
     }
 
+    if interning {
+        w.dedent();
+        w.line("}");
+        w.line("write_intern_table(__buf, &__interner_owned.finish());");
+        w.line("__buf.extend_from_slice(&__scratch);");
+    }
+
+    if fallible {
+        w.line("Ok(())");
+    }
     w.dedent();
     w.line("}");
 }
@@ -896,6 +994,28 @@ fn emit_vn_cast_value(
             w.line("}");
         }
 
+        (Boxed(f_inner), Boxed(t_inner)) => {
+            let deref_expr = if is_ref {
+                format!("&**{accessor}")
+            } else {
+                format!("&*{accessor}")
+            };
+            emit_vn_cast_value(schema, f_inner, t_inner, &deref_expr, true, w);
+        }
+
+        (from_ty, Boxed(t_inner)) if !matches!(from_ty, Boxed(_)) => {
+            let deref_expr = if is_ref {
+                format!("&**{accessor}")
+            } else {
+                format!("&*{accessor}")
+            };
+            emit_vn_cast_value(schema, from_ty, t_inner, &deref_expr, true, w);
+        }
+
+        (Boxed(f_inner), to_ty) if !matches!(to_ty, Boxed(_)) => {
+            emit_vn_cast_value(schema, f_inner, to_ty, accessor, is_ref, w);
+        }
+
         _ => emit_write_expr(from, accessor, Some(schema), is_ref, w),
     }
 }
@@ -1005,6 +1125,18 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             ));
         }
         ResolvedTypeRef::Optional(_) => {}
+        ResolvedTypeRef::Boxed(inner) => {
+            // Heap indirection doesn't change the wire bytes — the default
+            // for `box<T>` on the wire is just `T`'s default.
+            emit_vn_default_write(inner, schema, w);
+        }
+        ResolvedTypeRef::Constrained { inner, .. } => emit_vn_default_write(inner, schema, w),
+        // The old-version reader still expects a table index at this wire
+        // position (not raw bytes), so the filler must go through the
+        // interner too, not `write_string`.
+        ResolvedTypeRef::Interned(_) => {
+            w.line("write_varint64(__buf, __interner.intern(\"\") as u64);");
+        }
         ResolvedTypeRef::ImportedSchema { .. } => {
             w.line(&format!(
                 "{}(__buf, &{}::default());",
@@ -1280,6 +1412,23 @@ fn emit_size_expr(
             emit_size_expr(inner, "__val", true, w, schema);
             w.dedent();
             w.line("}");
+        }
+        ResolvedTypeRef::Boxed(inner) => {
+            let t_ref = if is_ref {
+                format!("&**{accessor}")
+            } else {
+                format!("&*{accessor}")
+            };
+            emit_size_expr(inner, &deref_if_copy(inner, &t_ref), true, w, schema);
+        }
+        ResolvedTypeRef::Constrained { inner, .. } => {
+            emit_size_expr(inner, accessor, is_ref, w, schema)
+        }
+        // The actual wire cost is a small varint table index, not the string
+        // itself — a flat upper-bound estimate is fine since this only
+        // drives `Vec::reserve`'s pre-allocation, not correctness.
+        ResolvedTypeRef::Interned(_) => {
+            w.line("size += 10;");
         }
         ResolvedTypeRef::ImportedSchema { alias, version, .. } => {
             let module = alias.to_snake_case();
@@ -1641,6 +1790,9 @@ fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut Code
                 w.line(&format!("size += {n};"));
             }
         }
+        ResolvedTypeRef::Boxed(inner) => emit_default_size(schema, inner, w),
+        ResolvedTypeRef::Constrained { inner, .. } => emit_default_size(schema, inner, w),
+        ResolvedTypeRef::Interned(_) => w.line("size += 10;"),
         ResolvedTypeRef::Optional(_) | ResolvedTypeRef::ImportedSchema { .. } => {}
     }
 }

@@ -361,6 +361,36 @@ pub enum AnalysisError {
         span: Span,
         line: u32,
     },
+
+    #[error("'box' is a reserved builtin type and cannot be aliased with `as`, or redeclared")]
+    InvalidBoxUsage { span: Span, line: u32 },
+
+    #[error("version {version}: invalid constraint: {reason}")]
+    InvalidConstraint {
+        reason: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
+    #[error("version {version}: invalid `intern`: {reason}")]
+    InvalidIntern {
+        reason: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
+    #[error(
+        "type '{type_name}' in version {version} is recursive without `box<>`: {cycle} forms a cycle — wrap at least one field in `box<T>` to break it"
+    )]
+    UnboxedRecursiveType {
+        type_name: String,
+        cycle: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl IndexableError for AnalysisError {
@@ -397,6 +427,10 @@ impl IndexableError for AnalysisError {
             AnalysisError::ImportParseFailed { span, .. } => *span,
             AnalysisError::NoVersions { span, .. } => *span,
             AnalysisError::TypeNameShadowsSchema { span, .. } => *span,
+            AnalysisError::InvalidBoxUsage { span, .. } => *span,
+            AnalysisError::UnboxedRecursiveType { span, .. } => *span,
+            AnalysisError::InvalidConstraint { span, .. } => *span,
+            AnalysisError::InvalidIntern { span, .. } => *span,
         }
     }
 
@@ -433,6 +467,10 @@ impl IndexableError for AnalysisError {
             AnalysisError::ImportParseFailed { line, .. } => *line,
             AnalysisError::NoVersions { line, .. } => *line,
             AnalysisError::TypeNameShadowsSchema { line, .. } => *line,
+            AnalysisError::InvalidBoxUsage { line, .. } => *line,
+            AnalysisError::UnboxedRecursiveType { line, .. } => *line,
+            AnalysisError::InvalidConstraint { line, .. } => *line,
+            AnalysisError::InvalidIntern { line, .. } => *line,
         }
     }
 }

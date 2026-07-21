@@ -5,10 +5,10 @@ mod structs;
 pub mod writer;
 
 use crate::core::types::{
-    ResolvedTypeRef, WireSize, contains_fixed_map, is_primitive, normalize_type, set_infected,
-    type_info,
+    ResolvedTypeRef, TypeId, WireSize, contains_fixed_map, contains_interned, is_primitive,
+    normalize_type, set_constraint_infected, set_infected, set_intern_infected, type_info,
 };
-use crate::schema::ir::ir_types::{DefaultValue, ResolvedSchema};
+use crate::schema::ir::ir_types::{DefaultValue, FieldIR, ResolvedSchema};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
 use std::collections::{HashMap, HashSet};
@@ -97,6 +97,19 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     // their own set and restore ours on return, so ordering is safe.
     let prev = set_infected(infected_types);
 
+    // Types whose `write_*`/`encode_vN` function must return
+    // `PojocResult<()>` because they carry (or transitively contain) a
+    // `min:`/`max:` constrained field. Same thread-local-set pattern as
+    // lifetime infection above, driving a different codegen decision.
+    let constraint_infected = compute_constraint_infected(schema);
+    let prev_constraint = set_constraint_infected(constraint_infected.clone());
+
+    // Types whose `write_*`/`read_*` function threads the message's shared
+    // string-interning table, because they carry (or transitively contain)
+    // an `intern`-marked field.
+    let intern_infected = compute_intern_infected(schema);
+    let prev_intern = set_intern_infected(intern_infected);
+
     emit_imported_submodules(schema, &mut w);
 
     structs::emit_enums(schema, &mut w);
@@ -104,7 +117,12 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     structs::emit_bitsets(schema, &mut w);
     structs::emit_unions(schema, &mut w);
     decode::emit_decode_functions(schema, &infected, &mut w);
-    emit_dispatcher(schema, &infected, &mut w);
+    emit_dispatcher(
+        schema,
+        &infected,
+        constraint_infected.contains(&schema.name_hint),
+        &mut w,
+    );
     w.blank();
     encode::emit_size_hint_helpers(schema, &mut w);
     encode::emit_size_hint_vn_functions(schema, &infected, &mut w);
@@ -113,10 +131,17 @@ pub fn generate(schema: &ResolvedSchema) -> String {
 
     let result = w.finish();
     set_infected(prev);
+    set_constraint_infected(prev_constraint);
+    set_intern_infected(prev_intern);
     result
 }
 
-fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
+fn emit_dispatcher(
+    schema: &ResolvedSchema,
+    infected: &HashSet<String>,
+    root_constrained: bool,
+    w: &mut CodeWriter,
+) {
     let name = &schema.name_hint;
     let latest = schema.lineage.latest_version;
     let needs_lifetime = infected.contains(name.as_str());
@@ -146,18 +171,28 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
     w.blank();
 
     let ref_lt = if needs_lifetime { "<'_>" } else { "" };
-    w.line(&format!(
-        "pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) {{"
-    ));
+    let encode_sig = if root_constrained {
+        format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) -> PojocResult<()> {{")
+    } else {
+        format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) {{")
+    };
+    w.line(&encode_sig);
     w.indent();
     w.line(&format!("buf.reserve(size_hint_v{latest}(value));"));
     w.line(&format!(
         "let len_pos = write_envelope_header(buf, {latest});"
     ));
     w.line("let payload_start = buf.len();");
-    w.line(&format!("encode_v{latest}(buf, value);")); // ← was encode_payload
+    if root_constrained {
+        w.line(&format!("encode_v{latest}(buf, value)?;"));
+    } else {
+        w.line(&format!("encode_v{latest}(buf, value);")); // ← was encode_payload
+    }
     w.line("let payload_len = buf.len() - payload_start;");
     w.line("patch_envelope_length(buf, len_pos, payload_len);");
+    if root_constrained {
+        w.line("Ok(())");
+    }
     w.dedent();
     w.line("}");
     w.blank();
@@ -182,7 +217,11 @@ fn emit_dispatcher(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut 
     w.indent();
     for vl in &schema.lineage.versions {
         let v = vl.version;
-        w.line(&format!("{v} => encode_v{v}(buf, value),"));
+        if root_constrained {
+            w.line(&format!("{v} => encode_v{v}(buf, value)?,"));
+        } else {
+            w.line(&format!("{v} => encode_v{v}(buf, value),"));
+        }
     }
     w.line("_ => unreachable!(),");
     w.dedent();
@@ -340,7 +379,10 @@ pub(crate) fn field_carries_borrowed_string(ty: &ResolvedTypeRef) -> bool {
         ResolvedTypeRef::Scalar(id) => normalize_type(&id.name) == "string",
         ResolvedTypeRef::Array(inner)
         | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::Optional(inner) => field_carries_borrowed_string(inner),
+        | ResolvedTypeRef::Optional(inner)
+        | ResolvedTypeRef::Boxed(inner)
+        | ResolvedTypeRef::Constrained { inner, .. }
+        | ResolvedTypeRef::Interned(inner) => field_carries_borrowed_string(inner),
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(field_carries_borrowed_string),
         ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
             field_carries_borrowed_string(k) || field_carries_borrowed_string(v)
@@ -397,7 +439,298 @@ fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
         }
     }
 
+    // The schema root isn't a member of `latest` (it's synthesized, not a
+    // `type` declaration), so it never went through the propagation loop
+    // above — only the one-time direct-field seed check before it. A root
+    // field that only becomes infected *transitively* (e.g. `head: Node?`
+    // where `Node` carries a string several hops down, but the root has no
+    // string field of its own) would otherwise be missed here.
+    if !infected.contains(&schema.name_hint)
+        && schema
+            .versions
+            .last()
+            .map(|v| {
+                v.fields.iter().any(|f| {
+                    let mut names = Vec::new();
+                    field_type_names(&f.ty, &mut names);
+                    names.iter().any(|n| infected.contains(n))
+                })
+            })
+            .unwrap_or(false)
+    {
+        infected.insert(schema.name_hint.clone());
+    }
+
     infected
+}
+
+/// Whether `ty` is itself a `min:`/`max:` constrained type, unwrapping
+/// `Optional`/`Boxed` first (`age: u32(min:0,max:150)?` and
+/// `age: box<u32(min:0,max:150)>` both still need a guard where the value is
+/// actually read/written).
+fn field_is_constrained(ty: &ResolvedTypeRef) -> bool {
+    match ty {
+        ResolvedTypeRef::Constrained { .. } => true,
+        ResolvedTypeRef::Optional(inner) | ResolvedTypeRef::Boxed(inner) => {
+            field_is_constrained(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Names of types whose `write_*`/`encode_vN` function must return
+/// `PojocResult<()>`: those with a directly `min:`/`max:`-constrained field,
+/// or that transitively contain a field of another such type (needed purely
+/// to propagate the `?` from the inner call up through the outer one).
+fn compute_constraint_infected(schema: &ResolvedSchema) -> HashSet<String> {
+    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+
+    let mut infected: HashSet<String> = latest
+        .iter()
+        .filter(|(_, (_, resolved))| resolved.fields.iter().any(|f| field_is_constrained(&f.ty)))
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    let root_seed = |fields: &[FieldIR]| fields.iter().any(|f| field_is_constrained(&f.ty));
+    if schema
+        .versions
+        .last()
+        .map(|v| root_seed(&v.fields))
+        .unwrap_or(false)
+    {
+        infected.insert(schema.name_hint.clone());
+    }
+
+    loop {
+        let mut changed = false;
+        for (name, (_, resolved)) in &latest {
+            if infected.contains(name) {
+                continue;
+            }
+            let newly_infected = resolved.fields.iter().any(|f| {
+                let mut names = Vec::new();
+                field_type_names(&f.ty, &mut names);
+                names.iter().any(|n| infected.contains(n))
+            });
+            if newly_infected {
+                infected.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    if !infected.contains(&schema.name_hint)
+        && schema
+            .versions
+            .last()
+            .map(|v| {
+                v.fields.iter().any(|f| {
+                    let mut names = Vec::new();
+                    field_type_names(&f.ty, &mut names);
+                    names.iter().any(|n| infected.contains(n))
+                })
+            })
+            .unwrap_or(false)
+    {
+        infected.insert(schema.name_hint.clone());
+    }
+
+    infected
+}
+
+/// Emits a `min`/`max` bound-check guard for `field` if its type is
+/// `Constrained` — directly, or under one layer of `Optional` (e.g.
+/// `age: u32(min:0,max:150)?`). `accessor` must be a plain place expression
+/// denoting the field's current value (`__value.foo` for encode, `foo` for a
+/// freshly-bound decode local) — this function adds any `&`/deref itself.
+/// Checked once against the field's *current* (latest-schema) type, so it
+/// applies uniformly across every historical version's encode/decode.
+pub(crate) fn emit_constraint_guard(field: &FieldIR, accessor: &str, w: &mut CodeWriter) {
+    match &field.ty {
+        ResolvedTypeRef::Constrained { inner, min, max } => {
+            emit_bound_check(inner, accessor, false, &field.name, *min, *max, w);
+        }
+        ResolvedTypeRef::Optional(boxed) => {
+            if let ResolvedTypeRef::Constrained { inner, min, max } = boxed.as_ref() {
+                w.line(&format!("if let Some(__cval) = &{accessor} {{"));
+                w.indent();
+                emit_bound_check(inner, "__cval", true, &field.name, *min, *max, w);
+                w.dedent();
+                w.line("}");
+            }
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_bound_check(
+    inner: &ResolvedTypeRef,
+    accessor: &str,
+    is_ref: bool,
+    field_name: &str,
+    min: Option<f64>,
+    max: Option<f64>,
+    w: &mut CodeWriter,
+) {
+    if min.is_none() && max.is_none() {
+        return;
+    }
+    let is_count = matches!(
+        inner,
+        ResolvedTypeRef::Array(_) | ResolvedTypeRef::DeltaArray(_) | ResolvedTypeRef::Map(_, _)
+    ) || matches!(inner, ResolvedTypeRef::Scalar(id) if normalize_type(&id.name) == "string");
+
+    let value_expr = if is_count {
+        format!("({accessor}.len() as f64)")
+    } else if is_ref {
+        format!("(*{accessor} as f64)")
+    } else {
+        format!("({accessor} as f64)")
+    };
+
+    let mut conds = Vec::new();
+    if let Some(mn) = min {
+        conds.push(format!("{value_expr} < {mn}f64"));
+    }
+    if let Some(mx) = max {
+        conds.push(format!("{value_expr} > {mx}f64"));
+    }
+    let min_expr = min
+        .map(|m| format!("Some({m}f64)"))
+        .unwrap_or_else(|| "None".into());
+    let max_expr = max
+        .map(|m| format!("Some({m}f64)"))
+        .unwrap_or_else(|| "None".into());
+
+    w.line(&format!(
+        "if {} {{ return Err(Error::ConstraintViolation {{ field: \"{field_name}\", min: {min_expr}, max: {max_expr} }}); }}",
+        conds.join(" || ")
+    ));
+}
+
+/// Names of types whose `write_*`/`read_*` function must thread the shared
+/// string-interning table: those with a field whose type is (or transitively
+/// contains) `Interned`, or that transitively contain a field of another such
+/// type (same containment/fixpoint shape as `compute_constraint_infected`).
+fn compute_intern_infected(schema: &ResolvedSchema) -> HashSet<String> {
+    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+
+    let mut infected: HashSet<String> = latest
+        .iter()
+        .filter(|(_, (_, resolved))| {
+            resolved.fields.iter().any(|f| contains_interned(&f.ty))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if schema
+        .versions
+        .last()
+        .map(|v| v.fields.iter().any(|f| contains_interned(&f.ty)))
+        .unwrap_or(false)
+    {
+        infected.insert(schema.name_hint.clone());
+    }
+
+    loop {
+        let mut changed = false;
+        for (name, (_, resolved)) in &latest {
+            if infected.contains(name) {
+                continue;
+            }
+            let newly_infected = resolved.fields.iter().any(|f| {
+                let mut names = Vec::new();
+                field_type_names(&f.ty, &mut names);
+                names.iter().any(|n| infected.contains(n))
+            });
+            if newly_infected {
+                infected.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    if !infected.contains(&schema.name_hint)
+        && schema
+            .versions
+            .last()
+            .map(|v| {
+                v.fields.iter().any(|f| {
+                    let mut names = Vec::new();
+                    field_type_names(&f.ty, &mut names);
+                    names.iter().any(|n| infected.contains(n))
+                })
+            })
+            .unwrap_or(false)
+    {
+        infected.insert(schema.name_hint.clone());
+    }
+
+    infected
+}
+
+/// Whether version `N`'s own wire format (its fields' *historical* types,
+/// not the latest struct's) ever touches interned data. Used to gate the
+/// root `encode_vN`/`decode_vN` intern-table header: unlike helper readers
+/// for named struct types (which always represent the latest shape, so a
+/// simple by-name check is correct there), a version's *own* field set can
+/// predate every interned field the schema has grown since — e.g. `intern`
+/// added fresh in v5 must not retroactively put a table on v1..v4's wire
+/// format, or genuinely old v1 bytes fail to decode against today's
+/// generated `decode_v1`, which is exactly the breakage schema versioning
+/// exists to prevent.
+pub(crate) fn version_uses_intern(schema: &ResolvedSchema, fields: &[FieldLineage]) -> bool {
+    let mut visited = HashSet::new();
+    fields
+        .iter()
+        .any(|f| type_ref_uses_intern(schema, &f.source_ty, &mut visited))
+}
+
+fn type_ref_uses_intern(
+    schema: &ResolvedSchema,
+    ty: &ResolvedTypeRef,
+    visited: &mut HashSet<TypeId>,
+) -> bool {
+    match ty {
+        ResolvedTypeRef::Interned(_) => true,
+        ResolvedTypeRef::Array(inner)
+        | ResolvedTypeRef::FixedArray(inner, _)
+        | ResolvedTypeRef::DeltaArray(inner)
+        | ResolvedTypeRef::FixedDeltaArray(inner, _)
+        | ResolvedTypeRef::Optional(inner)
+        | ResolvedTypeRef::Boxed(inner)
+        | ResolvedTypeRef::Constrained { inner, .. } => {
+            type_ref_uses_intern(schema, inner, visited)
+        }
+        ResolvedTypeRef::Tuple(elems) => elems
+            .iter()
+            .any(|e| type_ref_uses_intern(schema, e, visited)),
+        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
+            type_ref_uses_intern(schema, k, visited) || type_ref_uses_intern(schema, v, visited)
+        }
+        // A struct-typed reference points at one *specific* historical
+        // shape (TypeId carries the version) — recurse into exactly that
+        // shape's own fields, not whatever the latest version looks like.
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+            if !visited.insert(id.clone()) {
+                return false;
+            }
+            schema.types.types.get(id).is_some_and(|resolved| {
+                resolved
+                    .fields
+                    .iter()
+                    .any(|f| type_ref_uses_intern(schema, &f.ty, visited))
+            })
+        }
+        _ => false,
+    }
 }
 
 /// Names of infected named types this field transitively references, so a
@@ -410,7 +743,10 @@ fn field_type_names(ty: &ResolvedTypeRef, out: &mut Vec<String>) {
         | ResolvedTypeRef::FixedArray(inner, _)
         | ResolvedTypeRef::DeltaArray(inner)
         | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner) => field_type_names(inner, out),
+        | ResolvedTypeRef::Optional(inner)
+        | ResolvedTypeRef::Boxed(inner)
+        | ResolvedTypeRef::Constrained { inner, .. }
+        | ResolvedTypeRef::Interned(inner) => field_type_names(inner, out),
         ResolvedTypeRef::Tuple(elems) => elems.iter().for_each(|e| field_type_names(e, out)),
         ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
             field_type_names(k, out);

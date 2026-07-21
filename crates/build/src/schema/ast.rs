@@ -296,6 +296,21 @@ pub enum TypeAst {
         max: f64,
         step: f64,
     },
+    /// A postfix `(min: .., max: ..)` validation constraint on a number,
+    /// array, map, or string type — distinct from `VFloat`'s own `min`/`max`,
+    /// which control quantization, not range validation.
+    Constrained {
+        inner: Box<TypeAst>,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    /// `intern <type>` — a type-level wrapper (not just a field-position
+    /// keyword), so it composes inside containers/generics: `[intern
+    /// string]`, `map<K, intern string>`, `Mono<intern string>`. Parsed as a
+    /// prefix wherever `parse_type` is invoked, including recursively.
+    /// Semantically only valid wrapping a bare `string` — enforced at
+    /// analysis time once the inner type is resolved, not here.
+    Interned(Box<TypeAst>),
     Imported {
         alias: String,
         version: i128,

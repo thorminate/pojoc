@@ -1,0 +1,14 @@
+/// Benchmark-only schema: a large array of strings drawn from a small pool
+/// of repeated values. `tags` uses `intern` to dedup the pool into a shared
+/// table; `tags_plain` is the same data with no interning, as a same-format
+/// baseline that isolates interning's contribution from pojoc's general
+/// wire-format overhead when compared against protobuf/Cap'n Proto/
+/// FlatBuffers/Bebop (none of which dedup repeated string values).
+schema InternBench {
+  version 1 {
+    fields {
+      tags: [intern string] = []
+      tags_plain: [string] = []
+    }
+  }
+}

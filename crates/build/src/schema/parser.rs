@@ -21,6 +21,14 @@ impl Parser {
             .unwrap_or(&Token::Eof)
     }
 
+    /// Look `n` tokens past the current position without consuming anything.
+    fn peek_ahead(&self, n: usize) -> &Token {
+        self.tokens
+            .get(self.pos + n)
+            .map(|t| &t.token)
+            .unwrap_or(&Token::Eof)
+    }
+
     fn current_line(&self) -> u32 {
         self.tokens.get(self.pos).map(|t| t.line).unwrap_or(0)
     }
@@ -873,6 +881,17 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<TypeAst, ParseError> {
         let mut base = match self.peek().clone() {
+            // `intern` is a type-level prefix, not a field-position-only
+            // keyword — recognized here so it composes wherever a type is
+            // parsed: array/map elements, tuple elements, generic args, and
+            // (via the field-position call into `parse_type`) plain fields.
+            // Semantic validity (must wrap a bare `string`) is checked once
+            // the inner type is resolved, in the analyzer.
+            Token::Keyword(Keyword::Intern) => {
+                self.advance();
+                let inner = self.parse_type()?;
+                TypeAst::Interned(Box::new(inner))
+            }
             Token::LBracket => {
                 self.advance();
                 let inner = self.parse_type()?;
@@ -944,6 +963,12 @@ impl Parser {
 
             got => return Err(self.err_unexpected(got, "type name or '['")),
         };
+
+        if matches!(self.peek(), Token::LParen)
+            && matches!(self.peek_ahead(1), Token::Identifier(s) if s == "min" || s == "max")
+        {
+            base = self.parse_constraint_suffix(base)?;
+        }
 
         if matches!(self.peek(), Token::LParen) {
             self.advance();
@@ -1214,6 +1239,73 @@ impl Parser {
             }),
             (None, None) => Err(self.err_unexpected(self.peek().clone(), "->, : or combination")),
         }
+    }
+
+    /// Parses a trailing `(min: .., max: ..)` validation-constraint suffix
+    /// and wraps `base` in it. Mirrors `parse_vfloat_params`'s `Ident: value`
+    /// shape but only accepts `min`/`max` (no `step`) and applies as a
+    /// generic postfix on any already-parsed base type, not a dedicated
+    /// leading keyword like `vfloat`.
+    fn parse_constraint_suffix(&mut self, base: TypeAst) -> Result<TypeAst, ParseError> {
+        if matches!(
+            base,
+            TypeAst::VFloat { .. } | TypeAst::Constrained { .. }
+        ) {
+            return Err(self.err_invalid(
+                "cannot combine a validation constraint with `vfloat`'s own min/max, or stack two constraint suffixes",
+            ));
+        }
+        // Whether `base` is actually a number/array/map/string (as opposed to
+        // e.g. a struct or enum name, which the parser can't tell apart from
+        // a numeric scalar name yet) is validated later in the analyzer,
+        // once type resolution knows what `base` actually refers to.
+
+        self.expect(Token::LParen, "'('")?;
+
+        let mut min: Option<f64> = None;
+        let mut max: Option<f64> = None;
+
+        while !matches!(self.peek(), Token::RParen | Token::Eof) {
+            let key = self.expect_ident()?;
+            self.expect(Token::Colon, "':'")?;
+            let value = self.parse_vfloat_number()?;
+
+            let slot = match key.as_str() {
+                "min" => &mut min,
+                "max" => &mut max,
+                other => {
+                    return Err(self.err_invalid(format!(
+                        "unknown constraint parameter `{}` (expected `min` or `max`)",
+                        other
+                    )));
+                }
+            };
+
+            if slot.replace(value).is_some() {
+                return Err(self.err_invalid(format!("duplicate `{}` in constraint", key)));
+            }
+
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            }
+        }
+
+        self.expect(Token::RParen, "')'")?;
+
+        if min.is_none() && max.is_none() {
+            return Err(self.err_invalid("constraint requires at least one of `min` or `max`"));
+        }
+        if let (Some(mn), Some(mx)) = (min, max)
+            && mn > mx
+        {
+            return Err(self.err_invalid(format!("constraint min ({mn}) is greater than max ({mx})")));
+        }
+
+        Ok(TypeAst::Constrained {
+            inner: Box::new(base),
+            min,
+            max,
+        })
     }
 
     fn parse_vfloat_params(&mut self) -> Result<TypeAst, ParseError> {

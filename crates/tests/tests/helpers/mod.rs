@@ -28,9 +28,17 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.generic_duo_v4.secondary = Some(9);
     e.generic_mono_v5.value = "probe-mono-v5";
 
+    e.interned_label = "probe-interned";
+    e.interned_tags.push("probe-interned");
+    e.linked_list = Some(Box::new(LinkedNode {
+        value: 1,
+        next: None,
+    }));
+
     e
 }
 
+#[allow(clippy::approx_constant)]
 pub fn make_populated_edge() -> Edge<'static> {
     let mut e = Edge::default();
 
@@ -177,6 +185,24 @@ pub fn make_populated_edge() -> Edge<'static> {
 
     e.updated_imported_player = make_player_value();
 
+    // String interning — "shared-tag" repeated across a plain interned field
+    // and an interned array to exercise dedup, plus one unique string.
+    e.interned_label = "shared-tag";
+    e.interned_tags.push("shared-tag");
+    e.interned_tags.push("unique-tag");
+
+    // Recursive type — a three-node chain, only representable via `box<T>`.
+    e.linked_list = Some(Box::new(LinkedNode {
+        value: 1,
+        next: Some(Box::new(LinkedNode {
+            value: 2,
+            next: Some(Box::new(LinkedNode {
+                value: 3,
+                next: None,
+            })),
+        })),
+    }));
+
     e
 }
 
@@ -314,6 +340,15 @@ pub fn assert_duo_string_i32_eq(a: &DuoStringI32, b: &DuoStringI32) {
 pub fn assert_sensor_frame_eq(a: &SensorFrame, b: &SensorFrame) {
     assert_eq!(a.readings, b.readings);
     assert_eq!(a.sample_ids, b.sample_ids);
+}
+
+pub fn assert_linked_node_eq(a: &LinkedNode, b: &LinkedNode) {
+    assert_eq!(a.value, b.value);
+    match (&a.next, &b.next) {
+        (Some(x), Some(y)) => assert_linked_node_eq(x, y),
+        (None, None) => {}
+        _ => panic!("Mismatch in optional presence for field 'next'"),
+    }
 }
 
 pub fn assert_deep_complex_wrapper_eq<'buf>(
@@ -532,6 +567,17 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
         .get()
         .expect("b.lazy_delta_log decode failed");
     assert_eq!(a_delta, b_delta, "lazy_delta_log mismatch");
+
+    // Interning
+    assert_eq!(a.interned_label, b.interned_label);
+    assert_eq!(a.interned_tags, b.interned_tags);
+
+    // Recursive box<T> chain
+    match (&a.linked_list, &b.linked_list) {
+        (Some(x), Some(y)) => assert_linked_node_eq(x, y),
+        (None, None) => {}
+        _ => panic!("Mismatch in optional presence for field 'linked_list'"),
+    }
 }
 
 pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {
