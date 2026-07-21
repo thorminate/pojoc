@@ -3,7 +3,7 @@ use pojoc_tests::pojoc_edge::{runtime::*, *};
 #[test]
 fn test_truncated_buffer() {
     let mut buf = Vec::new();
-    encode(&mut buf, &Edge::default());
+    encode(&mut buf, &Edge::default()).expect("encode failed");
     buf.truncate(buf.len() / 2);
     assert!(decode(&buf).is_err());
 }

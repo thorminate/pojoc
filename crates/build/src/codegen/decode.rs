@@ -1,6 +1,7 @@
 use super::writer::CodeWriter;
 use crate::codegen::{
-    emit_default, get_latest_versions, is_blastable, ordered_wire_fields, wire_fixed_size,
+    emit_constraint_guard, emit_default, get_latest_versions, is_blastable, ordered_wire_fields,
+    wire_fixed_size,
 };
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
@@ -41,9 +42,15 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         } else {
             ("", "&[u8]")
         };
+        let interning = is_intern_infected(name);
+        let extra_param = if interning {
+            ", __table: &[&'buf str]"
+        } else {
+            ""
+        };
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}{lt}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lt}> {{"
+            "fn {fn_name}{lt}(__buf: {buf_ty}, __pos: &mut usize{extra_param}) -> PojocResult<{name}{lt}> {{"
         ));
         w.indent();
 
@@ -72,6 +79,10 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
                     w.line(&format!("let {} = {expr};", field.name));
                 }
             }
+        }
+
+        for field in &resolved.fields {
+            emit_constraint_guard(field, &field.name, w);
         }
 
         w.line(&format!("Ok({name} {{"));
@@ -330,12 +341,23 @@ fn emit_decode_fn(
     } else {
         "&[u8]"
     };
+    // Per-*version* check, not the global `is_intern_infected(name)` — see
+    // `version_uses_intern`.
+    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
     w.line(&format!(
         "pub fn decode_v{v}{lifetime}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
     ));
 
     w.indent();
+
+    if interning {
+        // The table precedes every field on the wire (see `emit_encode_vn_fn`),
+        // so it's read once, up front, then threaded by (`Copy`) slice
+        // reference through every intern-infected nested `read_*` call.
+        w.line("let __table_owned = read_intern_table(__buf, __pos)?;");
+        w.line("let __table = __table_owned.as_slice();");
+    }
 
     let optional_count = vl
         .fields
@@ -402,6 +424,9 @@ fn emit_decode_fn(
     w.blank();
 
     let latest = schema.versions.last().unwrap();
+    for field in &latest.fields {
+        emit_constraint_guard(field, &field.name, w);
+    }
     w.line(&format!("Ok({name} {{"));
     w.indent();
     for field in &latest.fields {
@@ -432,16 +457,15 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
             }
         }
         FieldMapping::PassThrough { target_name } => {
-            let target_is_lazy = schema
+            let target_field = schema
                 .versions
                 .last()
                 .unwrap()
                 .fields
                 .iter()
                 .find(|f| f.name == *target_name)
-                .unwrap()
-                .lazy;
-            if target_is_lazy {
+                .unwrap();
+            if target_field.lazy {
                 let some_fn = format!("{target_name}_read");
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
@@ -487,7 +511,14 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
 fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
-        ResolvedTypeRef::Scalar(_) => format!("{}(__buf, __pos)?", info.read_fn),
+        ResolvedTypeRef::Scalar(id) => {
+            let extra = if is_intern_infected(&id.name) {
+                ", __table"
+            } else {
+                ""
+            };
+            format!("{}(__buf, __pos{extra})?", info.read_fn)
+        }
         ResolvedTypeRef::Enum(id) => {
             format!(
                 "{{ let __raw = read_varint64(__buf, __pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}",
@@ -577,6 +608,14 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             let inner_expr = emit_read_expr(inner);
             format!("if read_u8(__buf, __pos)? != 0 {{ Some({inner_expr}) }} else {{ None }}")
         }
+        ResolvedTypeRef::Boxed(inner) => {
+            let inner_expr = emit_read_expr(inner);
+            format!("Box::new({inner_expr})")
+        }
+        // Transparent on the wire — the constraint check itself is emitted
+        // separately, around the field read, by the caller.
+        ResolvedTypeRef::Constrained { inner, .. } => emit_read_expr(inner),
+        ResolvedTypeRef::Interned(_) => "read_interned_string_ref(__table, __buf, __pos)?".into(),
         ResolvedTypeRef::ImportedSchema { .. } => {
             format!("{}(__buf, __pos)?", info.read_fn)
         }
@@ -653,6 +692,10 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
                 format!("({})", parts.join(", "))
             }
         }
+        // Transparent on the wire — the value itself reads exactly like
+        // `inner`; the constraint check is emitted separately, once the
+        // whole blastable block's fields are bound (see `emit_decode_fn`).
+        ResolvedTypeRef::Constrained { inner, .. } => emit_read_expr_unchecked(inner),
         _ => unreachable!("emit_read_expr_unchecked called on a non-blastable type"),
     }
 }
@@ -955,6 +998,24 @@ fn emit_cast_value(
                 CastExpr::Inline(e) | CastExpr::Block(e) => e,
             };
             CastExpr::Inline(format!("Some({inner_expr})"))
+        }
+
+        (Boxed(f_inner), Boxed(t_inner)) => {
+            let inner_expr = match emit_cast_value(schema, f_inner, t_inner, indent) {
+                CastExpr::Inline(e) | CastExpr::Block(e) => e,
+            };
+            CastExpr::Inline(format!("Box::new({inner_expr})"))
+        }
+
+        (from_ty, Boxed(to_inner)) if !matches!(from_ty, Boxed(_)) => {
+            let inner_expr = match emit_cast_value(schema, from_ty, to_inner, indent) {
+                CastExpr::Inline(e) | CastExpr::Block(e) => e,
+            };
+            CastExpr::Inline(format!("Box::new({inner_expr})"))
+        }
+
+        (Boxed(from_inner), to_ty) if !matches!(to_ty, Boxed(_)) => {
+            emit_cast_value(schema, from_inner, to_ty, indent)
         }
 
         _ => CastExpr::Inline(emit_read_expr(from)),

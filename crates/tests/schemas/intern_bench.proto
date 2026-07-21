@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package proto_intern_bench;
+
+message InternBench {
+  repeated string tags = 1;
+}

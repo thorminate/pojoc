@@ -127,6 +127,7 @@ impl<'a> SchemaAnalyzer<'a> {
     #[allow(clippy::result_large_err)]
     pub fn run(&mut self) -> Result<(), AnalysisError> {
         self.check_no_schema_name_collision()?;
+        self.check_no_reserved_name_collision()?;
         // we preregister unions so they can be referenced in types with no issues
         // enums and bitsets don't depend on any external types, so they don't need any special handling.
         self.collect_enums()?;
@@ -138,6 +139,104 @@ impl<'a> SchemaAnalyzer<'a> {
             self.process_version(version)?;
         }
         self.drain_pending_generics()?;
+        self.check_no_unboxed_recursion()?;
+        Ok(())
+    }
+
+    /// A struct that references itself — directly or through a cycle of other
+    /// structs — produces an infinite-size Rust type unless the cycle is
+    /// broken by a `box<T>` somewhere along the way (heap indirection is the
+    /// only thing that breaks it; `Optional`/`Array`/etc. don't, since
+    /// `Option<T>`/`Vec<T>` still embed `T` inline or need its size known).
+    /// Left unchecked, this only fails much later at `rustc`, with no
+    /// pojoc-level diagnostic — so catch it here instead.
+    #[allow(clippy::result_large_err)]
+    fn check_no_unboxed_recursion(&self) -> Result<(), AnalysisError> {
+        // Struct-typed refs reachable from `ty` without crossing a `box<>`.
+        // `Boxed` is deliberately not unwrapped: it's the one thing that
+        // legitimately breaks a cycle.
+        fn collect_struct_refs(ty: &ResolvedTypeRef, out: &mut Vec<TypeId>) {
+            match ty {
+                ResolvedTypeRef::Scalar(id) => out.push(id.clone()),
+                ResolvedTypeRef::Array(inner)
+                | ResolvedTypeRef::FixedArray(inner, _)
+                | ResolvedTypeRef::DeltaArray(inner)
+                | ResolvedTypeRef::FixedDeltaArray(inner, _)
+                | ResolvedTypeRef::Optional(inner) => collect_struct_refs(inner, out),
+                ResolvedTypeRef::Tuple(elems) => {
+                    elems.iter().for_each(|e| collect_struct_refs(e, out))
+                }
+                ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
+                    collect_struct_refs(k, out);
+                    collect_struct_refs(v, out);
+                }
+                _ => {}
+            }
+        }
+
+        enum Color {
+            Gray,
+            Black,
+        }
+
+        fn visit(
+            id: &TypeId,
+            registry: &TypeRegistry,
+            color: &mut HashMap<TypeId, Color>,
+            stack: &mut Vec<TypeId>,
+        ) -> Option<Vec<TypeId>> {
+            match color.get(id) {
+                Some(Color::Black) => return None,
+                Some(Color::Gray) => {
+                    let pos = stack.iter().position(|x| x == id).unwrap_or(0);
+                    let mut cycle = stack[pos..].to_vec();
+                    cycle.push(id.clone());
+                    return Some(cycle);
+                }
+                None => {}
+            }
+            color.insert(id.clone(), Color::Gray);
+            stack.push(id.clone());
+            if let Some(resolved) = registry.types.get(id) {
+                for field in &resolved.fields {
+                    let mut refs = Vec::new();
+                    collect_struct_refs(&field.ty, &mut refs);
+                    for r in refs {
+                        if let Some(cycle) = visit(&r, registry, color, stack) {
+                            return Some(cycle);
+                        }
+                    }
+                }
+            }
+            stack.pop();
+            color.insert(id.clone(), Color::Black);
+            None
+        }
+
+        let mut ids: Vec<&TypeId> = self.type_registry.types.keys().collect();
+        ids.sort_by(|a, b| (a.name.as_str(), a.version).cmp(&(b.name.as_str(), b.version)));
+
+        let mut color: HashMap<TypeId, Color> = HashMap::new();
+        let mut stack: Vec<TypeId> = Vec::new();
+        for id in ids {
+            if matches!(color.get(id), Some(Color::Black)) {
+                continue;
+            }
+            if let Some(cycle) = visit(id, &self.type_registry, &mut color, &mut stack) {
+                let cycle_str = cycle
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                return Err(AnalysisError::UnboxedRecursiveType {
+                    type_name: cycle[0].name.clone(),
+                    cycle: cycle_str,
+                    version: cycle[0].version,
+                    span: self.ast.span,
+                    line: self.ast.line,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -184,6 +283,26 @@ impl<'a> SchemaAnalyzer<'a> {
                         version: version.version,
                         span,
                         line,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `box` is a compiler builtin (see `resolve()`'s `TypeAst::Generic` arm) —
+    /// a user declaring `type box<T> { ... }` (or any non-generic `box`) would
+    /// silently shadow it, so reject the name up front.
+    #[allow(clippy::result_large_err)]
+    fn check_no_reserved_name_collision(&self) -> Result<(), AnalysisError> {
+        for version in &self.ast.versions {
+            for block in &version.blocks {
+                if let VersionBlockAst::TypeDef(td) = block
+                    && td.name == "box"
+                {
+                    return Err(AnalysisError::InvalidBoxUsage {
+                        span: td.span,
+                        line: td.line,
                     });
                 }
             }
@@ -915,6 +1034,18 @@ impl<'a> SchemaAnalyzer<'a> {
                     }
                 };
 
+                if f.lazy && contains_interned(&ty) {
+                    return Err(AnalysisError::InvalidIntern {
+                        reason: format!(
+                            "field '{}' cannot be both `lazy` and (transitively) interned",
+                            f.name
+                        ),
+                        version,
+                        span: f.span,
+                        line: f.line,
+                    });
+                }
+
                 Ok(FieldIR {
                     id: f.id,
                     name: f.name.clone(),
@@ -977,6 +1108,18 @@ impl<'a> SchemaAnalyzer<'a> {
                 field.span,
                 field.line,
             )?;
+            if field.lazy && contains_interned(&ty) {
+                return Err(AnalysisError::InvalidIntern {
+                    reason: format!(
+                        "field '{}' cannot be both `lazy` and (transitively) interned",
+                        field.name
+                    ),
+                    version,
+                    span: field.span,
+                    line: field.line,
+                });
+            }
+
             ctx.fields.push(FieldIR {
                 id: self.id_gen.next_id(),
                 name: field.name.clone(),
@@ -1052,6 +1195,18 @@ impl<'a> SchemaAnalyzer<'a> {
                             )?
                         }
                     };
+
+                    if field.lazy && contains_interned(&ty) {
+                        return Err(AnalysisError::InvalidIntern {
+                            reason: format!(
+                                "field '{}' cannot be both `lazy` and (transitively) interned",
+                                field.name
+                            ),
+                            version,
+                            span: field.span,
+                            line: field.line,
+                        });
+                    }
 
                     ctx.fields.push(FieldIR {
                         id: self.id_gen.next_id(),
@@ -1254,6 +1409,14 @@ impl<'a> SchemaAnalyzer<'a> {
             return match ty {
                 ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Ok(DefaultValue::Struct),
                 ResolvedTypeRef::Union(_) => Ok(DefaultValue::Struct),
+                ResolvedTypeRef::Boxed(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name)
+                    ) || matches!(inner.as_ref(), ResolvedTypeRef::Union(_)) =>
+                {
+                    Ok(DefaultValue::Struct)
+                }
                 other => Err(AnalysisError::TypeMismatch {
                     expected: format!("{:?}", other),
                     got: "struct".into(),
@@ -1266,6 +1429,18 @@ impl<'a> SchemaAnalyzer<'a> {
 
         match ty {
             ResolvedTypeRef::Optional(inner) => {
+                self.coerce_value(value, inner, field_name, version, span, line)
+            }
+
+            ResolvedTypeRef::Constrained { inner, .. } => {
+                self.coerce_value(value, inner, field_name, version, span, line)
+            }
+
+            ResolvedTypeRef::Interned(inner) => {
+                self.coerce_value(value, inner, field_name, version, span, line)
+            }
+
+            ResolvedTypeRef::Boxed(inner) => {
                 self.coerce_value(value, inner, field_name, version, span, line)
             }
 
@@ -1603,6 +1778,24 @@ impl<'a> SchemaAnalyzer<'a> {
                 })
             }
             TypeAst::Generic(name, args, alias) => {
+                if name == "box" {
+                    if alias.is_some() {
+                        return Err(AnalysisError::InvalidBoxUsage { span, line });
+                    }
+                    if args.len() != 1 {
+                        return Err(AnalysisError::GenericArityMismatch {
+                            name: "box".into(),
+                            expected: 1,
+                            found: args.len(),
+                            version,
+                            span,
+                            line,
+                        });
+                    }
+                    let inner = self.resolve(&args[0], version, span, line, subst)?;
+                    return Ok(ResolvedTypeRef::Boxed(Box::new(inner)));
+                }
+
                 let resolved_args = args
                     .iter()
                     .map(|a| self.resolve(a, version, span, line, subst))
@@ -1795,6 +1988,68 @@ impl<'a> SchemaAnalyzer<'a> {
             TypeAst::Optional(v) => {
                 let inner_ref = self.resolve(v, version, span, line, subst)?;
                 Ok(ResolvedTypeRef::Optional(Box::new(inner_ref)))
+            }
+            TypeAst::Constrained { inner, min, max } => {
+                let resolved_inner = self.resolve(inner, version, span, line, subst)?;
+
+                let is_numeric_scalar = matches!(&resolved_inner, ResolvedTypeRef::Scalar(id)
+                    if is_primitive(&id.name) && !matches!(normalize_type(&id.name), "string" | "bool"));
+                let is_string = matches!(&resolved_inner, ResolvedTypeRef::Scalar(id)
+                    if normalize_type(&id.name) == "string");
+                let is_countable = matches!(
+                    &resolved_inner,
+                    ResolvedTypeRef::Array(_) | ResolvedTypeRef::DeltaArray(_) | ResolvedTypeRef::Map(_, _)
+                );
+
+                if !is_numeric_scalar && !is_string && !is_countable {
+                    return Err(AnalysisError::InvalidConstraint {
+                        reason: "a min/max constraint is only valid on a number, string, array, or map type".into(),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+
+                if let (Some(mn), Some(mx)) = (min, max)
+                    && mn > mx
+                {
+                    return Err(AnalysisError::InvalidConstraint {
+                        reason: format!("min ({mn}) is greater than max ({mx})"),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+
+                if is_string || is_countable {
+                    if min.is_some_and(|m| m < 0.0) || max.is_some_and(|m| m < 0.0) {
+                        return Err(AnalysisError::InvalidConstraint {
+                            reason: "a length/count bound cannot be negative".into(),
+                            version,
+                            span,
+                            line,
+                        });
+                    }
+                }
+
+                Ok(ResolvedTypeRef::Constrained {
+                    inner: Box::new(resolved_inner),
+                    min: *min,
+                    max: *max,
+                })
+            }
+            TypeAst::Interned(inner) => {
+                let resolved_inner = self.resolve(inner, version, span, line, subst)?;
+                if !matches!(&resolved_inner, ResolvedTypeRef::Scalar(id) if normalize_type(&id.name) == "string")
+                {
+                    return Err(AnalysisError::InvalidIntern {
+                        reason: "`intern` must wrap a bare `string` (not optional, constrained, or any other type)".into(),
+                        version,
+                        span,
+                        line,
+                    });
+                }
+                Ok(ResolvedTypeRef::Interned(Box::new(resolved_inner)))
             }
             TypeAst::Imported {
                 alias,
@@ -2303,6 +2558,12 @@ fn substitute_ast(ty: &TypeAst, rename: &HashMap<&str, &GenericArgAst>) -> TypeA
             alias: alias.clone(),
             version: *version,
         },
+        TypeAst::Constrained { inner, min, max } => TypeAst::Constrained {
+            inner: Box::new(substitute_ast(inner, rename)),
+            min: *min,
+            max: *max,
+        },
+        TypeAst::Interned(inner) => TypeAst::Interned(Box::new(substitute_ast(inner, rename))),
         TypeAst::Wildcard => TypeAst::Wildcard,
     }
 }
@@ -2327,6 +2588,8 @@ fn type_ast_contains_wildcard(ty: &TypeAst) -> bool {
         TypeAst::Map(k, v) | TypeAst::FixedMap(k, v, _) => {
             type_ast_contains_wildcard(k) || type_ast_contains_wildcard(v)
         }
+        TypeAst::Constrained { inner, .. } => type_ast_contains_wildcard(inner),
+        TypeAst::Interned(inner) => type_ast_contains_wildcard(inner),
     }
 }
 
@@ -2380,6 +2643,9 @@ fn mangle_type_ref(ty: &ResolvedTypeRef) -> String {
         }
         ResolvedTypeRef::VFloat { .. } => "VFloat".to_string(),
         ResolvedTypeRef::Optional(inner) => format!("Opt{}", mangle_type_ref(inner)),
+        ResolvedTypeRef::Boxed(inner) => format!("Box{}", mangle_type_ref(inner)),
+        ResolvedTypeRef::Constrained { inner, .. } => mangle_type_ref(inner),
+        ResolvedTypeRef::Interned(inner) => format!("Interned{}", mangle_type_ref(inner)),
         ResolvedTypeRef::ImportedSchema {
             alias, root_name, ..
         } => format!("{}{}", pascalize(alias), root_name),

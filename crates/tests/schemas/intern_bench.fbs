@@ -1,0 +1,7 @@
+namespace fb_intern_bench;
+
+table InternBench {
+  tags: [string];
+}
+
+root_type InternBench;

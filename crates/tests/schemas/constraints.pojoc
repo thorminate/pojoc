@@ -1,0 +1,12 @@
+/// Minimal schema dedicated to `min:`/`max:` validation constraints — kept
+/// separate from `edge.pojoc` so the wire layout is simple enough to
+/// hand-craft malformed bytes against (for decode-side guard tests).
+schema Constraints {
+  version 1 {
+    fields {
+      count: u8(min: 1, max: 10) = 5
+      tags: [string](min: 0, max: 3) = []
+      label: string(min: 1, max: 10) = "ok"
+    }
+  }
+}

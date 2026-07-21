@@ -16,7 +16,7 @@ fn decode_static(buf: &[u8]) -> Edge<'static> {
 fn test_roundtrip_default() {
     let original = Edge::default();
     let mut buf = Vec::new();
-    encode(&mut buf, &original);
+    encode(&mut buf, &original).expect("encode failed");
     let decoded = decode_static(&buf);
     assert_edge_eq(&original, &decoded);
 }
@@ -25,7 +25,7 @@ fn test_roundtrip_default() {
 fn test_roundtrip_populated() {
     let original = make_populated_edge();
     let mut buf = Vec::new();
-    encode(&mut buf, &original);
+    encode(&mut buf, &original).expect("encode failed");
     let decoded = decode_static(&buf);
     assert_edge_eq(&original, &decoded);
 }
@@ -134,6 +134,52 @@ fn test_encode_for_version_latest_version_fields_survive() {
     assert_mono_string_eq(&decoded.generic_mono_v3, &original.generic_mono_v3);
     assert_duo_string_i32_eq(&decoded.generic_duo_v4, &original.generic_duo_v4);
     assert_mono_string_eq(&decoded.generic_mono_v5, &original.generic_mono_v5);
+
+    // v5-only fields (interning, recursive box<T>) — must survive when
+    // encoding at the latest version.
+    assert_eq!(
+        decoded.interned_label, original.interned_label,
+        "v{latest}: interned_label mismatch"
+    );
+    assert_eq!(
+        decoded.interned_tags, original.interned_tags,
+        "v{latest}: interned_tags mismatch"
+    );
+    match (&decoded.linked_list, &original.linked_list) {
+        (Some(x), Some(y)) => assert_linked_node_eq(x, y),
+        (None, None) => {}
+        _ => panic!("v{latest}: mismatch in optional presence for field 'linked_list'"),
+    }
+}
+
+#[test]
+fn test_encode_for_version_pre_v5_omits_new_fields() {
+    // interned_label / interned_tags / linked_list were added in v5's diff —
+    // encoding a populated Edge at any earlier version must silently drop
+    // them (they didn't exist on that version's wire format yet), and
+    // decoding must come back with their zero-value defaults, not an error
+    // and not stale/leftover data.
+    let original = make_version_probe_edge();
+
+    for &version in supported_versions() {
+        if version >= 5 {
+            continue;
+        }
+        let mut buf = Vec::new();
+        encode_for_version(&mut buf, &original, version)
+            .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
+        let decoded = decode_static(&buf);
+
+        assert_eq!(decoded.interned_label, "", "v{version}: interned_label should default");
+        assert!(
+            decoded.interned_tags.is_empty(),
+            "v{version}: interned_tags should default to empty"
+        );
+        assert!(
+            decoded.linked_list.is_none(),
+            "v{version}: linked_list should default to None"
+        );
+    }
 }
 #[test]
 fn test_encode_for_version_latest_is_byte_identical_to_encode() {
@@ -141,7 +187,7 @@ fn test_encode_for_version_latest_is_byte_identical_to_encode() {
     let latest = *supported_versions().last().expect("no supported versions");
 
     let mut buf_encode = Vec::new();
-    encode(&mut buf_encode, &original);
+    encode(&mut buf_encode, &original).expect("encode failed");
 
     let mut buf_versioned = Vec::new();
     encode_for_version(&mut buf_versioned, &original, latest)
@@ -175,7 +221,7 @@ fn test_roundtrip_payload_variants() {
         let mut e = Edge::default();
         e.action = variant;
         let mut buf = Vec::new();
-        encode(&mut buf, &e);
+        encode(&mut buf, &e).expect("encode failed");
         let decoded = decode(&buf).expect("decode failed");
         assert_payload_eq(&e.action, &decoded.action);
     }
@@ -193,7 +239,7 @@ fn test_roundtrip_control_signal_variants() {
         let mut e = Edge::default();
         e.control = variant;
         let mut buf = Vec::new();
-        encode(&mut buf, &e);
+        encode(&mut buf, &e).expect("encode failed");
         let decoded = decode(&buf).expect("decode failed");
         assert_control_signal_eq(&e.control, &decoded.control);
     }
@@ -212,7 +258,7 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
     };
 
     let mut buf = Vec::new();
-    encode(&mut buf, &e);
+    encode(&mut buf, &e).expect("encode failed");
     let decoded = decode(&buf).expect("decode failed");
 
     match &decoded.action {
@@ -228,11 +274,11 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
 fn test_raw_passthrough_is_byte_identical() {
     let original = make_populated_edge();
     let mut buf = Vec::new();
-    encode(&mut buf, &original);
+    encode(&mut buf, &original).expect("encode failed");
 
     let decoded = decode(&buf).expect("decode failed");
     let mut reencoded = Vec::new();
-    encode(&mut reencoded, &decoded);
+    encode(&mut reencoded, &decoded).expect("encode failed");
 
     assert_eq!(
         buf, reencoded,
@@ -247,7 +293,7 @@ fn test_lazy_field_owned_roundtrip() {
     e.lazy_audit_log = LazyView::Owned(Some(pojvec!("wow")));
 
     let mut buf = Vec::new();
-    encode(&mut buf, &e);
+    encode(&mut buf, &e).expect("encode failed");
     let decoded = decode_static(&buf);
 
     let value = decoded.lazy_audit_log.get().expect("lazy get failed");

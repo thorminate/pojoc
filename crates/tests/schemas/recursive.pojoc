@@ -1,0 +1,56 @@
+/// Exercises `box<T>` — the only way to break a self-referential or
+/// mutually-recursive struct cycle. Kept separate from `edge.pojoc` so this
+/// stays a minimal, easy-to-reason-about fixture for recursion specifically.
+schema Recursive {
+  version 1 {
+    /// A leaf with a string field, to prove `box<T>` composes correctly with
+    /// a lifetime-infected `T` (the outer type must still render `<'buf>`).
+    type Label {
+      text: string = ""
+    }
+
+    /// Singly-linked list — direct self-reference, broken by `box<>`.
+    type Node {
+      value: i32 = 0
+      next: box<Node>?
+      label: box<Label>?
+    }
+
+    /// Binary tree — same struct referencing itself twice.
+    type TreeNode {
+      value: i32 = 0
+      left: box<TreeNode>?
+      right: box<TreeNode>?
+    }
+
+    /// Mutual recursion across two distinct types — proves cycle detection
+    /// isn't limited to direct self-reference.
+    type Ping {
+      count: i32 = 0
+      other: box<Pong>?
+    }
+
+    type Pong {
+      count: i32 = 0
+      other: box<Ping>?
+    }
+
+    fields {
+      head: Node?
+      root: TreeNode?
+      ping: Ping?
+      // Non-optional box, to exercise a box<T> retype across versions below
+      // without also crossing the Optional-wrapper cast path.
+      plain_ref: Node
+    }
+  }
+
+  version 2 {
+    diff {
+      // `plain_ref` was `Node` in v1; retyping it to `box<Node>` exercises
+      // the box/unbox FieldMapping::Cast path in both directions (encoding a
+      // v1 message from current data, decoding a v1 wire payload).
+      ~ plain_ref: box<Node>
+    }
+  }
+}

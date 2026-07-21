@@ -1,0 +1,23 @@
+/// Exercises opt-in string interning — `intern` is a type-level wrapper that
+/// dedupes repeated string values into a single shared table for the whole
+/// message. Composes anywhere a type can appear: a plain field, inside an
+/// array, inside a named struct's field, or as a generic argument.
+schema Interning {
+  version 1 {
+    type Tag {
+      label: intern string = ""
+    }
+
+    type Mono<T> {
+      value: T
+    }
+
+    fields {
+      primary_label: intern string = ""
+      tags: [Tag] = []
+      plain_label: string = ""
+      raw_tags: [intern string] = []
+      mono_label: Mono<intern string>
+    }
+  }
+}

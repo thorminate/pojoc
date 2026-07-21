@@ -11,6 +11,19 @@ thread_local! {
     /// they nest — inside arrays, maps, tuples, generics, and imports — not just
     /// as a direct struct field. Codegen is single-threaded per `generate`.
     static INFECTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+
+    /// Names of constraint-infected types (structs with a `min:`/`max:`
+    /// constrained field, directly or transitively). Mirrors `INFECTED`, but
+    /// drives a different codegen decision: an infected type's `write_*`/
+    /// `encode_vN` function returns `PojocResult<()>` instead of `()`, so
+    /// callers of an infected named type's writer need a `?` appended.
+    static CONSTRAINT_INFECTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+
+    /// Names of intern-infected types (structs with an `intern`-marked field,
+    /// directly or transitively). An infected type's `write_*`/`read_*`
+    /// function gains an extra `__interner`/`__table` parameter threading the
+    /// message's shared string table, so callers need to pass it through.
+    static INTERN_INFECTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Install the set of lifetime-infected type names for subsequent code
@@ -23,6 +36,33 @@ pub fn set_infected(names: HashSet<String>) -> HashSet<String> {
 /// Whether `name` is a lifetime-infected type in the current generation.
 pub fn is_infected(name: &str) -> bool {
     INFECTED.with(|c| c.borrow().contains(name))
+}
+
+/// Install the set of constraint-infected type names for subsequent code
+/// generation on this thread. Returns the previous set, same restore
+/// convention as [`set_infected`].
+pub fn set_constraint_infected(names: HashSet<String>) -> HashSet<String> {
+    CONSTRAINT_INFECTED.with(|c| c.replace(names))
+}
+
+/// Whether `name`'s `write_*`/`encode_vN` function returns `PojocResult<()>`
+/// in the current generation (it has, or transitively contains, a
+/// `min:`/`max:` constrained field).
+pub fn is_constraint_infected(name: &str) -> bool {
+    CONSTRAINT_INFECTED.with(|c| c.borrow().contains(name))
+}
+
+/// Install the set of intern-infected type names for subsequent code
+/// generation on this thread. Returns the previous set, same restore
+/// convention as [`set_infected`].
+pub fn set_intern_infected(names: HashSet<String>) -> HashSet<String> {
+    INTERN_INFECTED.with(|c| c.replace(names))
+}
+
+/// Whether `name`'s `write_*`/`read_*` function threads the shared
+/// string-interning table (`__interner`/`__table`) in the current generation.
+pub fn is_intern_infected(name: &str) -> bool {
+    INTERN_INFECTED.with(|c| c.borrow().contains(name))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -85,6 +125,26 @@ pub enum ResolvedTypeRef {
         backing: VFloatBacking,
     },
     Optional(Box<ResolvedTypeRef>),
+    /// `box<T>` — heap indirection, the only way to break a self-referential
+    /// or mutually-recursive struct cycle (see the cycle-validation pass in
+    /// the analyzer, which rejects any cycle that doesn't cross a `Boxed`).
+    Boxed(Box<ResolvedTypeRef>),
+    /// A `(min:, max:)` validation constraint wrapping a number, string,
+    /// array, or map type — enforced on both encode and decode. Doesn't
+    /// change the wire format at all (identical to the unwrapped inner
+    /// type), only adds a generated range/length/count check.
+    Constrained {
+        inner: Box<ResolvedTypeRef>,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    /// `intern <type>` — opt-in string deduplication. Always wraps a bare
+    /// `string` scalar (enforced at resolve time); composes anywhere in the
+    /// type tree (array/map elements, tuple elements, generic args), not
+    /// just at a field's own top level. Doesn't change the Rust type
+    /// (`&'buf str`, same as plain `string`) — only the wire representation
+    /// (a table index instead of inline bytes) and the read/write codegen.
+    Interned(Box<ResolvedTypeRef>),
     ImportedSchema {
         alias: String,
         root_name: String,
@@ -109,6 +169,9 @@ impl ResolvedTypeRef {
             ResolvedTypeRef::Tuple(_) => None,
             ResolvedTypeRef::VFloat { .. } => None,
             ResolvedTypeRef::Optional(v) => v.type_id(),
+            ResolvedTypeRef::Boxed(v) => v.type_id(),
+            ResolvedTypeRef::Constrained { inner, .. } => inner.type_id(),
+            ResolvedTypeRef::Interned(inner) => inner.type_id(),
             ResolvedTypeRef::ImportedSchema { .. } => None,
         }
     }
@@ -427,6 +490,48 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             }
         }
 
+        ResolvedTypeRef::Boxed(inner) => {
+            let i = type_info(inner);
+            TypeInfo {
+                // Heap indirection doesn't change the wire representation —
+                // the bytes on the wire are exactly the inner value's bytes,
+                // it's only the in-memory Rust field that gains a pointer.
+                wire_size: i.wire_size,
+                rust_type: format!("Box<{}>", i.rust_type),
+                skip_stmt: i.skip_stmt.clone(),
+                read_fn: "/* boxed expressions are handled inline */".into(),
+                write_fn: "/* boxed expressions are handled inline */".into(),
+                default_expr: format!("Box::new({})", i.default_expr),
+                size_fn: None,
+            }
+        }
+
+        // A constraint is purely a validation-time check — it doesn't change
+        // the Rust field type or the wire format at all, so it's transparent
+        // to `type_info`. Codegen inspects the constraint bounds separately
+        // (see `compute_constraint_infected` and the guard emission in
+        // `codegen/encode.rs`/`codegen/decode.rs`) wherever it needs them.
+        ResolvedTypeRef::Constrained { inner, .. } => type_info(inner),
+
+        ResolvedTypeRef::Interned(inner) => {
+            let i = type_info(inner);
+            TypeInfo {
+                wire_size: WireSize::Variable,
+                // Same in-memory type as plain `string` — interning only
+                // changes what's on the wire (a table index), not what the
+                // decoded value looks like in Rust.
+                rust_type: i.rust_type,
+                // Skipping an interned field skips just the index varint —
+                // the actual string bytes already live in the table, read
+                // once up front, not inline at this field's position.
+                skip_stmt: "skip_varint64(__buf, __pos)?;".into(),
+                read_fn: "/* interned expressions are handled inline */".into(),
+                write_fn: "/* interned expressions are handled inline */".into(),
+                default_expr: i.default_expr,
+                size_fn: None,
+            }
+        }
+
         ResolvedTypeRef::ImportedSchema {
             alias,
             root_name,
@@ -561,14 +666,36 @@ fn is_balanced(s: &str) -> bool {
     depth == 0
 }
 
-/// Whether `ty` is, or transitively contains, a `FixedMap` — the one fixed-width
-/// type whose Rust representation (`PojocFixedMap`) is not `Copy`. Used to keep
-/// such tuples out of the `Copy`-requiring fixed-array/fixed-block init paths.
+/// Whether `ty` is, or transitively contains, a `FixedMap` or `Boxed` — the
+/// fixed-width types whose Rust representation (`PojocFixedMap`, `Box<T>`) is
+/// not `Copy`. Used to keep such tuples/fields out of the `Copy`-requiring
+/// fixed-array/fixed-block init paths, even when their wire size is fixed.
 pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
     match ty {
         ResolvedTypeRef::FixedMap(..) => true,
+        ResolvedTypeRef::Boxed(..) => true,
         ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is, or transitively contains anywhere (array/map/tuple
+/// elements, `Optional`/`Boxed`/`Constrained` wrapping), an `Interned` type.
+pub fn contains_interned(ty: &ResolvedTypeRef) -> bool {
+    match ty {
+        ResolvedTypeRef::Interned(_) => true,
+        ResolvedTypeRef::Array(inner)
+        | ResolvedTypeRef::FixedArray(inner, _)
+        | ResolvedTypeRef::DeltaArray(inner)
+        | ResolvedTypeRef::FixedDeltaArray(inner, _)
+        | ResolvedTypeRef::Optional(inner)
+        | ResolvedTypeRef::Boxed(inner)
+        | ResolvedTypeRef::Constrained { inner, .. } => contains_interned(inner),
+        ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_interned),
+        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
+            contains_interned(k) || contains_interned(v)
+        }
         _ => false,
     }
 }
