@@ -59,7 +59,7 @@ pub fn read_f64(buf: &[u8], pos: &mut usize) -> PojocResult<f64> {
     Ok(f64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
-/// Read a fixed 1-byte little-endian `i8`.
+/// Read a fixed 1-byte `i8`.
 #[inline]
 pub fn read_i8(buf: &[u8], pos: &mut usize) -> PojocResult<i8> {
     Ok(read_u8(buf, pos)? as i8)

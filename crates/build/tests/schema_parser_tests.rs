@@ -634,12 +634,16 @@ schema Test {
 
 #[test]
 fn self_referential_generic_resolves() {
+    // A self-referential generic still needs `box<>` to break the cycle —
+    // otherwise the analyzer's recursion-cycle check (which exists
+    // specifically to catch this before it becomes an infinite-size `rustc`
+    // failure) now rejects it, same as a plain non-generic self-reference.
     let input = r#"
 schema Test {
   version 1 {
     type Node<T> {
       value: T
-      next: Node<T>?
+      next: box<Node<T>>?
     }
     fields {
       root: Node<i32>
@@ -665,10 +669,13 @@ schema Test {
         .unwrap()
         .ty;
     match next {
-        ResolvedTypeRef::Optional(inner) => {
-            assert!(matches!(**inner, ResolvedTypeRef::Scalar(ref id) if id.name == "NodeI32"));
-        }
-        other => panic!("expected Optional<NodeI32>, got {other:?}"),
+        ResolvedTypeRef::Optional(inner) => match &**inner {
+            ResolvedTypeRef::Boxed(boxed) => {
+                assert!(matches!(**boxed, ResolvedTypeRef::Scalar(ref id) if id.name == "NodeI32"));
+            }
+            other => panic!("expected Boxed(NodeI32), got {other:?}"),
+        },
+        other => panic!("expected Optional<Boxed<NodeI32>>, got {other:?}"),
     }
 }
 
@@ -1177,4 +1184,133 @@ fn doc_comment_survives_analysis_and_reaches_resolved_ir() {
         .find(|c| c.name == "max_count")
         .unwrap();
     assert_eq!(const_field.doc, vec!["Const doc.".to_string()]);
+}
+
+#[test]
+fn intern_field_resolves_to_interned_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      label: intern string = ""
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+    let field = schema
+        .versions
+        .last()
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.name == "label")
+        .unwrap();
+    assert!(matches!(field.ty, ResolvedTypeRef::Interned(_)));
+}
+
+#[test]
+fn intern_composes_inside_array() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      tags: [intern string] = []
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+    let field = schema
+        .versions
+        .last()
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.name == "tags")
+        .unwrap();
+    match &field.ty {
+        ResolvedTypeRef::Array(inner) => {
+            assert!(matches!(**inner, ResolvedTypeRef::Interned(_)))
+        }
+        other => panic!("expected Array(Interned(string)), got {other:?}"),
+    }
+}
+
+#[test]
+fn intern_composes_as_generic_arg() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Mono<T> {
+      value: T
+    }
+    fields {
+      wrapped: Mono<intern string>
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let schema = analyze_schema(&ast).unwrap();
+    let mono_interned_string = schema
+        .types
+        .types
+        .iter()
+        .find(|(id, _)| id.name == "MonoInternedString")
+        .map(|(_, t)| t)
+        .expect("MonoInternedString not found");
+    let value_field = mono_interned_string
+        .fields
+        .iter()
+        .find(|f| f.name == "value")
+        .unwrap();
+    assert!(matches!(value_field.ty, ResolvedTypeRef::Interned(_)));
+}
+
+#[test]
+fn intern_cannot_combine_with_lazy() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      label: lazy intern string
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn intern_cannot_combine_with_const() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      label: const intern string = ""
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn intern_rejects_non_string_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      count: intern i32 = 0
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
 }

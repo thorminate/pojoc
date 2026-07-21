@@ -385,6 +385,17 @@ fn render_type_ref(ty: &ResolvedTypeRef) -> String {
             format!("vfloat(min: {min}, max: {max}, step: {step})")
         }
         ResolvedTypeRef::Optional(inner) => format!("{}?", render_type_ref(inner)),
+        ResolvedTypeRef::Boxed(inner) => format!("box<{}>", render_type_ref(inner)),
+        ResolvedTypeRef::Constrained { inner, min, max } => {
+            let bounds = match (min, max) {
+                (Some(mn), Some(mx)) => format!("min: {mn}, max: {mx}"),
+                (Some(mn), None) => format!("min: {mn}"),
+                (None, Some(mx)) => format!("max: {mx}"),
+                (None, None) => String::new(),
+            };
+            format!("{}({bounds})", render_type_ref(inner))
+        }
+        ResolvedTypeRef::Interned(inner) => format!("intern {}", render_type_ref(inner)),
         ResolvedTypeRef::ImportedSchema { alias, version, .. } => format!("{alias}@{version}"),
     }
 }
@@ -427,6 +438,16 @@ fn render_type_ast(ty: &TypeAst) -> String {
             format!("vfloat(min: {min}, max: {max}, step: {step})")
         }
         TypeAst::Imported { alias, version } => format!("{alias}@{version}"),
+        TypeAst::Constrained { inner, min, max } => {
+            let bounds = match (min, max) {
+                (Some(mn), Some(mx)) => format!("min: {mn}, max: {mx}"),
+                (Some(mn), None) => format!("min: {mn}"),
+                (None, Some(mx)) => format!("max: {mx}"),
+                (None, None) => String::new(),
+            };
+            format!("{}({bounds})", render_type_ast(inner))
+        }
+        TypeAst::Interned(inner) => format!("intern {}", render_type_ast(inner)),
         TypeAst::Wildcard => "_".to_string(),
     }
 }

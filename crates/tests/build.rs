@@ -33,29 +33,45 @@ fn main() {
     }
 
     // protobuf
-    prost_build::compile_protos(&["schemas/player.proto"], &["schemas/"])
-        .expect("failed to compile protos");
+    prost_build::compile_protos(
+        &["schemas/player.proto", "schemas/intern_bench.proto"],
+        &["schemas/"],
+    )
+    .expect("failed to compile protos");
 
     // capnproto
     capnpc::CompilerCommand::new()
         .file("schemas/player.capnp")
+        .file("schemas/intern_bench.capnp")
         .output_path(&out_dir)
         .run()
         .expect("failed to compile capnp schema");
 
     // flatbuffers
-    let status = Command::new("flatc")
-        .args(["-r", "-o", out_dir.to_str().unwrap(), "schemas/player.fbs"])
-        .status()
-        .expect("failed to run flatc");
+    for fbs in ["player.fbs", "intern_bench.fbs"] {
+        let status = Command::new("flatc")
+            .args([
+                "-r",
+                "-o",
+                out_dir.to_str().unwrap(),
+                &format!("schemas/{fbs}"),
+            ])
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run flatc on {fbs}\n{e}"));
 
-    if !status.success() {
-        panic!("flatc failed");
+        if !status.success() {
+            panic!("flatc failed on {fbs}");
+        }
     }
 
     fs::rename(
         out_dir.join("player_generated.rs"),
         out_dir.join("flatbuf.rs"),
+    )
+    .expect("rename failed");
+    fs::rename(
+        out_dir.join("intern_bench_generated.rs"),
+        out_dir.join("flatbuf_intern_bench.rs"),
     )
     .expect("rename failed");
 
@@ -72,11 +88,19 @@ fn main() {
         },
     );
 
-    let bebop_out = out_dir.join("bebop-schema/player.rs");
-    let src = fs::read_to_string(&bebop_out).unwrap();
-    fs::write(&bebop_out, src.replace("#![allow(warnings)]", "")).unwrap();
+    // bebopc emits `#![allow(warnings)]` as an inner attribute that isn't
+    // the first item once spliced via `include!` into `generated!`'s own
+    // module body — strip it from every generated file, not just player's.
+    for name in ["player", "intern_bench"] {
+        let bebop_out = out_dir.join(format!("bebop-schema/{name}.rs"));
+        let src = fs::read_to_string(&bebop_out).unwrap();
+        fs::write(&bebop_out, src.replace("#![allow(warnings)]", "")).unwrap();
+    }
 
     println!("cargo:rerun-if-changed=schemas/player.fbs");
     println!("cargo:rerun-if-changed=schemas/player.capnp");
     println!("cargo:rerun-if-changed=schemas/player.proto");
+    println!("cargo:rerun-if-changed=schemas/intern_bench.fbs");
+    println!("cargo:rerun-if-changed=schemas/intern_bench.capnp");
+    println!("cargo:rerun-if-changed=schemas/intern_bench.proto");
 }

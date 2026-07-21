@@ -47,7 +47,9 @@ See [`docs/schema.md`](docs/schema.md) for the full schema language reference.
 ## What you get
 
 - **Schema evolution working perfectly out of the box**, you can decode from and encode to any version.
-- **An uber-compact wire format**: varint integers, delta-encoded integer arrays, quantized floats (`vfloat(min, max, step)` packs a ranged float into as few bytes as the range needs), fixed-size arrays/strings/maps with no length prefix, and lazy fields that skip decoding entirely until touched.
+- **An uber-compact wire format**: varint integers, delta-encoded integer arrays, quantized floats (`vfloat(min, max, step)` packs a ranged float into as few bytes as the range needs), fixed-size arrays/strings/maps with no length prefix, lazy fields that skip decoding entirely until touched, and opt-in string interning (`intern string`) that dedups repeated string values into a shared per-message table.
+- **Validation baked into the wire format**: `(min:, max:)` constraints on numbers, arrays, maps, and strings, enforced on both encode and decode.
+- **Recursive types** via `box<T>` heap indirection, with a compile-time error if a self-referencing type forgets it.
 - **Cross-schema imports** (`import "other.pojoc" as Other`) compiled as nested modules, can then be referenced as a type via `field: Other@1`.
 - **Editor support**. A language server (`pojoc-lsp`) with real completions and hover support, used in both a VS Code extension and a JetBrains plugin.
 

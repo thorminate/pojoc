@@ -86,6 +86,15 @@ schema Edge {
       spaces_str: string = "     "
       fixed_str_min: string(1) = "A"
 
+      // Validation constraints — range/length/count bounds enforced on both
+      // encode and decode, distinct from `vfloat`'s own quantization min/max.
+      // Bounds include 0 so `T::default()` (used by the generated `Default`
+      // impl, which zero-inits every field regardless of the schema's own
+      // declared default) still satisfies them.
+      constrained_count: u8(min: 0, max: 10) = 1
+      constrained_tags: [string](min: 0, max: 5) = []
+      constrained_label: string(min: 0, max: 20) = "label"
+
       // Array Combinations
       empty_arr: [string] = []
       fixed_arr_empty: [i32](0) = []
@@ -375,6 +384,15 @@ schema Edge {
       + Despawn: DespawnPayload
     }
 
+    // Self-referencing types require heap indirection: `next` couldn't be a
+    // bare/optional `LinkedNode` (the analyzer's cycle check hard-errors on
+    // unboxed recursion) but `box<LinkedNode>?` is fine — heap-allocated and
+    // absent-able, so the chain can terminate.
+    type LinkedNode {
+      value: i32 = 0
+      next: box<LinkedNode>?
+    }
+
     // Final step of the type-parameter-evolution chain — back to a
     // single-param `Mono`, dropping `Duo`'s `B` via `_`. The dropped param's
     // only user (`secondary`) must be cleaned up in this same diff, below.
@@ -418,6 +436,16 @@ schema Edge {
       + lazy_audit_log: lazy [string]?
 
       ~ normalized -> normalized_v5: vfloat(min: -1.0, max: 1.0, step: 0.0001)
+
+      // String interning — `intern` is a type-level wrapper that dedupes
+      // repeated string values into a single shared table for the whole
+      // encoded message. Composes both as a plain field and inside an array.
+      + interned_label: intern string = ""
+      + interned_tags: [intern string] = []
+
+      // Recursive type — a self-referencing struct, only representable via
+      // `box<T>` heap indirection (see `LinkedNode` above).
+      + linked_list: box<LinkedNode>?
     }
   }
 }
