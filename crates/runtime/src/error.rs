@@ -33,7 +33,10 @@ impl fmt::Display for Error {
             Error::UnsupportedVersion(v) => write!(f, "unsupported message version: {v}"),
             Error::InvalidLength => write!(f, "declared length exceeds buffer"),
             Error::ConstraintViolation { field, min, max } => {
-                write!(f, "field `{field}` violated its constraint (min: {min:?}, max: {max:?})")
+                write!(
+                    f,
+                    "field `{field}` violated its constraint (min: {min:?}, max: {max:?})"
+                )
             }
             Error::InvalidInternIndex => write!(f, "string-interning table index out of range"),
         }

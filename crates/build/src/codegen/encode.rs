@@ -296,7 +296,11 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Scalar(id) => {
-            let q = if is_constraint_infected(&id.name) { "?" } else { "" };
+            let q = if is_constraint_infected(&id.name) {
+                "?"
+            } else {
+                ""
+            };
             let extra = if is_intern_infected(&id.name) {
                 ", __interner"
             } else {
@@ -395,18 +399,22 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Boxed(inner) => {
-            // `deref_if_copy` needs a `&T` expression to conditionally strip
-            // down to a bare `T` for Copy primitives (mirroring how
-            // `Optional` derives `__val: &T` via its `Some(__val)` match) —
-            // a `Box<T>` has no pattern-matching sugar for that, so build it
-            // by hand: two derefs (outer reference, then `Box`'s `Deref`)
-            // re-referenced back to `&T`.
-            let t_ref = if is_ref {
-                format!("&**{accessor}")
+            // `&Box<T>` and `Box<T>` both auto-deref-coerce to `&T` at a
+            // call site expecting `&T` (Rust's built-in `Deref` for `Box`),
+            // so non-Copy inner types (structs, strings) need no manual
+            // deref at all — passing the boxed reference through as-is is
+            // enough, and doing `&**x` there is exactly what clippy's
+            // `explicit_auto_deref` flags. Copy primitives still need a
+            // genuine `T` value rather than a reference, which
+            // `deref_if_copy` provides by adding an explicit `*`.
+            let boxed_ref = if is_ref {
+                accessor.to_string()
             } else {
-                format!("&*{accessor}")
+                format!("&{accessor}")
             };
-            emit_write_expr(inner, &deref_if_copy(inner, &t_ref), vn, true, w);
+            let derefed = deref_if_copy(inner, &boxed_ref);
+            let now_a_value = derefed != boxed_ref;
+            emit_write_expr(inner, &derefed, vn, !now_a_value, w);
         }
 
         // Transparent on the wire — the constraint check itself is emitted
@@ -995,21 +1003,30 @@ fn emit_vn_cast_value(
         }
 
         (Boxed(f_inner), Boxed(t_inner)) => {
-            let deref_expr = if is_ref {
-                format!("&**{accessor}")
+            // `accessor` is always the *current* (latest-shape) struct
+            // field's actual Rust value, so its real type is `Box<t_inner>`
+            // — unwrap that via auto-deref-coercion (see the matching
+            // comment in `emit_write_expr`'s `Boxed` arm) rather than a
+            // manual `&**`, which clippy flags as redundant.
+            let boxed_ref = if is_ref {
+                accessor.to_string()
             } else {
-                format!("&*{accessor}")
+                format!("&{accessor}")
             };
-            emit_vn_cast_value(schema, f_inner, t_inner, &deref_expr, true, w);
+            let derefed = deref_if_copy(t_inner, &boxed_ref);
+            let now_a_value = derefed != boxed_ref;
+            emit_vn_cast_value(schema, f_inner, t_inner, &derefed, !now_a_value, w);
         }
 
         (from_ty, Boxed(t_inner)) if !matches!(from_ty, Boxed(_)) => {
-            let deref_expr = if is_ref {
-                format!("&**{accessor}")
+            let boxed_ref = if is_ref {
+                accessor.to_string()
             } else {
-                format!("&*{accessor}")
+                format!("&{accessor}")
             };
-            emit_vn_cast_value(schema, from_ty, t_inner, &deref_expr, true, w);
+            let derefed = deref_if_copy(t_inner, &boxed_ref);
+            let now_a_value = derefed != boxed_ref;
+            emit_vn_cast_value(schema, from_ty, t_inner, &derefed, !now_a_value, w);
         }
 
         (Boxed(f_inner), to_ty) if !matches!(to_ty, Boxed(_)) => {
@@ -1414,12 +1431,16 @@ fn emit_size_expr(
             w.line("}");
         }
         ResolvedTypeRef::Boxed(inner) => {
-            let t_ref = if is_ref {
-                format!("&**{accessor}")
+            // See the matching comment in `emit_write_expr`'s `Boxed` arm —
+            // same auto-deref-coercion reasoning applies here.
+            let boxed_ref = if is_ref {
+                accessor.to_string()
             } else {
-                format!("&*{accessor}")
+                format!("&{accessor}")
             };
-            emit_size_expr(inner, &deref_if_copy(inner, &t_ref), true, w, schema);
+            let derefed = deref_if_copy(inner, &boxed_ref);
+            let now_a_value = derefed != boxed_ref;
+            emit_size_expr(inner, &derefed, !now_a_value, w, schema);
         }
         ResolvedTypeRef::Constrained { inner, .. } => {
             emit_size_expr(inner, accessor, is_ref, w, schema)

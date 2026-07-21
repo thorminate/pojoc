@@ -1247,10 +1247,7 @@ impl Parser {
     /// generic postfix on any already-parsed base type, not a dedicated
     /// leading keyword like `vfloat`.
     fn parse_constraint_suffix(&mut self, base: TypeAst) -> Result<TypeAst, ParseError> {
-        if matches!(
-            base,
-            TypeAst::VFloat { .. } | TypeAst::Constrained { .. }
-        ) {
+        if matches!(base, TypeAst::VFloat { .. } | TypeAst::Constrained { .. }) {
             return Err(self.err_invalid(
                 "cannot combine a validation constraint with `vfloat`'s own min/max, or stack two constraint suffixes",
             ));
@@ -1298,7 +1295,9 @@ impl Parser {
         if let (Some(mn), Some(mx)) = (min, max)
             && mn > mx
         {
-            return Err(self.err_invalid(format!("constraint min ({mn}) is greater than max ({mx})")));
+            return Err(
+                self.err_invalid(format!("constraint min ({mn}) is greater than max ({mx})"))
+            );
         }
 
         Ok(TypeAst::Constrained {

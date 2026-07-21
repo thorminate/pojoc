@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
  "serde_bytes",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-build"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "compact_str",
  "heck",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "pojoc-build",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-lsp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-tests"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bebop",
  "bebop-tools",
