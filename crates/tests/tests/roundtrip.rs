@@ -170,7 +170,10 @@ fn test_encode_for_version_pre_v5_omits_new_fields() {
             .unwrap_or_else(|e| panic!("v{version}: encode_for_version failed: {e:?}"));
         let decoded = decode_static(&buf);
 
-        assert_eq!(decoded.interned_label, "", "v{version}: interned_label should default");
+        assert_eq!(
+            decoded.interned_label, "",
+            "v{version}: interned_label should default"
+        );
         assert!(
             decoded.interned_tags.is_empty(),
             "v{version}: interned_tags should default to empty"

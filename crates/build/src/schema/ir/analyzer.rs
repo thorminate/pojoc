@@ -1998,7 +1998,9 @@ impl<'a> SchemaAnalyzer<'a> {
                     if normalize_type(&id.name) == "string");
                 let is_countable = matches!(
                     &resolved_inner,
-                    ResolvedTypeRef::Array(_) | ResolvedTypeRef::DeltaArray(_) | ResolvedTypeRef::Map(_, _)
+                    ResolvedTypeRef::Array(_)
+                        | ResolvedTypeRef::DeltaArray(_)
+                        | ResolvedTypeRef::Map(_, _)
                 );
 
                 if !is_numeric_scalar && !is_string && !is_countable {
@@ -2021,15 +2023,15 @@ impl<'a> SchemaAnalyzer<'a> {
                     });
                 }
 
-                if is_string || is_countable {
-                    if min.is_some_and(|m| m < 0.0) || max.is_some_and(|m| m < 0.0) {
-                        return Err(AnalysisError::InvalidConstraint {
-                            reason: "a length/count bound cannot be negative".into(),
-                            version,
-                            span,
-                            line,
-                        });
-                    }
+                if (is_string || is_countable)
+                    && (min.is_some_and(|m| m < 0.0) || max.is_some_and(|m| m < 0.0))
+                {
+                    return Err(AnalysisError::InvalidConstraint {
+                        reason: "a length/count bound cannot be negative".into(),
+                        version,
+                        span,
+                        line,
+                    });
                 }
 
                 Ok(ResolvedTypeRef::Constrained {

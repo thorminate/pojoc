@@ -23,7 +23,7 @@ fn test_valid_values_roundtrip() {
 #[test]
 fn test_boundary_values_roundtrip() {
     let original = Constraints {
-        count: 10, // max
+        count: 10,                           // max
         tags: pojoc::pojvec!("a", "b", "c"), // max count
         label: "0123456789",                 // max length (10 bytes)
     };
@@ -47,10 +47,7 @@ fn test_encode_rejects_out_of_range_count() {
     let err = encode(&mut buf, &original).expect_err("out-of-range count must be rejected");
     assert!(matches!(
         err,
-        Error::ConstraintViolation {
-            field: "count",
-            ..
-        }
+        Error::ConstraintViolation { field: "count", .. }
     ));
 }
 
@@ -65,10 +62,7 @@ fn test_encode_rejects_too_many_tags() {
     let err = encode(&mut buf, &original).expect_err("too many tags must be rejected");
     assert!(matches!(
         err,
-        Error::ConstraintViolation {
-            field: "tags",
-            ..
-        }
+        Error::ConstraintViolation { field: "tags", .. }
     ));
 }
 
@@ -83,10 +77,7 @@ fn test_encode_rejects_empty_label() {
     let err = encode(&mut buf, &original).expect_err("empty label must be rejected");
     assert!(matches!(
         err,
-        Error::ConstraintViolation {
-            field: "label",
-            ..
-        }
+        Error::ConstraintViolation { field: "label", .. }
     ));
 }
 
@@ -119,10 +110,12 @@ fn test_decode_rejects_out_of_range_count() {
     )
     .unwrap();
 
-    assert_eq!(buf_a.len(), buf_b.len(), "same-shape messages must be same length");
-    let diff_positions: Vec<usize> = (0..buf_a.len())
-        .filter(|&i| buf_a[i] != buf_b[i])
-        .collect();
+    assert_eq!(
+        buf_a.len(),
+        buf_b.len(),
+        "same-shape messages must be same length"
+    );
+    let diff_positions: Vec<usize> = (0..buf_a.len()).filter(|&i| buf_a[i] != buf_b[i]).collect();
     assert_eq!(
         diff_positions.len(),
         1,
@@ -135,9 +128,6 @@ fn test_decode_rejects_out_of_range_count() {
     let err = decode(&malformed).expect_err("malformed count must be rejected, not panic");
     assert!(matches!(
         err,
-        Error::ConstraintViolation {
-            field: "count",
-            ..
-        }
+        Error::ConstraintViolation { field: "count", .. }
     ));
 }

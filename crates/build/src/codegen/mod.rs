@@ -621,9 +621,7 @@ fn compute_intern_infected(schema: &ResolvedSchema) -> HashSet<String> {
 
     let mut infected: HashSet<String> = latest
         .iter()
-        .filter(|(_, (_, resolved))| {
-            resolved.fields.iter().any(|f| contains_interned(&f.ty))
-        })
+        .filter(|(_, (_, resolved))| resolved.fields.iter().any(|f| contains_interned(&f.ty)))
         .map(|(name, _)| name.clone())
         .collect();
 
