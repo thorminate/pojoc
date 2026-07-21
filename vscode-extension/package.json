@@ -2,7 +2,7 @@
   "name": "pojoc-vscode",
   "displayName": "Pojoc",
   "description": "Language support for Pojoc schema files",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "engines": {
     "vscode": "^1.85.0",
     "node": "^24.18.0"

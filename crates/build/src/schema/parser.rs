@@ -208,7 +208,7 @@ impl Parser {
         let mut seen_versions = HashSet::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
-            let version_ast = self.parse_version()?;
+            let version_ast = self.parse_version(versions.is_empty())?;
             if !seen_versions.insert(version_ast.version) {
                 return Err(self.err_invalid(format!("duplicate version: {}", version_ast.version)));
             }
@@ -227,7 +227,7 @@ impl Parser {
         })
     }
 
-    fn parse_version(&mut self) -> Result<VersionAst, ParseError> {
+    fn parse_version(&mut self, is_first_version: bool) -> Result<VersionAst, ParseError> {
         let (start_span, start_line) = self.here();
         self.expect_keyword(Keyword::Version)?;
         let version = self.expect_number()?;
@@ -242,6 +242,7 @@ impl Parser {
         let mut blocks = Vec::new();
 
         while !matches!(self.peek(), Token::RBrace | Token::Eof) {
+            let (block_span, block_line) = self.here();
             let block = self.parse_version_block()?;
 
             match &block {
@@ -251,6 +252,21 @@ impl Parser {
                             "version {} has duplicate `fields` block",
                             version
                         )));
+                    }
+                    // Only the first version may redeclare the whole field list —
+                    // every later version must describe changes via `diff { }`.
+                    // Without this, a `fields { }` block in version 2+ silently
+                    // adds its fields on top of the prior version's instead of
+                    // replacing them, producing duplicate-named struct fields.
+                    if !is_first_version {
+                        return Err(self.err_invalid_at(
+                            format!(
+                                "version {} uses a `fields` block, but only the schema's first version may — later versions must use `diff {{ }}` to describe changes",
+                                version
+                            ),
+                            block_span,
+                            block_line,
+                        ));
                     }
                 }
                 VersionBlockAst::Diff(_) => {

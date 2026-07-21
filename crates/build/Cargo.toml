@@ -17,3 +17,10 @@ path = "src/lib.rs"
 heck = { workspace = true }
 thiserror = { workspace = true }
 compact_str = { workspace = true }
+
+[features]
+default = ["serde"]
+# Emit `Serialize`/`Deserialize` derives/impls in generated code. Requires the
+# consuming crate to depend on `serde` directly (with the `derive` feature),
+# and the `pojoc` runtime crate's own `serde` feature to also be enabled.
+serde = []

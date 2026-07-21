@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use pojoc_build::codegen::generate;
-use pojoc_build::schema::{AnalysisError, ImportOrchestrator, IndexableError};
+use pojoc_build::schema::{AnalysisError, ImportOrchestrator};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -51,77 +51,10 @@ fn main() {
     };
 }
 
-/// Converts an error to a path of a schema file, if it is an
-/// import-related error, it returns the path of that schema file.
-fn error_source_path<'a>(err: &'a AnalysisError, root: &'a Path) -> &'a Path {
-    match err {
-        AnalysisError::ImportParseFailed { path, .. } => Path::new(path.as_str()),
-        AnalysisError::ImportNotFound { origin, .. }
-        | AnalysisError::ImportNotUtf8 { origin, .. }
-        | AnalysisError::ImportReadFailed { origin, .. }
-        | AnalysisError::CircularImport { origin, .. } => origin.as_path(),
-        _ => root,
-    }
-}
-
-/// Emits a neatly formatted error to stdout.
+/// Emits a neatly formatted error to stderr, reusing pojoc-build's
+/// `AnalysisError::render` so build.rs and the CLI stay in sync.
 fn render_error(err: &AnalysisError, root: &Path) {
-    let source_path = error_source_path(err, root);
-    let source = std::fs::read_to_string(source_path).unwrap_or_default();
-
-    let line = err.line() as usize;
-    let span = err.span();
-    let message = err.to_string();
-
-    // This is the path that will be displayed in the final output,
-    // it is cleansed of unwanted symbols and stuff.
-    let display_path = source_path
-        .canonicalize()
-        .unwrap_or_else(|_| source_path.to_path_buf());
-    let display_path = display_path.display().to_string();
-    let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
-
-    let lines: Vec<&str> = source.lines().collect();
-    let line_idx = line.saturating_sub(1);
-    let line_text = lines.get(line_idx).copied().unwrap_or("");
-
-    // Gets a byte offset as to when the line starts.
-    let line_start = line_start_offset(&source, line_idx);
-
-    let col_start = span.start.saturating_sub(line_start);
-    let col_end = span.end.saturating_sub(line_start);
-    let caret_len = col_end.saturating_sub(col_start).max(1);
-
-    let gutter = line.to_string();
-    let pad = " ".repeat(gutter.len());
-
-    // I don't feel like importing some ansi crate so raw ansi will do fine.
-    eprintln!("\x1b[1;31merror\x1b[0m: {message}");
-    eprintln!(" {pad}\x1b[34m-->\x1b[0m {display_path}:{line}:{col_start}");
-    eprintln!(" {pad}\x1b[34m |\x1b[0m");
-    eprintln!(" {gutter}\x1b[34m |\x1b[0m {line_text}");
-    eprintln!(
-        " {pad}\x1b[34m |\x1b[0m {}\x1b[1;31m{}\x1b[0m",
-        " ".repeat(col_start),
-        "^".repeat(caret_len),
-    );
-}
-
-/// Gets the byte offset of a string for the start of a certain line.
-fn line_start_offset(source: &str, line_idx: usize) -> usize {
-    if line_idx == 0 {
-        return 0;
-    }
-    let mut seen = 0;
-    for (i, b) in source.bytes().enumerate() {
-        if b == b'\n' {
-            seen += 1;
-            if seen == line_idx {
-                return i + 1;
-            }
-        }
-    }
-    source.len()
+    eprint!("{}", err.render(root));
 }
 
 /// Simply emits a log to stdout with a dark gray ansi

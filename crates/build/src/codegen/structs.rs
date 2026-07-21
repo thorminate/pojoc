@@ -70,11 +70,20 @@ pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     let has_default = !resolved.variants.is_empty();
+    let serde_derive = if cfg!(feature = "serde") {
+        ", Serialize, Deserialize"
+    } else {
+        ""
+    };
     emit_doc(&resolved.doc, w);
     if has_default {
-        w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]");
+        w.line(&format!(
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, Default{serde_derive})]"
+        ));
     } else {
-        w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]");
+        w.line(&format!(
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq{serde_derive})]"
+        ));
     }
     w.line("#[repr(u32)]");
     w.line(&format!("pub enum {name} {{"));
@@ -125,8 +134,13 @@ pub fn emit_unions(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
+    let serde_derive = if cfg!(feature = "serde") {
+        ", Serialize, Deserialize"
+    } else {
+        ""
+    };
     emit_doc(&resolved.doc, w);
-    w.line("#[derive(Debug, Clone, Serialize, Deserialize)]");
+    w.line(&format!("#[derive(Debug, Clone{serde_derive})]"));
     w.line(&format!("pub enum {name} {{"));
     w.indent();
     for variant in &resolved.variants {
@@ -208,9 +222,16 @@ fn emit_bitset_struct(
 ) {
     let computed_len = bs.variants.len().div_ceil(8);
 
+    let serde_derive = if cfg!(feature = "serde") {
+        ", Serialize, Deserialize"
+    } else {
+        ""
+    };
     emit_doc(&bs.doc, w);
     // Added PartialOrd, Ord, and Hash so these can be sorted or used as keys in a HashMap/HashSet
-    w.line("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]");
+    w.line(&format!(
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash{serde_derive})]"
+    ));
     w.line(&format!("pub struct {name}(pub [u8; {computed_len}]);"));
     w.blank();
 
@@ -418,12 +439,17 @@ fn emit_named_struct(
     let struct_lt = if needs_lifetime { "<'buf>" } else { "" };
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
+    let serde_derive = if cfg!(feature = "serde") {
+        ", Serialize, Deserialize"
+    } else {
+        ""
+    };
     emit_doc(doc, w);
     w.line("#[allow(clippy::type_complexity)]");
     if needs_lifetime {
         w.line("#[derive(Debug, Clone)]");
     } else {
-        w.line("#[derive(Debug, Clone, Default, Serialize, Deserialize)]");
+        w.line(&format!("#[derive(Debug, Clone, Default{serde_derive})]"));
     }
 
     w.line(&format!("pub struct {name}{struct_lt} {{"));
@@ -489,7 +515,7 @@ fn emit_named_struct(
         w.line("}");
     }
 
-    if needs_lifetime {
+    if needs_lifetime && cfg!(feature = "serde") {
         emit_lazy_struct_serde(name, fields, schema, w);
     }
 }
