@@ -536,6 +536,12 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             format!("{}(__buf, __pos)?", info.read_fn)
         }
         ResolvedTypeRef::Array(inner) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                let rust_type = type_info(inner).rust_type;
+                return format!("read_pod_array::<{rust_type}>(__buf, __pos)?");
+            }
             let inner_expr = emit_read_expr(inner);
             format!(
                 "{{ let __n = read_array_len(__buf, __pos)?; let mut __v = PojocVec::with_capacity(__n); for _ in 0..__n {{ __v.push({inner_expr}); }} __v }}"
@@ -544,6 +550,12 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
         ResolvedTypeRef::FixedArray(inner, n) => {
             if *n == 0 {
                 return "[]".to_string();
+            }
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                let rust_type = type_info(inner).rust_type;
+                return format!("read_fixed_pod_array::<{rust_type}, {n}>(__buf, __pos)?");
             }
             let inner_expr = emit_read_expr(inner);
             let init = if let WireSize::Fixed(_) = type_info(inner).wire_size {
@@ -571,7 +583,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             let ke = emit_read_expr(k_ty);
             let ve = emit_read_expr(v_ty);
             format!(
-                "{{ let __n = read_array_len(__buf, __pos)?; let mut __m = PojocMap::with_capacity(__n); for _ in 0..__n {{ let __k = {ke}; let __v = {ve}; __m.insert(__k, __v); }} __m }}"
+                "{{ let __n = read_array_len(__buf, __pos)?; let mut __m = PojocMap::with_capacity_and_hasher(__n, Default::default()); for _ in 0..__n {{ let __k = {ke}; let __v = {ve}; __m.insert(__k, __v); }} __m }}"
             )
         }
         ResolvedTypeRef::FixedMap(k_ty, v_ty, n) => {
@@ -679,6 +691,13 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
         ResolvedTypeRef::FixedArray(inner, n) => {
             if *n == 0 {
                 "[]".to_string()
+            } else if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                let rust_type = type_info(inner).rust_type;
+                format!(
+                    "unsafe {{ read_fixed_pod_array_unchecked::<{rust_type}, {n}>(__buf, __pos) }}"
+                )
             } else {
                 let inner_expr = emit_read_expr_unchecked(inner);
                 format!("std::array::from_fn(|_| {inner_expr})")
@@ -964,7 +983,7 @@ fn emit_cast_value(
             let elem_expr = emit_read_expr(elem);
             let v_rust = type_info(v_ty).rust_type;
             CastExpr::Block(format!(
-                "{{ let mut __m = PojocMap::with_capacity({n}); \
+                "{{ let mut __m = PojocMap::with_capacity_and_hasher({n}, Default::default()); \
                  for __i in 0i32..{n} {{ let __v: {v_rust} = {elem_expr}; __m.insert(__i, __v); }} \
                  __m }}"
             ))
