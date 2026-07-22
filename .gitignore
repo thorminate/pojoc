@@ -9,4 +9,5 @@
 /jetbrains-plugin/.intellijPlatform
 /jetbrains-plugin/.kotlin
 /jetbrains-plugin/build
+/jetbrains-plugin/bin
 /jetbrains-plugin/src/main/resources/bin/

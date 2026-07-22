@@ -1,7 +1,7 @@
 # Pojoc
 
 [![CI](https://github.com/thorminate/pojoc/actions/workflows/ci.yml/badge.svg)](https://github.com/thorminate/pojoc/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/pojoc.svg)](https://crates.io/crates/pojoc)
+[![crates.io](https://img.shields.io/crates/v/pojoc.svg?label=pojoc)](https://crates.io/crates/pojoc)
 [![crates.io](https://img.shields.io/crates/v/pojoc-build.svg?label=pojoc-build)](https://crates.io/crates/pojoc-build)
 [![crates.io](https://img.shields.io/crates/v/pojoc-cli.svg?label=pojoc-cli)](https://crates.io/crates/pojoc-cli)
 [![Release](https://img.shields.io/github/v/release/thorminate/pojoc)](https://github.com/thorminate/pojoc/releases)
@@ -39,8 +39,8 @@ schema Player {
       ~ name -> display_name: string   // renamed
       + level: i32 = 1                 // new field, decoding older data makes this field decode to 1.
       ~ stats: Stats                   // even if you evolved the type,
-        // it still counts as a new type 
-        // so you have to retype the field 
+        // it still counts as a new type
+        // so you have to retype the field
         // for it to take effect
     }
   }
@@ -85,15 +85,13 @@ fn main() {
 }
 ```
 
-`Error::render` gives the same `file:line:col` + caret-pointing-at-the-mistake
-output as `pojoc check`, so a broken schema fails the build with something
-readable instead of a bare one-line message.
+`Error::render` gives a really neat `file:line:col` + caret-pointing-at-the-mistake error message, so an error looks nice.
 
 Generated types derive `Serialize`/`Deserialize`, so `serde` (with the `derive`
 feature) needs to be a direct dependency too. If you don't want that, disable
 it: `cargo add pojoc --no-default-features` and
 `cargo add --build pojoc-build --no-default-features` (the `pojoc`/`pojoc-build`
-`serde` feature must be turned off on *both* to stay consistent).
+`serde` feature must be turned off on _both_ to stay consistent).
 
 Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module. That gives you `encode_vN(&mut Vec<u8>, &T)` / `decode_vN(&[u8], &mut usize) -> PojocResult<T>` for the latest and every prior version:
 
@@ -134,7 +132,7 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 **Serialized size** (identical populated message, bytes. Smaller is better):
 
 | Format      | Bytes   |
-|-------------|---------|
+| ----------- | ------- |
 | **Pojoc**   | **429** |
 | Protobuf    | 463     |
 | Bebop       | 634     |
@@ -144,7 +142,7 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 **Encode / decode / full round-trip** (nanoseconds, lower is better):
 
 | Format      |  Encode | Decode | Round-trip |
-|-------------|--------:|-------:|-----------:|
+| ----------- | ------: | -----: | ---------: |
 | **Pojoc**   | **233** |    250 |    **492** |
 | Cap'n Proto |     532 | **90** |        628 |
 | Bebop       |     554 |    322 |        857 |
@@ -156,7 +154,7 @@ Cap'n Proto gets a slight edge here because they are zero-copy (flatbuffers is t
 ## Project Layout
 
 | Crate         | What it is                                                             |
-|---------------|------------------------------------------------------------------------|
+| ------------- | ---------------------------------------------------------------------- |
 | `pojoc`       | Runtime support library the generated code depends on.                 |
 | `pojoc-build` | Compile `.pojoc` files.                                                |
 | `pojoc-cli`   | `pojoc check` / `pojoc build`, thin wrapper over `pojoc-build`         |
