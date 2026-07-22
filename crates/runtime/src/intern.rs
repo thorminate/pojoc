@@ -7,16 +7,20 @@ use std::collections::HashMap;
 /// Builds a message's shared string-interning table during encode: strings
 /// are deduped by first-occurrence order as `intern`-marked fields are
 /// visited, and referenced elsewhere by their assigned index.
+///
+/// Keyed with [`crate::PojocHasher`] to resist hash-flooding when the
+/// interned strings come from decoded, attacker-influenced data — see
+/// `docs/security.md`.
 pub struct InternBuilder<'a> {
     order: Vec<&'a str>,
-    index: HashMap<&'a str, u32>,
+    index: HashMap<&'a str, u32, crate::PojocHasher>,
 }
 
 impl<'a> InternBuilder<'a> {
     pub fn new() -> Self {
         Self {
             order: Vec::new(),
-            index: HashMap::new(),
+            index: HashMap::default(),
         }
     }
 

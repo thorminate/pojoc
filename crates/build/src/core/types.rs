@@ -197,6 +197,17 @@ pub fn normalize_type(name: &str) -> &str {
     }
 }
 
+/// Whether `name` is a fixed-width scalar eligible for the `bytemuck` bulk
+/// array fast path (`read_pod_array`/`write_pod_array`) — i.e. not `bool`
+/// (not every byte is a valid `bool`, so it can't be blindly reinterpreted)
+/// and not varint-encoded.
+pub fn is_bulk_castable_scalar(name: &str) -> bool {
+    matches!(
+        normalize_type(name),
+        "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "f32" | "f64"
+    )
+}
+
 pub fn is_primitive(name: &str) -> bool {
     matches!(
         normalize_type(name),
@@ -386,7 +397,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 ),
                 read_fn: "/* map expressions are inlined */".into(),
                 write_fn: "/* map expressions are inlined */".into(),
-                default_expr: "PojocMap::new()".into(),
+                default_expr: "PojocMap::default()".into(),
                 size_fn: None,
             }
         }

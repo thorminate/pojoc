@@ -278,7 +278,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
         ),
         DefaultValue::Map(pairs) => {
             if pairs.is_empty() {
-                "PojocMap::new()".to_string()
+                "PojocMap::default()".to_string()
             } else {
                 let inserts = pairs
                     .iter()
@@ -291,7 +291,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
-                format!("{{ let mut __m = PojocMap::new(); {inserts} __m }}")
+                format!("{{ let mut __m = PojocMap::default(); {inserts} __m }}")
             }
         }
         DefaultValue::Struct => "Default::default()".to_string(),

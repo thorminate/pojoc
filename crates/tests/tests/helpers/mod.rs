@@ -61,6 +61,15 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.empty_arr.push("FirstElement");
     e.empty_arr.push("SecondElement");
     e.array_to_map.insert(5, 25);
+    e.plain_f32_arr.push(1.5);
+    e.plain_f32_arr.push(-273.15);
+    e.plain_f32_arr.push(0.0);
+    e.plain_u8_arr.push(0);
+    e.plain_u8_arr.push(128);
+    e.plain_u8_arr.push(255);
+    e.plain_i8_arr.push(-128);
+    e.plain_i8_arr.push(-1);
+    e.plain_i8_arr.push(127);
     e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
     // Delta sequences
@@ -458,6 +467,9 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_eq!(a.delta_fixed_u8, b.delta_fixed_u8);
     assert_eq!(a.delta_fixed_empty, b.delta_fixed_empty);
     assert_eq!(a.legacy_positions, b.legacy_positions);
+    assert_eq!(a.plain_f32_arr, b.plain_f32_arr);
+    assert_eq!(a.plain_u8_arr, b.plain_u8_arr);
+    assert_eq!(a.plain_i8_arr, b.plain_i8_arr);
 
     // Nested structs
     assert_middle_layer_eq(&a.root_struct, &b.root_struct);

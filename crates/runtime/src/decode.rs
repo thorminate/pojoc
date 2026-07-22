@@ -209,16 +209,129 @@ pub unsafe fn read_fixed_bytes_unchecked<const N: usize>(buf: &[u8], pos: &mut u
 }
 
 /// Read a length-prefixed UTF-8 string.
+///
+/// Validated with `simdutf8` (SIMD-accelerated, falls back to a scalar scan
+/// on targets/CPUs without the relevant instruction set) rather than
+/// `std::str::from_utf8` — same validation guarantee, just faster on the
+/// common case of mostly-ASCII/valid-UTF-8 wire data.
 #[inline]
 pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
     let bytes = read_bytes(buf, pos)?;
-    std::str::from_utf8(bytes).map_err(|_| Error::InvalidLength)
+    simdutf8::basic::from_utf8(bytes).map_err(|_| Error::InvalidLength)
 }
 
 /// Read a length prefix for an array.
 #[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
     Ok(read_varint64(buf, pos)? as usize)
+}
+
+/// A fixed-width scalar whose wire representation is little-endian bytes,
+/// eligible for bulk `bytemuck` casting of whole arrays instead of a
+/// per-element read/write loop. `to_wire_le` is self-inverse: a no-op on
+/// little-endian hosts, a byte swap on big-endian hosts.
+pub trait WireScalar: bytemuck::Pod + Copy {
+    fn to_wire_le(self) -> Self;
+}
+
+macro_rules! impl_wire_scalar_int {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl WireScalar for $ty {
+                #[inline]
+                fn to_wire_le(self) -> Self {
+                    self.to_le()
+                }
+            }
+        )+
+    };
+}
+impl_wire_scalar_int!(u8, i8, u16, i16, u32, i32, u64, i64);
+
+impl WireScalar for f32 {
+    #[inline]
+    fn to_wire_le(self) -> Self {
+        Self::from_bits(self.to_bits().to_le())
+    }
+}
+
+impl WireScalar for f64 {
+    #[inline]
+    fn to_wire_le(self) -> Self {
+        Self::from_bits(self.to_bits().to_le())
+    }
+}
+
+/// Read a length-prefixed array of a fixed-width scalar (`u8`/`i8`/`u16`/
+/// `i16`/`u32`/`i32`/`u64`/`i64`/`f32`/`f64`) in a single bulk `bytemuck`
+/// cast instead of a per-element loop.
+#[inline]
+pub fn read_pod_array<T: WireScalar>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> PojocResult<crate::PojocVec<T>> {
+    let n = read_array_len(buf, pos)?;
+    let byte_len = n
+        .checked_mul(core::mem::size_of::<T>())
+        .ok_or(Error::InvalidLength)?;
+    let end = pos.checked_add(byte_len).ok_or(Error::InvalidLength)?;
+    let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
+    *pos = end;
+    let mut v: crate::PojocVec<T> = crate::PojocVec::from_vec(bytemuck::pod_collect_to_vec(bytes));
+    if !cfg!(target_endian = "little") {
+        for x in v.iter_mut() {
+            *x = x.to_wire_le();
+        }
+    }
+    Ok(v)
+}
+
+/// Read a fixed-length array of a fixed-width scalar (`u8`/`i8`/`u16`/`i16`/
+/// `u32`/`i32`/`u64`/`i64`/`f32`/`f64`) in a single bulk `bytemuck` cast
+/// instead of a per-element loop.
+#[inline]
+pub fn read_fixed_pod_array<T: WireScalar, const N: usize>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> PojocResult<[T; N]> {
+    let byte_len = N * core::mem::size_of::<T>();
+    let end = pos.checked_add(byte_len).ok_or(Error::UnexpectedEof)?;
+    let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
+    *pos = end;
+    let mut arr = [<T as bytemuck::Zeroable>::zeroed(); N];
+    bytemuck::cast_slice_mut::<T, u8>(&mut arr).copy_from_slice(bytes);
+    if !cfg!(target_endian = "little") {
+        for x in arr.iter_mut() {
+            *x = x.to_wire_le();
+        }
+    }
+    Ok(arr)
+}
+
+/// Read a fixed-length array of a fixed-width scalar without bounds
+/// checking, via a single bulk memcpy.
+///
+/// # Safety
+/// Caller must guarantee `*pos + N * size_of::<T>() <= buf.len()`.
+#[inline]
+pub unsafe fn read_fixed_pod_array_unchecked<T: WireScalar, const N: usize>(
+    buf: &[u8],
+    pos: &mut usize,
+) -> [T; N] {
+    let p = *pos;
+    let byte_len = N * core::mem::size_of::<T>();
+    *pos = p + byte_len;
+    let mut arr = [<T as bytemuck::Zeroable>::zeroed(); N];
+    // SAFETY: caller guarantees `p + byte_len <= buf.len()`.
+    unsafe {
+        core::ptr::copy_nonoverlapping(buf.as_ptr().add(p), arr.as_mut_ptr() as *mut u8, byte_len);
+    }
+    if !cfg!(target_endian = "little") {
+        for x in arr.iter_mut() {
+            *x = x.to_wire_le();
+        }
+    }
+    arr
 }
 
 /// A decoded message envelope.

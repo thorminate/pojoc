@@ -314,6 +314,12 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Array(inner) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                w.line(&format!("write_pod_array(__buf, {accessor}.as_slice());"));
+                return;
+            }
             w.line(&format!("write_array_len(__buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
@@ -323,6 +329,15 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::FixedArray(inner, _) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                w.line(&format!(
+                    "write_fixed_pod_array(__buf, {}{accessor});",
+                    if is_ref { "" } else { "&" }
+                ));
+                return;
+            }
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, true, w);
@@ -928,13 +943,8 @@ fn emit_vn_cast_value(
             }
         }
 
-        (Array(f_elem), DeltaArray(_)) => {
-            w.line(&format!("write_array_len(__buf, {accessor}.len());"));
-            w.line(&format!("for __item in {accessor}.iter() {{"));
-            w.indent();
-            emit_write_expr(f_elem, &deref_if_copy(f_elem, "__item"), None, true, w);
-            w.dedent();
-            w.line("}");
+        (Array(_), DeltaArray(_)) => {
+            emit_write_expr(from, accessor, Some(schema), is_ref, w);
         }
 
         (DeltaArray(_), Array(_)) => {
@@ -1297,6 +1307,15 @@ fn emit_size_expr(
             w.line(&format!("size += {computed_len};"));
         }
         ResolvedTypeRef::Array(inner) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+                && let WireSize::Fixed(elem_size) = type_info(inner).wire_size
+            {
+                w.line(&format!(
+                    "size += varint_size({accessor}.len()) + {accessor}.len() * {elem_size};"
+                ));
+                return;
+            }
             w.line(&format!("size += varint_size({accessor}.len());"));
             // ...
             w.line(&format!("for __item in {accessor}.iter() {{"));

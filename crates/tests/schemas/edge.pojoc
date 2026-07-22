@@ -113,6 +113,9 @@ schema Edge {
       delta_fixed_empty: [i32](delta, 0) = []
 
       legacy_positions: [i32] = []
+      plain_f32_arr: [f32] = []
+      plain_u8_arr: [u8] = []
+      plain_i8_arr: [i8] = []
 
       // Deep Structured Objects
       root_struct: MiddleLayer
