@@ -182,7 +182,22 @@ impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
     }
 }
 
-pub use std::collections::HashMap as PojocMap;
+/// The hash-map keying used by [`PojocMap`] and `InternBuilder`: a
+/// per-process random seed, defending against hash-flooding when their keys
+/// come from decoded wire data — see `docs/security.md`. Backed by
+/// [`foldhash::fast::RandomState`] by default (the `foldhash` feature); with
+/// that feature disabled, falls back to std's SipHash-based `RandomState`.
+#[cfg(feature = "foldhash")]
+pub type PojocHasher = foldhash::fast::RandomState;
+
+/// The hash-map keying used by [`PojocMap`] and `InternBuilder` — std's
+/// SipHash-based `RandomState` (the `foldhash` feature is disabled).
+#[cfg(not(feature = "foldhash"))]
+pub type PojocHasher = std::collections::hash_map::RandomState;
+
+/// A map for `map<K, V>` fields, backed by `std::collections::HashMap`
+/// keyed with [`PojocHasher`].
+pub type PojocMap<K, V> = std::collections::HashMap<K, V, PojocHasher>;
 
 #[cfg(feature = "serde")]
 pub use serde_bytes::Bytes as SerdeBytes;
@@ -356,15 +371,15 @@ macro_rules! pojstr {
 #[macro_export]
 macro_rules! pojmap {
     () => {{
-        $crate::PojocMap::new()
+        $crate::PojocMap::default()
     }};
 
     ($k:ty, $v:ty) => {{
-        $crate::PojocMap::<$k, $v>::new()
+        $crate::PojocMap::<$k, $v>::default()
     }};
 
     ($($k:expr => $v:expr),+ $(,)?) => {{
-        let mut __m = $crate::PojocMap::new();
+        let mut __m = $crate::PojocMap::default();
         $(
             __m.insert(
                 ::core::convert::Into::into($k),

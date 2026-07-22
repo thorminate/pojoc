@@ -10,7 +10,7 @@ This is a reference for the schema language itself. For benchmarks and setup see
 
 - [File structure](#file-structure)
 - [Field types](#field-types)
-- [Declared types](#declared-types-enum-struct-union-bitset)
+- [Declared types](#declared-types)
 - [Generics](#generics)
 - [Defaults](#defaults)
 - [Modifiers: `const`, `lazy`, and `intern`](#modifiers-const-lazy-and-intern)
@@ -60,13 +60,12 @@ schema Player {
 ### Primitives
 
 | Category      | Types                  | Aliases                                   |
-|---------------|------------------------|-------------------------------------------|
+| ------------- | ---------------------- | ----------------------------------------- |
 | Unsigned ints | `u8` `u16` `u32` `u64` | `byte`/`uchar`, `ushort`, `uint`, `ulong` |
 | Signed ints   | `i8` `i16` `i32` `i64` | `char`, `short`, `int`, `long`            |
 | Floats        | `f32` `f64`            | `float`, `double`                         |
 | Bool          | `bool`                 | `boolean`                                 |
 | String        | `string`               | `str`                                     |
-
 
 ### Varints
 
@@ -199,7 +198,7 @@ need infinite size.
 
 ---
 
-## Declared types (`enum`, `type`, `union`, `bitset`)
+## Declared types
 
 Declared inside a `version` block, referenced by later fields.
 
@@ -290,7 +289,7 @@ A field may declare a default with `= value`. Defaults fill in fields that are
 missing when decoding older data, and back the generated `Default` impl.
 
 | Type                     | Default syntax                                                           |
-|--------------------------|--------------------------------------------------------------------------|
+| ------------------------ | ------------------------------------------------------------------------ |
 | Int / float              | `42`, `-1`, `3.14`, `3.40282347e38`, `-1.79e+308`                        |
 | Bool                     | `true` / `false`                                                         |
 | String                   | `"text"`                                                                 |
@@ -361,7 +360,7 @@ drawn from a small pool.
 - Decodes to the same `&'buf str` as a plain string — no API difference at the
   call site.
 - Encoding does a hash-map lookup-or-insert per interned value (a small CPU
-  cost); decoding a table index is *cheaper* than reading a plain string, so
+  cost); decoding a table index is _cheaper_ than reading a plain string, so
   `intern` is close to a pure win whenever a value repeats.
 - Can't combine with `lazy` on the same field — `lazy` skips decoding the
   field's bytes entirely, which conflicts with participating in a table built
@@ -392,17 +391,17 @@ version 3 {
 }
 ```
 
-| Op | Meaning |
-|---|---|
+| Op                        | Meaning                                           |
+| ------------------------- | ------------------------------------------------- |
 | `+ field: Type = default` | add a new field (needs a default unless optional) |
-| `- field` | remove a field |
-| `~ field: NewType` | retype in place |
-| `~ old -> new: Type` | rename `old` to `new` (with optional retype) |
+| `- field`                 | remove a field                                    |
+| `~ field: NewType`        | retype in place                                   |
+| `~ old -> new: Type`      | rename `old` to `new` (with optional retype)      |
 
 Old wire data still decodes: removed fields are read and discarded, added fields
 fall back to their default, renamed/retyped fields are mapped through.
 
-> A struct-typed (or generic) field can't be retyped to an *incompatible* shape
+> A struct-typed (or generic) field can't be retyped to an _incompatible_ shape
 > in place. When a nested type's shape changes incompatibly, add a **new** field
 > pinned to the new type rather than retyping the old one.
 
@@ -431,7 +430,7 @@ bitset Flags extends Flags@1 {
 }
 ```
 
-Note: because a type's evolution produces a *new* type version, a root field of
+Note: because a type's evolution produces a _new_ type version, a root field of
 that type only "sees" the new shape when you re-pin it in the `diff`
 (`~ stats: Stats`) — otherwise it keeps decoding at its original version. New
 fields added fresh in a later version automatically use the most current type.

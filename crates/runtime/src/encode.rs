@@ -103,6 +103,36 @@ pub fn write_array_len(buf: &mut Vec<u8>, len: usize) {
     write_varint64(buf, len as u64);
 }
 
+/// Write a length-prefixed array of a fixed-width scalar (`u8`/`i8`/`u16`/
+/// `i16`/`u32`/`i32`/`u64`/`i64`/`f32`/`f64`) in a single bulk `bytemuck`
+/// cast instead of a per-element loop.
+#[inline]
+pub fn write_pod_array<T: crate::WireScalar>(buf: &mut Vec<u8>, values: &[T]) {
+    write_array_len(buf, values.len());
+    if cfg!(target_endian = "little") {
+        buf.extend_from_slice(bytemuck::cast_slice(values));
+    } else {
+        let swapped: crate::PojocVec<T> = values.iter().map(|v| v.to_wire_le()).collect();
+        buf.extend_from_slice(bytemuck::cast_slice(swapped.as_slice()));
+    }
+}
+
+/// Write a fixed-length array of a fixed-width scalar (`u8`/`i8`/`u16`/
+/// `i16`/`u32`/`i32`/`u64`/`i64`/`f32`/`f64`) in a single bulk `bytemuck`
+/// cast instead of a per-element loop. No length prefix (fixed-size).
+#[inline]
+pub fn write_fixed_pod_array<T: crate::WireScalar, const N: usize>(
+    buf: &mut Vec<u8>,
+    arr: &[T; N],
+) {
+    if cfg!(target_endian = "little") {
+        buf.extend_from_slice(bytemuck::cast_slice(arr));
+    } else {
+        let swapped: [T; N] = std::array::from_fn(|i| arr[i].to_wire_le());
+        buf.extend_from_slice(bytemuck::cast_slice(&swapped));
+    }
+}
+
 /// Write the start of a message envelope: `[version:varint] [len:u32 placeholder]`.
 /// Returns the buffer offset of the length placeholder for `patch_envelope_length`.
 #[inline]

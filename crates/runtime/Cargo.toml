@@ -17,10 +17,17 @@ path = "src/lib.rs"
 smallvec = { workspace = true, features = ["const_new"] }
 serde = { workspace = true, optional = true }
 serde_bytes = { workspace = true, optional = true }
+bytemuck = { workspace = true }
+simdutf8 = { version = "0.1.5", features = ["aarch64_neon"] }
+foldhash = { version = "0.2.0", optional = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "foldhash"]
 # Derives Serialize/Deserialize on runtime types (PojocFixedMap, SerdeBytes)
 # to match pojoc-build-generated code. Disable on both crates together if you
 # don't want serde in your dependency tree.
 serde = ["dep:serde", "dep:serde_bytes", "smallvec/serde"]
+# Hashes PojocMap and InternBuilder with foldhash::fast::RandomState instead
+# of std's SipHash-based RandomState. Disable to fall back to SipHash — see
+# docs/security.md for the tradeoff.
+foldhash = ["dep:foldhash"]
