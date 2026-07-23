@@ -25,9 +25,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install protoc/capnp/flatc (crates/tests deps)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler capnproto flatbuffers-compiler
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: protobuf-compiler capnproto flatbuffers-compiler
+          version: 1.0
 
       - name: Format
         run: cargo fmt --check
