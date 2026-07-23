@@ -90,9 +90,7 @@ fn type_id_is_none_for_shapeless_containers() {
         .type_id(),
         None
     );
-    // Map only exposes the value type's id, not the key's, and is None when
-    // the value itself has no id (a `Scalar`, even a primitive one, always
-    // does — so use a value kind that genuinely has none).
+    // map only exposes the value type's id, not the key's, so use a value kind with no id at all
     assert_eq!(
         ResolvedTypeRef::Map(
             Box::new(ResolvedTypeRef::Scalar(id("string"))),
@@ -136,9 +134,6 @@ fn type_info_scalar_primitives_have_fixed_or_variable_wire_size() {
 
 #[test]
 fn type_info_scalar_struct_fallthrough_uses_name_verbatim() {
-    // A non-primitive Scalar name (a user-defined struct, or a monomorphized
-    // generic instantiation like `BoxI32`) is not special-cased: codegen
-    // derives everything from the bare name.
     let info = type_info(&ResolvedTypeRef::Scalar(id("BoxI32")));
     assert_eq!(info.rust_type, "BoxI32");
     assert_eq!(info.read_fn, "read_box_i32");

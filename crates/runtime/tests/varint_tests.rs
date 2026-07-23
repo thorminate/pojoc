@@ -6,7 +6,7 @@ fn roundtrip(value: u64) {
     let mut pos = 0;
     let decoded = read_varint64(&buf, &mut pos).unwrap();
     assert_eq!(decoded, value);
-    assert_eq!(pos, buf.len()); // consumed exactly the right bytes
+    assert_eq!(pos, buf.len());
 }
 
 #[test]
@@ -40,17 +40,14 @@ fn roundtrip_u64_max() {
 
 #[test]
 fn encoding_sizes() {
-    // Single byte for values 0–127
     let mut buf = Vec::new();
     write_varint64(&mut buf, 127);
     assert_eq!(buf.len(), 1);
 
-    // Two bytes for 128
     buf.clear();
     write_varint64(&mut buf, 128);
     assert_eq!(buf.len(), 2);
 
-    // 10 bytes for u64::MAX
     buf.clear();
     write_varint64(&mut buf, u64::MAX);
     assert_eq!(buf.len(), 10);
@@ -64,7 +61,7 @@ fn decode_empty_buffer_errors() {
 
 #[test]
 fn decode_truncated_errors() {
-    // All-continuation-bit bytes with no terminator
+    // 0x80 = continuation bit set, never terminates
     let buf = vec![0x80u8; 5];
     let mut pos = 0;
     assert_eq!(read_varint64(&buf, &mut pos), Err(Error::UnexpectedEof));
@@ -72,7 +69,7 @@ fn decode_truncated_errors() {
 
 #[test]
 fn decode_overflow_errors() {
-    // 11 bytes all with continuation bits set — too long for u64
+    // u64 varint maxes out at 10 bytes, 11 continuation bytes overflows
     let buf = vec![0x80u8; 11];
     let mut pos = 0;
     assert_eq!(read_varint64(&buf, &mut pos), Err(Error::VarIntOverflow));

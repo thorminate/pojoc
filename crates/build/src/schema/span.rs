@@ -1,6 +1,4 @@
-/// A byte-offset range into the original source string. This is the
-/// canonical, precise location used for LSP diagnostics, hover ranges,
-/// go-to-definition, and exact source slicing.
+/// byte-offset range into the source string, used for LSP diagnostics/hover/goto
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -12,8 +10,7 @@ impl Span {
         Span { start, end }
     }
 
-    /// Smallest span covering both `self` and `other`. Used to build a
-    /// parent AST node's span from its first and last child spans.
+    /// smallest span covering both, used to build a parent node's span from its children
     pub fn join(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),
@@ -22,22 +19,15 @@ impl Span {
     }
 }
 
-/// LSP-style (line, character) position. `character` is a UTF-16 code unit
-/// offset from the start of the line, per the LSP spec.
+/// LSP-style (line, character) position, character is a UTF-16 code unit offset
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
 }
 
-/// Precomputed line-start byte offsets for a source string.
-///
-/// This is *not* used by the lexer/parser — they track `line` directly as
-/// they scan, which is inexpensive and avoids needing the source text in scope
-/// just to print "at line N". `LineIndex` is only for paths that have a
-/// bare byte offset and no `line` already attached (e.g., converting a
-/// `Span` from a `Diagnostic` into an LSP `Position` after the fact, or any
-/// future consumer that only has an offset).
+/// precomputed line-start byte offsets. the lexer/parser track `line` directly
+/// instead, this is only for paths that have a bare offset and no line attached
 pub struct LineIndex {
     line_starts: Vec<usize>,
 }
@@ -53,7 +43,7 @@ impl LineIndex {
         LineIndex { line_starts }
     }
 
-    /// Converts a byte offset into a 0-indexed (line, character) position.
+    /// converts a byte offset into a 0-indexed (line, character) position
     pub fn position(&self, source: &str, offset: usize) -> Position {
         let line_idx = self
             .line_starts

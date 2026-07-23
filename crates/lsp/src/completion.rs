@@ -22,24 +22,15 @@ pub struct SchemaIndex {
     pub type_fields_before_version: HashMap<(String, i128), Vec<String>>,
     pub import_aliases: HashSet<String>,
     pub import_versions: HashMap<String, Vec<i128>>,
-    /// Type name -> its declared generic parameter names, if any (`type Box<T>` -> `["T"]`).
     pub generic_params: HashMap<String, Vec<String>>,
-    /// `///` doc comment directly above the `schema` header, if any.
     pub schema_doc: Vec<String>,
     pub type_docs: HashMap<String, Vec<String>>,
     pub enum_docs: HashMap<String, Vec<String>>,
     pub union_docs: HashMap<String, Vec<String>>,
     pub bitset_docs: HashMap<String, Vec<String>>,
-    /// (owning type name, or `None` for root fields) -> field/const name -> doc.
     pub field_docs: HashMap<(Option<String>, String), Vec<String>>,
-    /// (enum/union/bitset name, variant name) -> doc.
     pub variant_docs: HashMap<(String, String), Vec<String>>,
-    /// Type name -> its current (name, type, lazy) field shape as declared
-    /// in the schema source. Unlike the fully-resolved `ResolvedSchema`,
-    /// this is populated even for un-instantiated generic templates (which
-    /// have no monomorphized `TypeId` of their own to look up) — the
-    /// primary consumer is hover, which falls back to this raw shape when
-    /// a type name has no corresponding resolved type.
+    // populated even for un-instantiated generic templates, which have no resolved TypeId of their own; hover falls back to this raw shape
     pub generic_field_asts: HashMap<String, Vec<(String, TypeAst, bool)>>,
 }
 
@@ -414,8 +405,6 @@ fn apply_diff_to_field_asts(fields: &mut Vec<(String, TypeAst, bool)>, ops: &[Di
     }
 }
 
-// --- cursor-position context detection ---------------------------------
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Tok {
     Ident(String),
@@ -592,9 +581,6 @@ fn current_version(stack: &[BlockKind]) -> Option<i128> {
     })
 }
 
-/// The generic parameters of the `type` def we're currently nested inside
-/// (its own `<T, U>` list), if any — so a field type inside `type Box<T> { ... }`
-/// can suggest `T` alongside ordinary types.
 fn enclosing_type_params(stack: &[BlockKind], idx: &SchemaIndex) -> Vec<String> {
     stack
         .iter()
@@ -623,10 +609,7 @@ fn find_diff_context(stack: &[BlockKind]) -> Option<(Option<String>, i128)> {
     version.map(|v| (owner, v))
 }
 
-/// Identifier immediately preceding the innermost still-open bracket, if any,
-/// plus whether that identifier was itself immediately preceded by `extends`
-/// (i.e. this bracket is an `extends Name<...>` argument list, not some other
-/// use of `<...>` such as a field-type instantiation or `map<K, V>`).
+/// ident before the innermost open bracket, plus whether it's an `extends Name<...>` arg list rather than some other `<...>` use
 fn enclosing_call(pending: &[Tok]) -> Option<(Option<String>, char, bool)> {
     let mut stack: Vec<(Option<String>, char, bool)> = Vec::new();
     let mut last_ident: Option<String> = None;
@@ -669,13 +652,10 @@ enum Ctx {
     },
     TypePosition {
         version: Option<i128>,
-        /// The enclosing `type Name<...>`'s own parameters, if we're
-        /// currently nested inside one — valid types at this position too.
         own_params: Vec<String>,
     },
     ExtendsName(Option<i128>),
-    /// Inside the `<...>` argument list of an `extends Name<...>@V` clause —
-    /// like `TypePosition`, but `_` (drop this ancestor parameter) is also valid.
+    // like TypePosition, but `_` (drop this ancestor parameter) is also valid
     ExtendsGenericArgs {
         version: Option<i128>,
         own_params: Vec<String>,
@@ -800,8 +780,7 @@ fn determine_ctx(state: &ScanState, idx: &SchemaIndex) -> Ctx {
                     own_params: enclosing_type_params(stack, idx),
                 };
             }
-            // `type Name<...>` declaring its own parameter list — fresh
-            // identifiers, not references, so there's nothing to suggest.
+            // `type Name<...>` own param list is fresh idents, not references — nothing to suggest
             (_, '<') if matches!(pending.first(), Some(Tok::Ident(k)) if k == "type") => {
                 return Ctx::Unknown;
             }
@@ -894,7 +873,6 @@ pub fn completions_for_position(
     idx: &SchemaIndex,
     schema_path: Option<&Path>,
 ) -> Vec<CompletionItem> {
-    // prevent IntelliSense in a comment
     if cursor_in_line_comment(text, offset) {
         return Vec::new();
     }
@@ -1189,8 +1167,7 @@ pub fn completions_for_position(
             } else {
                 Vec::new()
             };
-            // Same suffix slot also accepts `(min:, max:)`, bounding the
-            // array's element count — orthogonal to delta-eligibility.
+            // same suffix slot also accepts (min:, max:), independent of delta-eligibility
             items.extend(["min", "max"].iter().map(|p| CompletionItem {
                 label: format!("{p}:"),
                 insert_text: Some(format!("{p}: $0")),
@@ -1320,9 +1297,6 @@ fn snippet(label: &str, insert: &str, detail: &str) -> CompletionItem {
     }
 }
 
-/// Builds a `Box<$1>`/`Pair<$1, $2>`-style snippet for instantiating a
-/// generic type, one tab stop per declared parameter (mirrors the
-/// `map<$1, $2>` snippet below).
 fn generic_instantiation_item(
     name: &str,
     params: &[String],
@@ -1343,8 +1317,6 @@ fn generic_instantiation_item(
     }
 }
 
-/// Doc comment lookup across every type-like namespace (structs, enums,
-/// unions, bitsets all share one name space).
 fn type_like_doc<'a>(idx: &'a SchemaIndex, name: &str) -> Option<&'a Vec<String>> {
     idx.type_docs
         .get(name)
@@ -1374,9 +1346,6 @@ fn type_position_items(
         "bool", "string",
     ];
 
-    // The enclosing generic type's own parameters (e.g. `T` inside
-    // `type Box<T> { value: | }`) — offered first, since they're the most
-    // contextually relevant.
     let mut items: Vec<CompletionItem> = own_params
         .iter()
         .map(|p| CompletionItem {
@@ -1457,10 +1426,7 @@ fn type_position_items(
     items
 }
 
-/// Whether `(min:, max:)` can follow this bare type name — every primitive
-/// except `bool` (numbers bound the value; `string` bounds byte length).
-/// Arrays/maps take the same suffix too, but that's detected separately via
-/// `array_suffix_info` since their constraint sits after a `]`, not a name.
+// primitives except bool take (min:, max:); arrays/maps use array_suffix_info instead since their constraint sits after `]`, not a name
 fn is_constrainable_scalar(name: &str) -> bool {
     is_primitive(name) && normalize_type(name) != "bool"
 }
@@ -1476,9 +1442,7 @@ struct ArraySuffixInfo {
     already_has_delta: bool,
 }
 
-/// Detects `[T](...)` with the cursor inside the parens. Returns the
-/// element type found between the matching `[`/`]` so delta-eligibility
-/// can be checked, plus whether `delta` is already typed in there.
+// detects `[T](...)` with cursor in the parens; returns the element type for delta-eligibility plus whether `delta` is already typed
 fn array_suffix_info(pending: &[Tok]) -> Option<ArraySuffixInfo> {
     let mut open_stack: Vec<(usize, char)> = Vec::new();
     for (i, tok) in pending.iter().enumerate() {
@@ -1541,8 +1505,7 @@ enum DefaultKind {
     VFloat(Option<String>), // Some(min) when extractable
 }
 
-/// Tokens between the field's `:` and the `=` it's about to default, if the
-/// cursor is sitting right after that `=` (optionally with a partial value typed).
+// tokens between the field's `:` and the `=` it's defaulting, when the cursor sits right after that `=`
 fn type_tokens_before_default(pending: &[Tok]) -> Option<&[Tok]> {
     let eq_idx = if matches!(pending.last(), Some(Tok::Punct('='))) {
         pending.len() - 1
@@ -1610,8 +1573,7 @@ fn classify_default_type(
     None
 }
 
-/// True if the cursor sits right after `Flag:` (optionally with a partial
-/// `true`/`false` already typed) inside a known bitset's `Name(...)` literal.
+// true if cursor sits right after `Flag:` inside a known bitset's `Name(...)` literal
 fn bitset_literal_value_info(pending: &[Tok], idx: &SchemaIndex) -> Option<String> {
     let n = pending.len();
     let colon_idx = if n >= 2 && matches!(pending[n - 1], Tok::Punct(':')) {
@@ -1649,9 +1611,7 @@ fn bitset_literal_value_info(pending: &[Tok], idx: &SchemaIndex) -> Option<Strin
     }
 }
 
-/// True if, skipping any identifier chars still sitting past the cursor
-/// (e.g. a selected word not yet replaced) and whitespace, the next
-/// character is `:` — i.e. this flag already has a value following it.
+// true if, past any identifier chars still sitting after the cursor (e.g. a selected word not yet replaced) and whitespace, the next char is `:`
 fn cursor_already_has_value(text: &str, offset: usize) -> bool {
     let bytes = text.as_bytes();
     let mut i = offset;
@@ -1669,7 +1629,6 @@ fn cursor_already_has_value(text: &str, offset: usize) -> bool {
     i < bytes.len() && bytes[i] as char == ':'
 }
 
-/// Index of the innermost still-open `(` in `pending`, if any.
 fn find_enclosing_open_paren(pending: &[Tok]) -> Option<usize> {
     let mut depth = 0i32;
     for i in (0..pending.len()).rev() {
@@ -1687,9 +1646,7 @@ fn find_enclosing_open_paren(pending: &[Tok]) -> Option<usize> {
     None
 }
 
-/// Flag names already assigned (`Name: value,`) between the open paren
-/// and the cursor. The entry currently being typed/edited is excluded
-/// naturally, since its colon+value (if any) lies past the cursor.
+// flag names already assigned between the open paren and cursor; the entry being typed is excluded since its colon+value lies past the cursor
 fn used_bitset_flags(pending: &[Tok], open_idx: usize) -> HashSet<String> {
     let mut used = HashSet::new();
     let mut i = open_idx + 1;

@@ -13,8 +13,6 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e.updated_imported_player.player_id = 12345.0;
     e.updated_imported_player.status = player::Status::Spectating;
 
-    // Generics — monomorphized instantiations and the Mono/Duo/Mono
-    // type-parameter-evolution chain.
     e.generic_box.value = 7;
     e.generic_box.label = "probe";
     e.generic_pair.first = 1;
@@ -42,7 +40,6 @@ pub fn make_version_probe_edge() -> Edge<'static> {
 pub fn make_populated_edge() -> Edge<'static> {
     let mut e = Edge::default();
 
-    // Primitive and float scalars
     e.u8_to_i64 = 100;
     e.i64_to_f32 = -987.65;
     e.i64_min = i64::MIN;
@@ -52,12 +49,10 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.f32_inf = f32::INFINITY;
     e.f64_neg_inf = f64::NEG_INFINITY;
 
-    // Strings
     e.nullified_str = Some("PojocSerialization");
     e.spaces_str = "    ";
     e.fixed_str_min = [10, 20, 30, 40, 50, 60, 70, 80];
 
-    // Collections
     e.empty_arr.push("FirstElement");
     e.empty_arr.push("SecondElement");
     e.array_to_map.insert(5, 25);
@@ -72,14 +67,12 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.plain_i8_arr.push(127);
     e.lazy_audit_log = LazyView::Owned(Some(pojvec!("AuditEntryOne", "AuditEntryTwo")));
 
-    // Delta sequences
     e.delta_positions.push(1000);
     e.delta_positions.push(1010);
     e.delta_i64_seq.push(-50);
     e.delta_i64_seq.push(-45);
     e.lazy_delta_log = LazyView::Owned(Some(pojvec!(100, 150, 120)));
 
-    // Nested struct
     e.root_struct.leaf.leaf_val = "LeafNode";
     e.root_struct.leaf.leaf_numeric = 777;
     e.root_struct.weight = 3.14;
@@ -94,10 +87,6 @@ pub fn make_populated_edge() -> Edge<'static> {
         leaf_rotation: 180f32,
     });
 
-    // Generics — three distinct monomorphizations of the same struct-shape
-    // machinery (Box<i32>, Pair<i32, string>, Triple<i32, string, bool>),
-    // an explicitly-named instantiation (`Box<bool> as FlagBox`), plus the
-    // Mono<A> -> Duo<A, B> -> Mono<A> type-parameter-evolution chain (v3/v4/v5).
     e.generic_box.value = 42;
     e.generic_box.label = "meaning-of-life";
     e.generic_pair.first = 3;
@@ -111,24 +100,20 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.generic_duo_v4.secondary = Some(-17);
     e.generic_mono_v5.value = "mono-v5";
 
-    // Enum and fixed arrays
     e.bounds_enum = NumericBounds::ExtraVariant;
     e.newly_added_optional = 999999;
     e.u32_delta_seq = [500; 16];
 
-    // Maps
     e.basic_map.insert("ConfigKey", "ConfigValue");
     e.fixed_map_populated = pojmap!("FixedMapKey1" => 5, "FixedMapKey2" => 30; 2);
     e.delta_value_map = pojmap!("DeltaMapKey1" => pojvec![10], "DeltaMapKey2" => pojvec![20]; 2);
 
-    // Sensor log
     let mut frame = SensorFrame::default();
     frame.readings.push(55);
     frame.readings.push(60);
     frame.sample_ids = [100, 200, 300, 400, 500, 600, 700, 800];
     e.sensor_log.push(frame);
 
-    // Optional primitives
     e.opt_u8 = Some(255);
     e.opt_i16 = Some(-32768);
     e.opt_u32 = Some(400000);
@@ -139,21 +124,16 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.opt_fixed_str = Some([0xAA, 0xBB, 0xCC, 0xDD]);
     e.opt_bitset = Some(SystemPrivileges::READ | SystemPrivileges::WRITE);
 
-    // Bitset and flags
     e.system_perms =
         SystemPrivileges::ROOT | SystemPrivileges::NETWORK_ACCESS | SystemPrivileges::EXECUTE;
     e.legacy_hw_flags = 0xFFFFFFFF;
 
-    // Optional delta array
     let mut delta_arr = PojocVec::new();
     delta_arr.push(42);
     e.opt_delta_arr = Some(delta_arr);
 
-    // Deep nested structure
     e.ultimate_boss_structure.frame_deltas.push(8888);
 
-    // Tagged unions — scalar, array, optional, and map-value positions,
-    // spread across the variants each union has accumulated over its history.
     e.action = Payload::Attack(AttackPayload {
         target_id: 42,
         damage: 17.5,
@@ -194,13 +174,10 @@ pub fn make_populated_edge() -> Edge<'static> {
 
     e.updated_imported_player = make_player_value();
 
-    // String interning — "shared-tag" repeated across a plain interned field
-    // and an interned array to exercise dedup, plus one unique string.
     e.interned_label = "shared-tag";
     e.interned_tags.push("shared-tag");
     e.interned_tags.push("unique-tag");
 
-    // Recursive type — a three-node chain, only representable via `box<T>`.
     e.linked_list = Some(Box::new(LinkedNode {
         value: 1,
         next: Some(Box::new(LinkedNode {
@@ -368,9 +345,7 @@ pub fn assert_deep_complex_wrapper_eq<'buf>(
     assert_eq!(a.matrix, b.matrix);
 }
 
-// Unions don't derive PartialEq (their payload structs don't either, same as
-// every other generated struct in this codebase), so comparison is by
-// explicit variant match, mirroring assert_nested_leaf_eq's manual style.
+// generated union/struct types don't derive PartialEq, so compare by explicit variant match
 pub fn assert_payload_eq(a: &Payload, b: &Payload) {
     match (a, b) {
         (Payload::Move(x), Payload::Move(y)) => {
@@ -433,14 +408,12 @@ pub fn assert_control_signal_eq(a: &ControlSignal, b: &ControlSignal) {
 }
 
 pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
-    // Scalar integer and varint conversions
     assert_eq!(a.u8_to_i64, b.u8_to_i64);
     assert_eq!(a.i64_to_f32, b.i64_to_f32);
     assert_eq!(a.i64_min, b.i64_min);
     assert_eq!(a.varint32_max, b.varint32_max);
     assert_eq!(a.varint64_min, b.varint64_min);
 
-    // Floating point special values
     if a.f32_nan.is_nan() {
         assert!(b.f32_nan.is_nan(), "Expected f32_nan to be NaN");
     } else {
@@ -449,7 +422,6 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_eq!(a.f32_inf, b.f32_inf);
     assert_eq!(a.f64_neg_inf, b.f64_neg_inf);
 
-    // Strings & fixed-length
     assert_eq!(a.nullified_str, b.nullified_str);
     assert_eq!(a.spaces_str, b.spaces_str);
     assert_eq!(a.fixed_str_min, b.fixed_str_min);
@@ -457,7 +429,6 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_eq!(a.fixed_arr_empty, b.fixed_arr_empty);
     assert_eq!(a.array_to_map, b.array_to_map);
 
-    // Delta sequences
     assert_eq!(a.delta_positions, b.delta_positions);
     assert_eq!(a.delta_i64_seq, b.delta_i64_seq);
     assert_eq!(a.delta_u64_seq, b.delta_u64_seq);
@@ -471,13 +442,11 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_eq!(a.plain_u8_arr, b.plain_u8_arr);
     assert_eq!(a.plain_i8_arr, b.plain_i8_arr);
 
-    // Nested structs
     assert_middle_layer_eq(&a.root_struct, &b.root_struct);
     assert_eq!(a.bounds_enum, b.bounds_enum);
     assert_eq!(a.newly_added_optional, b.newly_added_optional);
     assert_eq!(a.u32_delta_seq, b.u32_delta_seq);
 
-    // Generics
     assert_box_i32_eq(&a.generic_box, &b.generic_box);
     assert_pair_i32_string_eq(&a.generic_pair, &b.generic_pair);
     assert_triple_i32_string_bool_eq(&a.generic_triple, &b.generic_triple);
@@ -486,20 +455,17 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_duo_string_i32_eq(&a.generic_duo_v4, &b.generic_duo_v4);
     assert_mono_string_eq(&a.generic_mono_v5, &b.generic_mono_v5);
 
-    // Maps
     assert_eq!(a.basic_map, b.basic_map);
     assert_eq!(a.fixed_map_empty, b.fixed_map_empty);
     assert_eq!(a.fixed_map_populated, b.fixed_map_populated);
     assert_eq!(a.nested_map, b.nested_map);
 
-    // Sensor log
     assert_eq!(a.sensor_log.len(), b.sensor_log.len());
     for (i, j) in a.sensor_log.iter().zip(b.sensor_log.iter()) {
         assert_sensor_frame_eq(i, j);
     }
     assert_eq!(a.delta_value_map, b.delta_value_map);
 
-    // Optional primitives
     assert_eq!(a.opt_u8, b.opt_u8);
     assert_eq!(a.opt_i16, b.opt_i16);
     assert_eq!(a.opt_u32, b.opt_u32);
@@ -517,19 +483,15 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
     assert_eq!(a.opt_bool, b.opt_bool);
     assert_eq!(a.opt_fixed_str, b.opt_fixed_str);
 
-    // Bitsets and flags
     assert_eq!(a.opt_bitset, b.opt_bitset);
     assert_eq!(a.system_perms, b.system_perms);
     assert_eq!(a.legacy_hw_flags, b.legacy_hw_flags);
     assert_eq!(a.opt_delta_arr, b.opt_delta_arr);
 
-    // Deep wrapper
     assert_deep_complex_wrapper_eq(&a.ultimate_boss_structure, &b.ultimate_boss_structure);
 
-    // Imports
     assert_player_eq(&a.updated_imported_player, &b.updated_imported_player);
 
-    // Tagged unions
     assert_payload_eq(&a.action, &b.action);
     assert_eq!(a.action_log.len(), b.action_log.len());
     for (i, j) in a.action_log.iter().zip(b.action_log.iter()) {
@@ -580,11 +542,9 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
         .expect("b.lazy_delta_log decode failed");
     assert_eq!(a_delta, b_delta, "lazy_delta_log mismatch");
 
-    // Interning
     assert_eq!(a.interned_label, b.interned_label);
     assert_eq!(a.interned_tags, b.interned_tags);
 
-    // Recursive box<T> chain
     match (&a.linked_list, &b.linked_list) {
         (Some(x), Some(y)) => assert_linked_node_eq(x, y),
         (None, None) => {}
@@ -617,7 +577,7 @@ pub fn assert_stats_eq(a: &player::Stats, b: &player::Stats) {
     assert_eq!(a.intelligence, b.intelligence);
     assert_eq!(a.endurance, b.endurance);
     assert_eq!(a.charisma, b.charisma);
-    assert_eq!(a.resistance, b.resistance); // luck was removed in Stats@6
+    assert_eq!(a.resistance, b.resistance); // luck field removed in Stats@6
 }
 
 pub fn assert_player_eq(a: &player::Player, b: &player::Player) {

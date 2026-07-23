@@ -209,7 +209,7 @@ pub fn emit_bitsets(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
     for name in names {
         let (_, bs) = latest[name];
-        emit_bitset_struct(name, bs, schema, w); // Pass schema to handle default calculations
+        emit_bitset_struct(name, bs, schema, w);
         w.blank();
     }
 }
@@ -228,7 +228,7 @@ fn emit_bitset_struct(
         ""
     };
     emit_doc(&bs.doc, w);
-    // Added PartialOrd, Ord, and Hash so these can be sorted or used as keys in a HashMap/HashSet
+    // needed for sorting and use as hashmap/hashset keys
     w.line(&format!(
         "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash{serde_derive})]"
     ));
@@ -238,7 +238,6 @@ fn emit_bitset_struct(
     w.line(&format!("impl {name} {{"));
     w.indent();
 
-    // const flags
     for (idx, variant) in bs.variants.iter().enumerate() {
         if variant.name.starts_with("__deprecated_") {
             continue;
@@ -258,7 +257,6 @@ fn emit_bitset_struct(
     }
     w.blank();
 
-    // Added a helper to check if any flags are active
     w.line("#[inline]");
     w.line("pub const fn is_empty(&self) -> bool {");
     w.indent();
@@ -271,7 +269,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // getters, setters, builders (all decorated with #[inline])
     for (idx, variant) in bs.variants.iter().enumerate() {
         if variant.name.starts_with("__deprecated_") {
             continue;
@@ -306,7 +303,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // Default
     let mut default_bytes = vec![0u8; computed_len];
     if let Some(DefaultValue::BitsetLiteral { kvs, .. }) = find_bitset_default(name, schema) {
         for (flag_name, flag_val) in kvs {
@@ -332,7 +328,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitOr
     w.line(&format!("impl ::std::ops::BitOr for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -349,7 +344,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitOrAssign
     w.line(&format!("impl ::std::ops::BitOrAssign for {name} {{"));
     w.indent();
     w.line("#[inline]");
@@ -364,7 +358,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitAnd
     w.line(&format!("impl ::std::ops::BitAnd for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -381,7 +374,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitAndAssign
     w.line(&format!("impl ::std::ops::BitAndAssign for {name} {{"));
     w.indent();
     w.line("#[inline]");
@@ -396,7 +388,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // Not
     w.line(&format!("impl ::std::ops::Not for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -455,9 +446,7 @@ fn emit_named_struct(
     w.line(&format!("pub struct {name}{struct_lt} {{"));
     w.indent();
     for field in fields {
-        // `type_info` already renders infected named types (and borrowed
-        // strings) with `<'buf>` wherever they nest, so a plain lookup is
-        // correct for every non-lazy field; only lazy needs the wrapper.
+        // type_info already renders <'buf> on infected types, only lazy needs wrapping
         let ty = if field.lazy {
             let inner = type_info(&field.ty).rust_type;
             format!("LazyView<'buf, {inner}>")
@@ -544,7 +533,6 @@ fn emit_lazy_struct_serde(
 ) {
     w.blank();
 
-    // Serialize
     w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
     w.indent();
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
@@ -589,7 +577,6 @@ fn emit_lazy_struct_serde(
     w.line("}");
     w.blank();
 
-    // Deserialize
     let field_list = fields
         .iter()
         .map(|f| format!("\"{}\"", f.name))

@@ -173,9 +173,7 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
                     variant.name
                 );
             }
-            // A borrowed `&'buf str` payload would require the union enum to
-            // carry `<'buf>`, which isn't generated. Fail loudly instead of
-            // emitting code that won't compile.
+            // a borrowed &'buf str payload would need the union enum to carry <'buf>, which isn't generated, so fail loudly instead
             assert!(
                 !crate::codegen::field_carries_borrowed_string(&variant.payload),
                 "union `{name}` variant `{}` carries a borrowed string payload — \
@@ -274,7 +272,7 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line("}");
         w.blank();
 
-        // Unchecked variant for the single-checked fixed decode block.
+        // unchecked variant used by the single-checked fixed decode block
         w.line("#[allow(dead_code)]");
         w.line(&format!(
             "unsafe fn {fn_name}_unchecked(__buf: &[u8], __pos: &mut usize) -> {name} {{"
@@ -341,8 +339,7 @@ fn emit_decode_fn(
     } else {
         "&[u8]"
     };
-    // Per-*version* check, not the global `is_intern_infected(name)` — see
-    // `version_uses_intern`.
+    // checks this version specifically, see version_uses_intern
     let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
     w.line(&format!(
@@ -352,9 +349,7 @@ fn emit_decode_fn(
     w.indent();
 
     if interning {
-        // The table precedes every field on the wire (see `emit_encode_vn_fn`),
-        // so it's read once, up front, then threaded by (`Copy`) slice
-        // reference through every intern-infected nested `read_*` call.
+        // table precedes every field on the wire, read once up front then threaded through nested read_* calls
         w.line("let __table_owned = read_intern_table(__buf, __pos)?;");
         w.line("let __table = __table_owned.as_slice();");
     }
@@ -366,9 +361,7 @@ fn emit_decode_fn(
         .count();
     emit_optional_header_read(optional_count, w);
 
-    // Reorder so blastable fixed-width fields form a contiguous leading block,
-    // then read that whole block behind a single bounds check via unchecked
-    // accessors. Everything else follows on the normal per-read checked path.
+    // blastable fixed-width fields form a leading block read behind one bounds check; the rest follows the normal checked path
     let ordered = ordered_wire_fields(schema, vl);
     let fixed_prefix = ordered.partition_point(|fl| is_blastable(schema, fl));
     let (blast, rest) = ordered.split_at(fixed_prefix);
@@ -624,8 +617,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             let inner_expr = emit_read_expr(inner);
             format!("Box::new({inner_expr})")
         }
-        // Transparent on the wire — the constraint check itself is emitted
-        // separately, around the field read, by the caller.
+        // transparent on the wire; the constraint check is emitted separately by the caller
         ResolvedTypeRef::Constrained { inner, .. } => emit_read_expr(inner),
         ResolvedTypeRef::Interned(_) => "read_interned_string_ref(__table, __buf, __pos)?".into(),
         ResolvedTypeRef::ImportedSchema { .. } => {
@@ -634,9 +626,7 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
     }
 }
 
-/// Emit one field of the single-checked fixed block. The region has already
-/// been bounds-validated, so pass-throughs read via unchecked accessors and
-/// discards just advance the cursor.
+// region is already bounds-validated here, so pass-throughs use unchecked accessors and discards just advance the cursor
 fn emit_blastable_field_read(
     source_ty: &ResolvedTypeRef,
     mapping: &FieldMapping,
@@ -658,9 +648,7 @@ fn emit_blastable_field_read(
     }
 }
 
-/// Non-fallible read expression for a blastable fixed-width type, using the
-/// `*_unchecked` runtime accessors. Only reached for types accepted by
-/// [`is_blastable`](crate::codegen::is_blastable).
+// non-fallible read using *_unchecked accessors, only reached for types is_blastable accepts
 fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
@@ -711,9 +699,7 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
                 format!("({})", parts.join(", "))
             }
         }
-        // Transparent on the wire — the value itself reads exactly like
-        // `inner`; the constraint check is emitted separately, once the
-        // whole blastable block's fields are bound (see `emit_decode_fn`).
+        // transparent on the wire; constraint check happens later once the blastable block's fields are bound
         ResolvedTypeRef::Constrained { inner, .. } => emit_read_expr_unchecked(inner),
         _ => unreachable!("emit_read_expr_unchecked called on a non-blastable type"),
     }
@@ -1041,7 +1027,7 @@ fn emit_cast_value(
     }
 }
 
-// indent is brought in so the sub writer matches the parent writer's indent.
+// indent passed in so the sub writer matches the parent's indent
 fn struct_cast_block(
     schema: &ResolvedSchema,
     from: &TypeId,
@@ -1050,7 +1036,7 @@ fn struct_cast_block(
 ) -> String {
     let mut sub = CodeWriter::default();
     sub.line("{");
-    // set the indent after '{' so that the '{' doesn't get incorrectly indented.
+    // set indent after the '{' so the brace itself isn't indented
     sub.indent = *indent;
     sub.indent();
     emit_struct_cast_body(schema, from, to, &mut sub);
@@ -1158,10 +1144,7 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let rust_ty = type_info(ty).rust_type;
 
         let some_name = format!("{target_name}_read");
-        // If the decoded value borrows the buffer (`&'buf str` or an infected
-        // nested type), the reader must be generic over the input lifetime and
-        // tie it to the output, so it coerces to `LazyView`'s `fn(&'buf [u8])
-        // -> PojocResult<T>` pointer.
+        // if the value borrows the buffer, the reader must be generic over the input lifetime so it coerces to LazyView's fn pointer type
         let (lt, buf_ty) = if rust_ty.contains("'buf") {
             ("<'buf>", "&'buf [u8]")
         } else {
@@ -1218,8 +1201,7 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
         .count();
     emit_optional_header_read(optional_count, w);
 
-    // Mirror the reordered wire layout: collapse the blastable fixed-width prefix
-    // into a single bounds-checked advance, then skip the rest field-by-field.
+    // mirrors the reordered wire layout: one bounds-checked advance over the blastable prefix, then skip the rest field-by-field
     let ordered = ordered_wire_fields(schema, vl);
     let split = ordered.partition_point(|fl| is_blastable(schema, fl));
     let (blast, rest) = ordered.split_at(split);

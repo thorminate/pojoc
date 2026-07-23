@@ -9,31 +9,23 @@ use crate::schema::span::Span;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Where a `TemplateField`'s default came from — determines how it gets
-/// classified once the field's concrete type is known (see `instantiate_shape`).
+/// where a TemplateField's default came from, determines classification
+/// once the field's concrete type is known, see instantiate_shape
 #[derive(Debug, Clone)]
 enum TemplateDefault {
-    /// Declared directly in a `type Name { ... }` body: coerced literally
-    /// against the resolved type, `None` if absent.
+    /// declared directly in the type body, coerced literally
     Literal(Option<DefaultValueAst>),
-    /// Introduced via a `diff { + field: Type [= value] }` op: needs the same
-    /// "struct sentinel / optional-none sentinel / literal" classification
-    /// `handle_diff`'s `DiffAst::Add` always applied, just deferred here until
-    /// the field's type is fully resolved (it may still mention a template
-    /// param at merge time).
+    /// added via a diff op, classification deferred until the field's type is
+    /// fully resolved since it may still mention a template param at merge time
     AddedViaDiff(Option<DefaultValueAst>),
 }
 
-/// A field within a not-yet-fully-resolved type template. Its `ty` may still
-/// reference the template's own type parameters (or, transiently while an
-/// `extends<...>` chain is being merged, a dropped ancestor parameter as
-/// `TypeAst::Wildcard`).
+/// a field in a not-yet-resolved type template, ty may still reference the
+/// template's own params, or transiently a dropped ancestor param as Wildcard
 #[derive(Debug, Clone)]
 struct TemplateField {
-    /// Stable across every version/instantiation this field is inherited into —
-    /// assigned once, when the field is first declared or `+ Add`ed, and carried
-    /// forward unchanged by `extends` (mirroring the old `parent.fields.clone()`
-    /// behavior, so renames/retypes still track as "the same field").
+    /// stable across every version/instantiation, assigned once when declared
+    /// or added, carried forward by extends so renames/retypes track as the same field
     id: FieldId,
     name: String,
     ty: TypeAst,
@@ -54,11 +46,10 @@ struct TemplateConst {
     line: u32,
 }
 
-/// The AST-level, unresolved shape of a `type` def at a given version: its own
-/// declared type parameters plus its fully-merged (`extends`/`diff` applied)
-/// field and const lists. Computing this never calls `resolve()`, so it can't
-/// loop on self-referential *field* types — the only recursion is through the
-/// `extends` chain, which is version-strictly-decreasing and therefore finite.
+/// the AST-level, unresolved shape of a type def at a version: its params plus
+/// fully-merged field/const lists. never calls resolve(), so self-referential
+/// field types can't loop; the only recursion is the extends chain, which is
+/// version-strictly-decreasing and therefore finite
 #[derive(Debug, Clone)]
 struct TemplateShape {
     params: Vec<String>,
@@ -67,11 +58,9 @@ struct TemplateShape {
     doc: Vec<String>,
 }
 
-/// A generic instantiation discovered while resolving a field type, queued so
-/// its fields are computed *after* we've already committed to a `TypeId` for
-/// it. This is what makes self-referential generics (`Node<T> { next: Node<T>? }`)
-/// safe: the recursive field only ever needs the `TypeId` pointer, not the
-/// fully-computed fields, exactly like ordinary struct field references.
+/// a generic instantiation found while resolving a field type, queued so its
+/// fields are computed after committing to a TypeId — makes self-referential
+/// generics safe since the recursive field only needs the TypeId, not the fields
 #[derive(Debug)]
 struct PendingGeneric {
     type_id: TypeId,
@@ -92,16 +81,13 @@ pub struct SchemaAnalyzer<'a> {
     current: Option<VersionContext>,
     imports: HashMap<String, Arc<ResolvedSchema>>,
     id_gen: IdGen,
-    /// Every generic `TypeId` handed out so far, mapped to its canonical
-    /// auto-mangled identity (`Box<i32>` -> `"BoxI32"`) even when an explicit
-    /// `as Alias` was used — lets a second request for the same alias with
-    /// different args be rejected instead of silently aliasing to the wrong type.
+    /// every generic TypeId handed out, mapped to its canonical auto-mangled
+    /// identity even under an explicit `as Alias`, so reusing an alias for a
+    /// different (template, args) is rejected instead of silently misaliasing
     generic_identities: HashMap<TypeId, String>,
     pending_generics: Vec<PendingGeneric>,
-    /// Memoizes `build_shape` by (type name, exact version) so that a type looked
-    /// up repeatedly (as an `extends` ancestor from multiple descendants, or as a
-    /// generic template instantiated with different args) gets the exact same
-    /// `FieldId`s every time, instead of fresh ones per call.
+    /// memoizes build_shape by (name, version) so repeated lookups get the same
+    /// FieldIds every time instead of fresh ones per call
     shape_cache: HashMap<(String, i128), TemplateShape>,
 }
 
@@ -128,8 +114,7 @@ impl<'a> SchemaAnalyzer<'a> {
     pub fn run(&mut self) -> Result<(), AnalysisError> {
         self.check_no_schema_name_collision()?;
         self.check_no_reserved_name_collision()?;
-        // we preregister unions so they can be referenced in types with no issues
-        // enums and bitsets don't depend on any external types, so they don't need any special handling.
+        // unions preregistered so types can reference them, enums/bitsets need no such handling
         self.collect_enums()?;
         self.collect_bitsets()?;
         self.preregister_union_ids();
@@ -143,18 +128,13 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
-    /// A struct that references itself — directly or through a cycle of other
-    /// structs — produces an infinite-size Rust type unless the cycle is
-    /// broken by a `box<T>` somewhere along the way (heap indirection is the
-    /// only thing that breaks it; `Optional`/`Array`/etc. don't, since
-    /// `Option<T>`/`Vec<T>` still embed `T` inline or need its size known).
-    /// Left unchecked, this only fails much later at `rustc`, with no
-    /// pojoc-level diagnostic — so catch it here instead.
+    /// a self-referential struct cycle produces an infinite-size rust type unless
+    /// broken by a box<T> somewhere in the cycle. left unchecked this only fails
+    /// much later at rustc with no pojoc-level diagnostic, so catch it here
     #[allow(clippy::result_large_err)]
     fn check_no_unboxed_recursion(&self) -> Result<(), AnalysisError> {
-        // Struct-typed refs reachable from `ty` without crossing a `box<>`.
-        // `Boxed` is deliberately not unwrapped: it's the one thing that
-        // legitimately breaks a cycle.
+        // struct-typed refs reachable from ty without crossing a box<>, Boxed not unwrapped
+        // since it's the one thing that legitimately breaks a cycle
         fn collect_struct_refs(ty: &ResolvedTypeRef, out: &mut Vec<TypeId>) {
             match ty {
                 ResolvedTypeRef::Scalar(id) => out.push(id.clone()),
@@ -240,11 +220,9 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
-    /// The root struct codegen emits for the schema itself is named after
-    /// `ast.name` (see `ResolvedSchema::name_hint`), in the same Rust
-    /// namespace as every declared `type`/`enum`/`union`/`bitset` — so a
-    /// declaration reusing the schema's own name would silently produce two
-    /// conflicting struct/enum definitions in the generated code.
+    /// the root struct is named after ast.name in the same rust namespace as every
+    /// declared type/enum/union/bitset, so a declaration reusing that name would
+    /// silently produce two conflicting definitions in the generated code
     #[allow(clippy::result_large_err)]
     fn check_no_schema_name_collision(&self) -> Result<(), AnalysisError> {
         for version in &self.ast.versions {
@@ -290,9 +268,8 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
-    /// `box` is a compiler builtin (see `resolve()`'s `TypeAst::Generic` arm) —
-    /// a user declaring `type box<T> { ... }` (or any non-generic `box`) would
-    /// silently shadow it, so reject the name up front.
+    /// box is a compiler builtin, a user declaring `type box<T>` would silently
+    /// shadow it, so reject the name up front
     #[allow(clippy::result_large_err)]
     fn check_no_reserved_name_collision(&self) -> Result<(), AnalysisError> {
         for version in &self.ast.versions {
@@ -632,8 +609,7 @@ impl<'a> SchemaAnalyzer<'a> {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let payload =
-                    self.resolve(&v.payload_ty, version, v.span, v.line, &HashMap::new())?; // ← was resolver.resolve_type + ok_or
+                let payload = self.resolve(&v.payload_ty, version, v.span, v.line, &HashMap::new())?;
                 Ok(UnionVariant {
                     name: v.name.clone(),
                     payload,
@@ -752,10 +728,8 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(())
     }
 
-    /// Computes the AST-level, unresolved shape of type `name` at the latest version
-    /// <= `version` (used for both plain type-name lookups and generic-template
-    /// lookups). `span`/`line` are only used for the "no such type" error, so callers
-    /// should pass the usage site's location.
+    /// computes the unresolved shape of type name at the latest version <= version.
+    /// span/line are only used for the "no such type" error, pass the usage site
     #[allow(clippy::result_large_err)]
     fn template_shape(
         &mut self,
@@ -777,14 +751,10 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok((shape, found_version))
     }
 
-    /// Computes the shape of an already-located `TypeDefAst` at its exact `version`,
-    /// memoized by (name, version) so repeated lookups of the same def (as an
-    /// `extends` ancestor from multiple descendants, or as a generic template
-    /// instantiated with different args) return the exact same `FieldId`s every
-    /// time rather than assigning fresh ones. Recurses through `extends` chains
-    /// only — never through field types — so a self-referential field
-    /// (`Node<T> { next: Node<T>? }`) can never cause this to loop; the chain
-    /// itself is strictly version-decreasing and finite.
+    /// computes the shape of an already-located TypeDefAst, memoized by (name,
+    /// version) so repeated lookups return the same FieldIds instead of fresh ones.
+    /// recurses through extends chains only, never field types, so self-referential
+    /// fields can't loop; the chain is strictly version-decreasing and finite
     #[allow(clippy::result_large_err)]
     fn build_shape(
         &mut self,
@@ -950,9 +920,8 @@ impl<'a> SchemaAnalyzer<'a> {
         Ok(shape)
     }
 
-    /// Resolves a fully-merged `TemplateShape` into concrete `FieldIR`/`ResolvedConst`
-    /// values, substituting `subst` (template param name -> concrete `ResolvedTypeRef`)
-    /// into every field type. `subst` is empty for non-generic types.
+    /// resolves a merged TemplateShape into concrete FieldIR/ResolvedConst values,
+    /// substituting subst into every field type. subst is empty for non-generic types
     #[allow(clippy::result_large_err)]
     fn instantiate_shape(
         &mut self,
@@ -1389,7 +1358,7 @@ impl<'a> SchemaAnalyzer<'a> {
             };
         }
 
-        // Sentinel for "wire-absent" — only legal under `Optional`.
+        // sentinel for wire-absent, only legal under Optional
         if matches!(value, DefaultValue::None) {
             return match ty {
                 ResolvedTypeRef::Optional(_) => Ok(DefaultValue::None),
@@ -1403,8 +1372,8 @@ impl<'a> SchemaAnalyzer<'a> {
             };
         }
 
-        // Sentinel for "use the type's own constructor" — only legal for
-        // non-primitive scalars and unions, which have no literal-default grammar.
+        // sentinel for "use the type's own constructor", only legal for non-primitive
+        // scalars and unions, which have no literal-default grammar
         if matches!(value, DefaultValue::Struct) {
             return match ty {
                 ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Ok(DefaultValue::Struct),
@@ -1820,11 +1789,9 @@ impl<'a> SchemaAnalyzer<'a> {
                     .zip(resolved_args.iter().cloned())
                     .collect();
 
-                // The auto-mangled name is always computed, even when an
-                // explicit `as Alias` is given: it's the canonical identity
-                // of "this template instantiated with these exact args",
-                // used to detect two DIFFERENT instantiations accidentally
-                // requesting the same alias.
+                // auto-mangled name is always computed even under an explicit as-alias,
+                // it's the canonical identity used to catch two different instantiations
+                // requesting the same alias
                 let mangled = mangle_generic_name(name, &resolved_args);
                 let display_name = alias.clone().unwrap_or_else(|| mangled.clone());
                 let type_id = TypeId {
@@ -1962,7 +1929,6 @@ impl<'a> SchemaAnalyzer<'a> {
                     });
                 }
 
-                // renamed from `span` (f64) to `range` — `span: Span` is now a parameter here.
                 let range = (max - min) / step;
 
                 let backing = if range <= u16::MAX as f64 {
@@ -2297,15 +2263,13 @@ fn check_type_update(
     _new_ty: &ResolvedTypeRef,
     _version: i128,
 ) -> Result<(), AnalysisError> {
-    // TODO: validate the cast is sound. Doesn't error today, so no span needed
-    // yet — if it starts erroring, thread span/line like everywhere else.
+    // TODO: validate the cast is sound, doesn't error today so no span threaded yet
     Ok(())
 }
 
-/// Applies a child type def's own `diff` ops to an inherited (and already
-/// rename-substituted) field/const list, at the AST level — same op semantics as
-/// the old `collect_extended_type`, just operating on unresolved `TypeAst` so it
-/// can run before a generic template's params are known.
+/// applies a child type def's diff ops to an inherited field/const list at the
+/// AST level, same semantics as the old collect_extended_type but on unresolved
+/// TypeAst so it can run before a generic template's params are known
 #[allow(clippy::result_large_err)]
 fn apply_template_diff_ops(
     type_name: &str,
@@ -2513,10 +2477,9 @@ fn apply_template_diff_ops(
     Ok(())
 }
 
-/// AST-level substitution used while merging an `extends<...>` chain: replaces
-/// occurrences of a renamed ancestor type parameter with either the child's
-/// corresponding type expression, or `TypeAst::Wildcard` if it was dropped (`_`).
-/// Names that aren't in `rename` (ordinary type references) are left untouched.
+/// AST-level substitution for merging an extends<...> chain: replaces a renamed
+/// ancestor param with the child's type expr, or Wildcard if dropped. names not
+/// in rename are left untouched
 fn substitute_ast(ty: &TypeAst, rename: &HashMap<&str, &GenericArgAst>) -> TypeAst {
     match ty {
         TypeAst::Named(n) => match rename.get(n.as_str()) {
@@ -2570,9 +2533,8 @@ fn substitute_ast(ty: &TypeAst, rename: &HashMap<&str, &GenericArgAst>) -> TypeA
     }
 }
 
-/// True if a dropped ancestor type parameter (`_` in an `extends<...>` list)
-/// still appears anywhere in this type, meaning the child's own `diff` didn't
-/// fully remove/retype the fields that used it.
+/// true if a dropped ancestor type param still appears anywhere in this type,
+/// meaning the child's diff didn't fully clean up the fields that used it
 fn type_ast_contains_wildcard(ty: &TypeAst) -> bool {
     match ty {
         TypeAst::Wildcard => true,
@@ -2595,8 +2557,8 @@ fn type_ast_contains_wildcard(ty: &TypeAst) -> bool {
     }
 }
 
-/// Synthesizes a stable, Rust-identifier-safe name for a monomorphized generic
-/// instantiation, e.g. `Box<i32>` -> `BoxI32`, `Pair<i32, string>` -> `PairI32String`.
+/// synthesizes a stable, rust-identifier-safe name for a monomorphized generic
+/// instantiation, e.g. Box<i32> -> BoxI32
 fn mangle_generic_name(base: &str, args: &[ResolvedTypeRef]) -> String {
     let mut name = base.to_string();
     for arg in args {

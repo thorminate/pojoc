@@ -4,13 +4,9 @@ use crate::error::{Error, PojocResult};
 use crate::varint::{read_varint64, write_varint64};
 use std::collections::HashMap;
 
-/// Builds a message's shared string-interning table during encode: strings
-/// are deduped by first-occurrence order as `intern`-marked fields are
-/// visited, and referenced elsewhere by their assigned index.
-///
-/// Keyed with [`crate::PojocHasher`] to resist hash-flooding when the
-/// interned strings come from decoded, attacker-influenced data — see
-/// `docs/security.md`.
+/// builds a message's shared string table during encode, strings deduped by
+/// first-occurrence order as intern fields are visited. keyed with [`crate::PojocHasher`]
+/// to resist hash-flooding on attacker-influenced data, see docs/security.md
 pub struct InternBuilder<'a> {
     order: Vec<&'a str>,
     index: HashMap<&'a str, u32, crate::PojocHasher>,
@@ -24,8 +20,7 @@ impl<'a> InternBuilder<'a> {
         }
     }
 
-    /// Returns `s`'s index in the table, assigning it a new one (appended to
-    /// the table) the first time this exact string is seen.
+    /// returns s's table index, assigning a new one the first time it's seen
     pub fn intern(&mut self, s: &'a str) -> u32 {
         if let Some(&idx) = self.index.get(s) {
             return idx;
@@ -47,7 +42,7 @@ impl Default for InternBuilder<'_> {
     }
 }
 
-/// Writes the table: `[count:varint] [(len:varint, bytes)] * count`.
+/// writes the table: [count:varint] [(len:varint, bytes)] * count
 pub fn write_intern_table(buf: &mut Vec<u8>, table: &[&str]) {
     write_varint64(buf, table.len() as u64);
     for s in table {
@@ -55,7 +50,7 @@ pub fn write_intern_table(buf: &mut Vec<u8>, table: &[&str]) {
     }
 }
 
-/// Reads the table written by [`write_intern_table`].
+/// reads the table written by [`write_intern_table`]
 pub fn read_intern_table<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<Vec<&'a str>> {
     let count = read_varint64(buf, pos)? as usize;
     let mut table = Vec::with_capacity(count);
@@ -65,7 +60,7 @@ pub fn read_intern_table<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<Vec<
     Ok(table)
 }
 
-/// Reads a varint index into `table`, written by an `intern`-marked field.
+/// reads a varint index into table, written by an intern-marked field
 pub fn read_interned_string_ref<'a>(
     table: &[&'a str],
     buf: &[u8],

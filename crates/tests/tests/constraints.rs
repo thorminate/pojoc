@@ -23,9 +23,9 @@ fn test_valid_values_roundtrip() {
 #[test]
 fn test_boundary_values_roundtrip() {
     let original = Constraints {
-        count: 10,                           // max
-        tags: pojoc::pojvec!("a", "b", "c"), // max count
-        label: "0123456789",                 // max length (10 bytes)
+        count: 10,
+        tags: pojoc::pojvec!("a", "b", "c"),
+        label: "0123456789",
     };
 
     let mut buf = Vec::new();
@@ -39,7 +39,7 @@ fn test_boundary_values_roundtrip() {
 #[test]
 fn test_encode_rejects_out_of_range_count() {
     let original = Constraints {
-        count: 11, // > max
+        count: 11,
         tags: Default::default(),
         label: "ok",
     };
@@ -55,7 +55,7 @@ fn test_encode_rejects_out_of_range_count() {
 fn test_encode_rejects_too_many_tags() {
     let original = Constraints {
         count: 1,
-        tags: pojoc::pojvec!("a", "b", "c", "d"), // > max of 3
+        tags: pojoc::pojvec!("a", "b", "c", "d"),
         label: "ok",
     };
     let mut buf = Vec::new();
@@ -71,7 +71,7 @@ fn test_encode_rejects_empty_label() {
     let original = Constraints {
         count: 1,
         tags: Default::default(),
-        label: "", // < min of 1
+        label: "",
     };
     let mut buf = Vec::new();
     let err = encode(&mut buf, &original).expect_err("empty label must be rejected");
@@ -81,11 +81,7 @@ fn test_encode_rejects_empty_label() {
     ));
 }
 
-/// Decode must reject a malformed wire value that couldn't have come from
-/// this crate's own (guarded) `encode`, rather than silently accepting it or
-/// panicking. Locate `count`'s byte offset empirically (two otherwise-
-/// identical valid encodings differing only in `count` must differ in
-/// exactly one byte), then patch it out of range in a third valid buffer.
+// finds count's byte offset by diffing two encodings that differ only in count, then patches it out of range
 #[test]
 fn test_decode_rejects_out_of_range_count() {
     let mut buf_a = Vec::new();
@@ -124,7 +120,7 @@ fn test_decode_rejects_out_of_range_count() {
     let count_offset = diff_positions[0];
 
     let mut malformed = buf_a.clone();
-    malformed[count_offset] = 99; // > max of 10
+    malformed[count_offset] = 99;
     let err = decode(&malformed).expect_err("malformed count must be rejected, not panic");
     assert!(matches!(
         err,

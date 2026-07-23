@@ -634,10 +634,7 @@ schema Test {
 
 #[test]
 fn self_referential_generic_resolves() {
-    // A self-referential generic still needs `box<>` to break the cycle —
-    // otherwise the analyzer's recursion-cycle check (which exists
-    // specifically to catch this before it becomes an infinite-size `rustc`
-    // failure) now rejects it, same as a plain non-generic self-reference.
+    // self-referential generic still needs box<> to break the cycle, or the recursion-cycle check rejects it same as a non-generic self-reference
     let input = r#"
 schema Test {
   version 1 {
@@ -712,8 +709,7 @@ schema Test {
     let ast = parse_schema(input).unwrap();
     let schema = analyze_schema(&ast).unwrap();
 
-    // `m: Mono<i32>` at version 3 is a monomorphized instantiation, stored under
-    // its mangled name rather than the bare template name "Mono".
+    // m: Mono<i32> is stored under its mangled name MonoI32, not the bare template name Mono
     let mono_i32 = schema
         .types
         .types

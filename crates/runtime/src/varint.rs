@@ -1,9 +1,9 @@
 use crate::error::{Error, PojocResult};
 
-/// Maximum bytes a u64 varint can occupy (ceil(64/7) = 10).
+/// max bytes a u64 varint can occupy (ceil(64/7))
 const MAX_VARINT64_LEN: usize = 10;
 
-/// Maximum bytes a u32 varint can occupy (ceil(32/7) = 5).
+/// max bytes a u32 varint can occupy (ceil(32/7))
 const MAX_VARINT32_LEN: usize = 5;
 
 #[inline]

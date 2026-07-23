@@ -9,7 +9,6 @@ use std::process::Command;
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // pojoc
     println!("cargo:rerun-if-changed=schemas/");
 
     let mut orchestrator = ImportOrchestrator::new();
@@ -32,14 +31,12 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to write {stem}.rs\n{e}"));
     }
 
-    // protobuf
     prost_build::compile_protos(
         &["schemas/player.proto", "schemas/intern_bench.proto"],
         &["schemas/"],
     )
     .expect("failed to compile protos");
 
-    // capnproto
     capnpc::CompilerCommand::new()
         .file("schemas/player.capnp")
         .file("schemas/intern_bench.capnp")
@@ -47,7 +44,6 @@ fn main() {
         .run()
         .expect("failed to compile capnp schema");
 
-    // flatbuffers
     for fbs in ["player.fbs", "intern_bench.fbs"] {
         let status = Command::new("flatc")
             .args([
@@ -75,7 +71,6 @@ fn main() {
     )
     .expect("rename failed");
 
-    // bebop
     bebop::download_bebopc(out_dir.join("bebop"));
 
     bebop::build_schema_dir(
@@ -88,9 +83,8 @@ fn main() {
         },
     );
 
-    // bebopc emits `#![allow(warnings)]` as an inner attribute that isn't
-    // the first item once spliced via `include!` into `generated!`'s own
-    // module body — strip it from every generated file, not just player's.
+    // bebopc's #![allow(warnings)] breaks include! since it's not the first
+    // item in the spliced module body, so strip it from generated files
     for name in ["player", "intern_bench"] {
         let bebop_out = out_dir.join(format!("bebop-schema/{name}.rs"));
         let src = fs::read_to_string(&bebop_out).unwrap();

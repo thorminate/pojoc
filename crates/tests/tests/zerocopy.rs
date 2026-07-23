@@ -1,8 +1,4 @@
-// Correctness coverage for the zero-copy (borrowed `&'buf str`) decode mode the
-// standalone `pojoc_player` schema is generated with. The other integration
-// tests exercise the owned player embedded in `edge`; this one proves the
-// borrowed variant round-trips its string-bearing fields and that the decoded
-// values actually point into the input buffer (no copy).
+// pojoc_player is generated in zero-copy mode (borrowed &'buf str), unlike the owned player embedded in edge tested elsewhere
 use pojoc_tests::pojoc_player::{
     self, AABB, Class, Flags, Perks, Player, Region, Stats, Status, Transform, Vector3,
     runtime::pojvec,
@@ -72,22 +68,17 @@ fn zerocopy_player_string_fields_roundtrip() {
 
     let p = pojoc_player::decode(&buf).unwrap();
 
-    // scalar string
     assert_eq!(p.callsign, "NONE00");
-    // variable-length array of strings
     assert_eq!(
         p.inventory.as_slice(),
         &["sword", "shield", "healing_potion"]
     );
     assert_eq!(p.tags.as_slice(), &["starter_zone", "pvp_enabled", "vip"]);
-    // fixed-length arrays of strings
     assert_eq!(p.hotbar, ["sword", "healing_potion", "torch", "", "", ""]);
     assert_eq!(p.recent_zones[0], "zone_forest");
     assert_eq!(p.recent_zones[1], "zone_dungeon");
-    // tuple-with-string inside a fixed array
     assert_eq!(p.loadout[0], ("sword", 1));
     assert_eq!(p.loadout[2], ("torch", 3));
-    // numeric fields still intact
     assert_eq!(p.player_id, 7.0);
     assert_eq!(p.party_members, [2, 3, 0, 0]);
     assert_eq!(p.session_token, *b"SESSION000000000");
@@ -100,7 +91,6 @@ fn zerocopy_decoded_strings_borrow_the_input_buffer() {
 
     let p = pojoc_player::decode(&buf).unwrap();
 
-    // A borrowed decode must point *into* buf, not into a fresh allocation.
     let buf_range = buf.as_ptr_range();
     let s = p.callsign.as_ptr();
     assert!(

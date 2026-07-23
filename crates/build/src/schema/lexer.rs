@@ -53,10 +53,7 @@ pub enum Token {
     FloatLiteral(CompactString),
     Identifier(CompactString),
     StringLiteral(CompactString),
-    /// A `/// text` doc comment line — one token per line, text already
-    /// stripped of the leading `///` and (if present) one following space.
-    /// Plain `//` comments (and `////`+) are not doc comments and never
-    /// produce a token; they're discarded like whitespace.
+    /// only `///` becomes a token; plain `//` is discarded like whitespace
     DocComment(CompactString),
     Keyword(Keyword),
     Equals,
@@ -114,10 +111,7 @@ impl std::fmt::Display for Token {
     }
 }
 
-/// A `Token` plus its precise byte-offset `Span` and the 1-indexed source
-/// line it starts on. `line` is tracked by the lexer's existing newline
-/// counter as it scans — not derived from `span` — so `Display`-facing
-/// error messages don't need a `LineIndex` or the source text on hand.
+/// line is tracked separately from span so error messages don't need the source text on hand
 #[derive(Debug, Clone)]
 pub struct SpannedToken {
     pub token: Token,
@@ -127,8 +121,8 @@ pub struct SpannedToken {
 
 pub struct Lexer {
     input: Vec<char>,
-    pos: usize,      // char index into `input`
-    byte_pos: usize, // byte offset into the original source string
+    pos: usize,
+    byte_pos: usize,
     pub line: u32,
 }
 
@@ -154,7 +148,7 @@ impl Lexer {
         let ch = self.input.get(self.pos).copied();
         if let Some(c) = ch {
             self.pos += 1;
-            self.byte_pos += c.len_utf8(); // chars can be multi-byte in UTF-8
+            self.byte_pos += c.len_utf8(); // chars can be multi-byte
         }
         ch
     }
@@ -176,7 +170,7 @@ impl Lexer {
             }
 
             if self.at_doc_comment() {
-                // Leave it for `tokenize()` to read as a real `DocComment` token.
+                // let tokenize() read it as a real DocComment token
                 break;
             }
 
@@ -198,8 +192,7 @@ impl Lexer {
         }
     }
 
-    /// True at a `///` doc comment — exactly three slashes. A fourth (as in
-    /// `////`) makes it a plain, non-doc comment, matching rustdoc's own rule.
+    /// exactly three slashes; a fourth makes it a plain comment, matching rustdoc
     fn at_doc_comment(&self) -> bool {
         self.input.get(self.pos) == Some(&'/')
             && self.input.get(self.pos + 1) == Some(&'/')
@@ -207,8 +200,6 @@ impl Lexer {
             && self.input.get(self.pos + 3) != Some(&'/')
     }
 
-    /// Reads a `/// text` line (the lexer must already be positioned at the
-    /// leading `/`), stripping the `///` and one following space if present.
     fn read_doc_comment(&mut self) -> Token {
         self.advance();
         self.advance();
@@ -289,7 +280,7 @@ impl Lexer {
     fn read_string_lit(&mut self) -> Result<Token, LexError> {
         let start_byte = self.byte_pos;
         let start_line = self.line;
-        self.advance(); // consume opening "
+        self.advance();
         let mut s = CompactString::new("");
         loop {
             match self.advance() {

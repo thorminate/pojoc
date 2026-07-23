@@ -41,16 +41,9 @@ pub enum Error {
 }
 
 impl Error {
-    /// Renders this error with source context where available: a `file:line:col`
-    /// location and a caret pointing at the offending span, matching `pojoc
-    /// check`/`pojoc build`'s output. Other error kinds (I/O, missing file stem)
-    /// fall back to the plain message. Intended for `build.rs`:
-    ///
-    /// ```no_run
-    /// let out_dir = std::env::var("OUT_DIR").unwrap();
-    /// pojoc_build::compile_dir("schemas", &out_dir)
-    ///     .unwrap_or_else(|e| panic!("\n{}", e.render()));
-    /// ```
+    /// Renders with source context where available: a `file:line:col` location
+    /// and a caret at the offending span, matching `pojoc check`/`build`'s
+    /// output. Other error kinds fall back to the plain message.
     pub fn render(&self) -> String {
         match self {
             Error::Analysis { path, source } => source.render(path),
