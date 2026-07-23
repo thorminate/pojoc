@@ -24,11 +24,41 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install protoc/capnp/flatc (crates/tests deps)
+      - name: Install protoc/capnp (crates/tests deps)
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
-          packages: protobuf-compiler capnproto flatbuffers-compiler
+          packages: protobuf-compiler capnproto
           version: 1.0
+
+      # Ubuntu's flatbuffers-compiler package is far behind the `flatbuffers`
+      # Rust crate pinned in crates/tests/Cargo.toml, and flatc's generated
+      # code is not compatible across major versions — install the exact
+      # matching flatc release instead.
+      - name: Determine flatc version
+        id: flatc-version
+        run: |
+          version=$(grep '^flatbuffers = ' crates/tests/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache flatc binary
+        id: flatc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/flatc
+          key: flatc-${{ steps.flatc-version.outputs.version }}-linux
+
+      - name: Install flatc (crates/tests deps)
+        run: |
+          mkdir -p ~/.local/bin
+          if [ "${{ steps.flatc-cache.outputs.cache-hit }}" != "true" ]; then
+            version="${{ steps.flatc-version.outputs.version }}"
+            curl -fsSL -o flatc.zip \
+              "https://github.com/google/flatbuffers/releases/download/v${version}/Linux.flatc.binary.clang++-18.zip"
+            unzip -o flatc.zip -d ~/.local/bin flatc
+            rm flatc.zip
+          fi
+          chmod +x ~/.local/bin/flatc
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Format
         run: cargo fmt --check
