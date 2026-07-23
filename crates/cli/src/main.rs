@@ -41,7 +41,7 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
+    let code = match cli.command {
         Command::Build {
             input,
             out_dir,
@@ -49,6 +49,8 @@ fn main() {
         } => build(input, out_dir, verbose),
         Command::Check { input, verbose } => check(input, verbose),
     };
+
+    std::process::exit(code);
 }
 
 fn render_error(err: &AnalysisError, root: &Path) {

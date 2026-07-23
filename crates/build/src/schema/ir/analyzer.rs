@@ -609,7 +609,8 @@ impl<'a> SchemaAnalyzer<'a> {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let payload = self.resolve(&v.payload_ty, version, v.span, v.line, &HashMap::new())?;
+                let payload =
+                    self.resolve(&v.payload_ty, version, v.span, v.line, &HashMap::new())?;
                 Ok(UnionVariant {
                     name: v.name.clone(),
                     payload,
@@ -1202,16 +1203,44 @@ impl<'a> SchemaAnalyzer<'a> {
                     ctx.const_fields.push(resolve_const(field, version)?);
                 }
 
-                DiffAst::Remove { name, .. } => {
+                DiffAst::Remove { name, span, line } => {
+                    let existed_in_fields = ctx.fields.iter().any(|f| f.name == *name);
+                    let existed_in_consts = ctx.const_fields.iter().any(|c| c.name == *name);
+
+                    if !existed_in_fields && !existed_in_consts {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "remove",
+                            field: name.clone(),
+                            type_name: "<root>".to_string(),
+                            version,
+                            span: *span,
+                            line: *line,
+                        });
+                    }
+
                     ctx.fields.retain(|f| f.name != *name);
                     ctx.const_fields.retain(|c| c.name != *name);
                 }
 
-                DiffAst::Rename { from, to, .. } => {
+                DiffAst::Rename {
+                    from,
+                    to,
+                    span,
+                    line,
+                } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
                         c.name = to.clone();
+                    } else {
+                        return Err(AnalysisError::FieldNotFound {
+                            op: "rename",
+                            field: from.clone(),
+                            type_name: "<root>".to_string(),
+                            version,
+                            span: *span,
+                            line: *line,
+                        });
                     }
                 }
 

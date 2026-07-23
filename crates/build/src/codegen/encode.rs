@@ -237,11 +237,7 @@ pub(crate) fn emit_write_expr(
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            if normalize_type(&id.name) == "string" {
-                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
-            } else {
-                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
-            }
+            w.line(&format!("{}(__buf, {accessor});", info.write_fn));
         }
 
         ResolvedTypeRef::Enum(id) => {
@@ -1275,9 +1271,12 @@ fn emit_size_expr(
                 && is_bulk_castable_scalar(&id.name)
                 && let WireSize::Fixed(elem_size) = type_info(inner).wire_size
             {
-                w.line(&format!(
-                    "size += varint_size({accessor}.len()) + {accessor}.len() * {elem_size};"
-                ));
+                let bytes = if elem_size == 1 {
+                    format!("{accessor}.len()")
+                } else {
+                    format!("{accessor}.len() * {elem_size}")
+                };
+                w.line(&format!("size += varint_size({accessor}.len()) + {bytes};"));
                 return;
             }
             w.line(&format!("size += varint_size({accessor}.len());"));
@@ -1336,7 +1335,12 @@ fn emit_size_expr(
                     w.line(&format!("size += {accessor}.len() * ({ks} + {vs});"));
                 }
                 (WireSize::Fixed(ks), WireSize::Variable) => {
-                    w.line(&format!("size += {accessor}.len() * {ks};"));
+                    let bytes = if ks == 1 {
+                        format!("{accessor}.len()")
+                    } else {
+                        format!("{accessor}.len() * {ks}")
+                    };
+                    w.line(&format!("size += {bytes};"));
                     w.line(&format!("for __v in {accessor}.values() {{"));
                     w.indent();
                     emit_size_expr(v_ty, "__v", true, w, schema);
@@ -1344,7 +1348,12 @@ fn emit_size_expr(
                     w.line("}");
                 }
                 (WireSize::Variable, WireSize::Fixed(vs)) => {
-                    w.line(&format!("size += {accessor}.len() * {vs};"));
+                    let bytes = if vs == 1 {
+                        format!("{accessor}.len()")
+                    } else {
+                        format!("{accessor}.len() * {vs}")
+                    };
+                    w.line(&format!("size += {bytes};"));
                     w.line(&format!("for __k in {accessor}.keys() {{"));
                     w.indent();
                     emit_size_expr(k_ty, "__k", true, w, schema);
