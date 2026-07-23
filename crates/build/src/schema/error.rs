@@ -476,8 +476,8 @@ impl IndexableError for AnalysisError {
 }
 
 impl AnalysisError {
-    /// The file this error should be reported against — usually `root`, but
-    /// import-related errors point at the importing/imported file instead.
+    /// the file this error is reported against, usually root but import errors
+    /// point at the importing/imported file instead
     fn source_path<'a>(&'a self, root: &'a std::path::Path) -> &'a std::path::Path {
         match self {
             AnalysisError::ImportParseFailed { path, .. } => std::path::Path::new(path.as_str()),
@@ -489,13 +489,8 @@ impl AnalysisError {
         }
     }
 
-    /// Renders this error with source context: a `file:line:col` location and
-    /// a caret pointing at the offending span, matching what `pojoc check`/`pojoc
-    /// build` print. `root` is the entry-point `.pojoc` file passed to
-    /// [`compile`](crate::compile)/[`compile_dir`](crate::compile_dir) — used as
-    /// the file to read from unless this error points elsewhere (e.g. into an
-    /// import). Reads the source file from disk to build the snippet, so it may
-    /// diverge if the file changed since the error was produced.
+    /// renders with a file:line:col location and caret, matching pojoc check/build.
+    /// reads the source file from disk, so it may diverge if the file changed since
     pub fn render(&self, root: &std::path::Path) -> String {
         use std::fmt::Write;
 

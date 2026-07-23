@@ -3,11 +3,7 @@ use helpers::*;
 use pojoc::{LazyView, pojvec};
 use pojoc_tests::pojoc_edge::*;
 
-/// Decode into a `'static` value by leaking a copy of the buffer. Decoded
-/// strings are borrowed (`&'buf str`), so to compare a decoded `Edge` against a
-/// `'static`-built original with plain `assert_eq!` (homogeneous `PartialEq`),
-/// both must share the `'static` lifetime. Test-only; the leak is reclaimed at
-/// process exit.
+// leaks the buffer so the decoded &'buf str fields become 'static, matching a 'static-built original for assert_eq!
 fn decode_static(buf: &[u8]) -> Edge<'static> {
     decode(Vec::leak(buf.to_vec())).expect("decode failed")
 }
@@ -135,8 +131,6 @@ fn test_encode_for_version_latest_version_fields_survive() {
     assert_duo_string_i32_eq(&decoded.generic_duo_v4, &original.generic_duo_v4);
     assert_mono_string_eq(&decoded.generic_mono_v5, &original.generic_mono_v5);
 
-    // v5-only fields (interning, recursive box<T>) — must survive when
-    // encoding at the latest version.
     assert_eq!(
         decoded.interned_label, original.interned_label,
         "v{latest}: interned_label mismatch"
@@ -154,11 +148,7 @@ fn test_encode_for_version_latest_version_fields_survive() {
 
 #[test]
 fn test_encode_for_version_pre_v5_omits_new_fields() {
-    // interned_label / interned_tags / linked_list were added in v5's diff —
-    // encoding a populated Edge at any earlier version must silently drop
-    // them (they didn't exist on that version's wire format yet), and
-    // decoding must come back with their zero-value defaults, not an error
-    // and not stale/leftover data.
+    // these fields were added in v5's diff, so encoding at an earlier version must drop them and decode to zero-value defaults
     let original = make_version_probe_edge();
 
     for &version in supported_versions() {
@@ -250,10 +240,7 @@ fn test_roundtrip_control_signal_variants() {
 
 #[test]
 fn test_roundtrip_unknown_union_variant_is_lossless() {
-    // Simulates a proxy/middleware scenario: a peer running a newer schema
-    // sends a Payload variant this binary doesn't recognize. The decoder
-    // should preserve it as Unknown { discriminant, data } rather than
-    // erroring, and re-encoding must reproduce the exact same bytes.
+    // simulates a peer on a newer schema sending a variant this binary doesn't know; must round-trip as Unknown, not error
     let mut e = Edge::default();
     e.action = Payload::Unknown {
         discriminant: 9999,

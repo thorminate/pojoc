@@ -5,8 +5,7 @@ pub struct SchemaAst {
     pub name: String,
     pub imports: Vec<ImportDeclAst>,
     pub versions: Vec<VersionAst>,
-    /// `///` doc comments directly above the `schema` header — emitted on
-    /// the generated root struct.
+    // doc comments above the `schema` header, emitted on the generated root struct
     pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
@@ -51,7 +50,7 @@ pub struct TypeDefAst {
     pub params: Vec<String>,
     pub extends: Option<ExtendsAst>,
     pub body: TypeBody,
-    /// `///` doc comments directly above the `type` header.
+    // doc comments above the `type` header
     pub doc: Vec<String>,
     pub span: Span,
     pub line: u32,
@@ -84,8 +83,7 @@ pub enum EnumDefAst {
         name: String,
         base: ExtendsAst,
         ops: Vec<EnumVariantOpAst>,
-        /// Overrides the enum's own doc for this and later versions when
-        /// non-empty; otherwise it keeps whatever doc the base version had.
+        // overrides the base version's doc for this and later versions if non-empty
         doc: Vec<String>,
         span: Span,
         line: u32,

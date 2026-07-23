@@ -168,7 +168,7 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
     match payload {
         ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-            // existing named write helper, __payload is already &T
+            // __payload is already &T here
             w.line(&format!(
                 "write_{}(&mut __tmp, __payload);",
                 id.name.to_snake_case()
@@ -238,8 +238,6 @@ pub(crate) fn emit_write_expr(
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
             if normalize_type(&id.name) == "string" {
-                // Field is already a `&str`; pass it straight through.
-                // Deref coercion collapses any `&&str` from array iterators.
                 w.line(&format!("{}(__buf, {accessor});", info.write_fn));
             } else {
                 w.line(&format!("{}(__buf, {accessor});", info.write_fn));
@@ -248,11 +246,8 @@ pub(crate) fn emit_write_expr(
 
         ResolvedTypeRef::Enum(id) => {
             if let Some(schema) = vn {
-                // The in-memory Rust enum is the latest version's definition. When
-                // encoding *this* version, the clamp maps any variant newer than
-                // the version's wire range down to 0. When `id` is the latest
-                // enum version, every representable variant is already in range, so
-                // the branch is provably dead — emit the direct write instead.
+                // if id is the latest enum version every variant is in range,
+                // so the clamp branch below is dead, skip it
                 let latest_enum_version = schema
                     .enums
                     .enums
@@ -414,14 +409,9 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Boxed(inner) => {
-            // `&Box<T>` and `Box<T>` both auto-deref-coerce to `&T` at a
-            // call site expecting `&T` (Rust's built-in `Deref` for `Box`),
-            // so non-Copy inner types (structs, strings) need no manual
-            // deref at all — passing the boxed reference through as-is is
-            // enough, and doing `&**x` there is exactly what clippy's
-            // `explicit_auto_deref` flags. Copy primitives still need a
-            // genuine `T` value rather than a reference, which
-            // `deref_if_copy` provides by adding an explicit `*`.
+            // Box<T> auto-derefs to &T, so non-Copy inner types need no manual
+            // deref (avoids clippy's explicit_auto_deref); Copy primitives still
+            // need deref_if_copy's explicit *
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -432,17 +422,12 @@ pub(crate) fn emit_write_expr(
             emit_write_expr(inner, &derefed, vn, !now_a_value, w);
         }
 
-        // Transparent on the wire — the constraint check itself is emitted
-        // separately, around the field write, by the caller.
+        // transparent on the wire, constraint check is emitted separately by the caller
         ResolvedTypeRef::Constrained { inner, .. } => {
             emit_write_expr(inner, accessor, vn, is_ref, w)
         }
 
-        // `accessor` is always already a `&str` value here — a `string`
-        // scalar's Rust type never needs an extra `&`/deref (see the
-        // primitive-string branch above), and `Interned` always wraps a bare
-        // `string` (enforced at analysis time), so no dereffing needed
-        // regardless of `is_ref`.
+        // accessor is always already &str here, no dereffing needed regardless of is_ref
         ResolvedTypeRef::Interned(_) => {
             w.line(&format!(
                 "write_varint64(__buf, __interner.intern({accessor}) as u64);"
@@ -460,10 +445,8 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     let v = vl.version;
     let fallible = is_constraint_infected(name);
     let ret = if fallible { " -> PojocResult<()>" } else { "" };
-    // Per-*version* check, not the global `is_intern_infected(name)` — this
-    // function emits version `v`'s own historical wire format, which must
-    // not gain an intern-table header just because a *later* version added
-    // an interned field. See `version_uses_intern`.
+    // per-version check, not is_intern_infected(name) — this version's wire
+    // format shouldn't gain an intern table just because a later version added one
     let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
     w.line(&format!(
@@ -472,24 +455,15 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     w.indent();
 
     if fallible {
-        // Validated once against the *current* (latest-schema) struct,
-        // regardless of which historical version's wire format this
-        // particular `encode_vN` produces — see `emit_constraint_guard`.
+        // validated against the current struct, not this version's historical shape
         for field in &schema.versions.last().unwrap().fields {
             emit_constraint_guard(field, &format!("__value.{}", field.name), w);
         }
     }
 
     if interning {
-        // The string table must precede the fields on the wire, but it can
-        // only be built by visiting every `intern` field first — so encode
-        // the fields into a scratch buffer (shadowing `__buf`, so every
-        // existing write statement below is unaffected), then prepend the
-        // now-complete table to the real output.
-        // `__interner` is always threaded as `&mut InternBuilder` (never the
-        // owned value), so a call-site injection like `, __interner` is
-        // valid identically at the root and in any nested `write_*` — Rust
-        // auto-reborrows a `&mut T` passed where `&mut T` is expected.
+        // string table must precede fields on wire but needs every intern field
+        // visited first, so encode fields into a scratch buffer and prepend the table after
         w.line("let mut __interner_owned = InternBuilder::new();");
         w.line("let __interner = &mut __interner_owned;");
         w.line("let mut __scratch: Vec<u8> = Vec::new();");
@@ -498,7 +472,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
         w.line("let __buf = &mut __scratch;");
     }
 
-    // Same fixed-first reordering the decoder uses, so the wire order matches.
+    // same fixed-first reordering the decoder uses, keeps wire order matching
     let ordered = ordered_wire_fields(schema, vl);
     let opt_fields: Vec<&FieldLineage> = ordered
         .iter()
@@ -1013,11 +987,7 @@ fn emit_vn_cast_value(
         }
 
         (Boxed(f_inner), Boxed(t_inner)) => {
-            // `accessor` is always the *current* (latest-shape) struct
-            // field's actual Rust value, so its real type is `Box<t_inner>`
-            // — unwrap that via auto-deref-coercion (see the matching
-            // comment in `emit_write_expr`'s `Boxed` arm) rather than a
-            // manual `&**`, which clippy flags as redundant.
+            // unwrap via auto-deref like emit_write_expr's Boxed arm, not manual &**
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -1051,8 +1021,6 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            // Borrowed-string defaults (`""`) are already `&str`; every other
-            // primitive default is a plain value. Neither needs a `&`.
             w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
         }
         ResolvedTypeRef::Scalar(id) => {
@@ -1153,14 +1121,11 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
         }
         ResolvedTypeRef::Optional(_) => {}
         ResolvedTypeRef::Boxed(inner) => {
-            // Heap indirection doesn't change the wire bytes — the default
-            // for `box<T>` on the wire is just `T`'s default.
+            // box<T>'s wire default is just T's default
             emit_vn_default_write(inner, schema, w);
         }
         ResolvedTypeRef::Constrained { inner, .. } => emit_vn_default_write(inner, schema, w),
-        // The old-version reader still expects a table index at this wire
-        // position (not raw bytes), so the filler must go through the
-        // interner too, not `write_string`.
+        // old-version reader expects a table index here, filler must go through the interner
         ResolvedTypeRef::Interned(_) => {
             w.line("write_varint64(__buf, __interner.intern(\"\") as u64);");
         }
@@ -1225,7 +1190,6 @@ fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
                     w.line(&format!("let __plen = {size_fn}(__p);"));
                 }
                 _ => {
-                    // use emit_size_expr with its own `size` accumulator, then rename
                     w.line("let mut size = 0usize;");
                     emit_size_expr(&variant.payload, "__p", true, w, schema);
                     w.line("let __plen = size;");
@@ -1317,7 +1281,6 @@ fn emit_size_expr(
                 return;
             }
             w.line(&format!("size += varint_size({accessor}.len());"));
-            // ...
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_size_expr(inner, "__item", true, w, schema);
@@ -1365,10 +1328,7 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            // A fixed-size side's contribution doesn't depend on its value,
-            // so looping `for (__k, __v)` over it would leave that binding
-            // unused (clippy::for_kv_map) — fold it into `len() * size` and
-            // only iterate the side(s) that actually vary per entry.
+            // fixed-size side folds into len() * size, only iterate the varying side(s)
             let k_wire = type_info(k_ty).wire_size;
             let v_wire = type_info(v_ty).wire_size;
             match (k_wire, v_wire) {
@@ -1450,8 +1410,7 @@ fn emit_size_expr(
             w.line("}");
         }
         ResolvedTypeRef::Boxed(inner) => {
-            // See the matching comment in `emit_write_expr`'s `Boxed` arm —
-            // same auto-deref-coercion reasoning applies here.
+            // same auto-deref reasoning as emit_write_expr's Boxed arm
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -1464,9 +1423,8 @@ fn emit_size_expr(
         ResolvedTypeRef::Constrained { inner, .. } => {
             emit_size_expr(inner, accessor, is_ref, w, schema)
         }
-        // The actual wire cost is a small varint table index, not the string
-        // itself — a flat upper-bound estimate is fine since this only
-        // drives `Vec::reserve`'s pre-allocation, not correctness.
+        // wire cost is a small varint index, not the string; flat estimate is fine
+        // since this only drives Vec::reserve, not correctness
         ResolvedTypeRef::Interned(_) => {
             w.line("size += 10;");
         }

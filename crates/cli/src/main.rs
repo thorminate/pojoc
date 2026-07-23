@@ -51,22 +51,16 @@ fn main() {
     };
 }
 
-/// Emits a neatly formatted error to stderr, reusing pojoc-build's
-/// `AnalysisError::render` so build.rs and the CLI stay in sync.
 fn render_error(err: &AnalysisError, root: &Path) {
     eprint!("{}", err.render(root));
 }
 
-/// Simply emits a log to stdout with a dark gray ansi
-/// color encoding and 2 whitespaces of filler.
 fn log(verbose: bool, msg: &str) {
     if verbose {
         println!("\x1b[2m  {msg}\x1b[0m");
     }
 }
 
-/// Builds a schema file into Rust code with conditionally verbose
-/// time diagnostics. Also returning an error code if something went wrong.
 fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
     let mut orchestrator = ImportOrchestrator::new();
 
@@ -123,7 +117,6 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
     0
 }
 
-/// Runs the analysis and resolution steps with no codegen and output.
 fn check(input: PathBuf, verbose: bool) -> i32 {
     let mut orchestrator = ImportOrchestrator::new();
 

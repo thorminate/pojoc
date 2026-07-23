@@ -93,7 +93,7 @@ fn stream_of_envelopes() {
 
 #[test]
 fn read_truncated_u32_errors() {
-    let buf = vec![0x01, 0x02]; // only 2 bytes, need 4
+    let buf = vec![0x01, 0x02];
     let mut pos = 0;
     assert_eq!(read_u32(&buf, &mut pos), Err(Error::UnexpectedEof));
 }
@@ -101,7 +101,6 @@ fn read_truncated_u32_errors() {
 #[test]
 fn read_envelope_bad_length_errors() {
     let mut buf = Vec::new();
-    // version=1, claimed len=100, but buffer is empty after that
     write_varint64(&mut buf, 1);
     write_u32(&mut buf, 100);
     let mut pos = 0;

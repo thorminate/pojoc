@@ -26,10 +26,9 @@ impl<'a> Resolver<'a> {
             })
     }
 
-    /// Finds the `TypeDefAst` node for `name` at the latest version <= `version`,
-    /// along with the version it was found at. Unlike `resolve_type`, this returns
-    /// the raw AST node so callers can inspect `.params`/`.body`/`.extends` — needed
-    /// because generic templates are never registered in `TypeRegistry`.
+    /// finds the TypeDefAst node for name at the latest version <= version.
+    /// returns the raw AST node (unlike resolve_type) since generic templates
+    /// are never registered in TypeRegistry
     pub fn resolve_type_def(&self, name: &str, version: i128) -> Option<(&'a TypeDefAst, i128)> {
         self.ast
             .versions
@@ -45,9 +44,8 @@ impl<'a> Resolver<'a> {
             .map(|(found_version, td)| (td, found_version))
     }
 
-    /// Finds the `TypeDefAst` node for `name` at *exactly* `version` (used for
-    /// `extends Name@V` chains, which always reference a specific version, unlike
-    /// a plain field-type reference which wants the latest version <= usage site).
+    /// finds the TypeDefAst node for name at exactly version, used for
+    /// extends Name@V chains which reference a specific version
     pub fn resolve_type_def_exact(&self, name: &str, version: i128) -> Option<&'a TypeDefAst> {
         self.ast.versions.iter().find_map(|v| {
             if v.version != version {

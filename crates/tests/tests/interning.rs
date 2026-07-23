@@ -39,10 +39,7 @@ fn test_interning_roundtrip() {
 
 #[test]
 fn test_interning_dedups_repeated_strings_across_nested_and_root() {
-    // "shared" appears 5 times (primary_label, two Tag elements, a
-    // [intern string] element, and the generic Mono<intern string>) but
-    // should only be stored once in the table, referenced by index
-    // everywhere else.
+    // "shared" appears 5 times across root, nested, array, and generic fields but should be stored once
     let interned = Interning {
         primary_label: "shared",
         tags: pojoc::pojvec!(Tag { label: "shared" }, Tag { label: "shared" }),
@@ -53,8 +50,7 @@ fn test_interning_dedups_repeated_strings_across_nested_and_root() {
     let mut interned_buf = Vec::new();
     encode(&mut interned_buf, &interned);
 
-    // Same shape, but five distinct strings instead of one repeated string —
-    // proves the size difference comes from deduplication.
+    // same shape but all-distinct strings, so any size difference comes from dedup
     let distinct = Interning {
         primary_label: "aaaaaaaaaaaaaaaaaaaa",
         tags: pojoc::pojvec!(

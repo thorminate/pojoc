@@ -6,7 +6,7 @@ use pojoc_build::schema::ast::TypeAst;
 use pojoc_build::schema::ir::ir_types::*;
 use std::collections::HashMap;
 
-/// What identifier the cursor is resolved to point at.
+/// what identifier the cursor is resolved to point at
 enum HoverTarget {
     Schema,
     Type(String),
@@ -17,12 +17,9 @@ enum HoverTarget {
     Variant { owner: String, name: String },
 }
 
-/// Resolves the hover markdown (already schema-flavored, doc-comment-aware)
-/// for the identifier under `offset`, plus the byte range of that identifier
-/// (for the caller to translate into an LSP `Range`). `resolved` is the last
-/// successfully-analyzed schema, if any — richer signatures are only
-/// available when analysis last succeeded; otherwise this falls back to
-/// doc-comment-only hover sourced from the (always available) raw AST index.
+/// resolves hover markdown for the identifier under offset, plus its byte range.
+/// falls back to doc-comment-only hover from the raw AST index when there's no
+/// last-successful `resolved` schema to pull richer signatures from
 pub fn hover_for_position(
     text: &str,
     offset: usize,
@@ -67,8 +64,7 @@ fn classify(
     idx: &SchemaIndex,
     resolved: Option<&ResolvedSchema>,
 ) -> Option<HoverTarget> {
-    // Immediately preceded by a declaring keyword -> this word IS the
-    // type/enum/union/bitset/schema name being declared (or extended).
+    // preceded by a declaring keyword, so this word is the name being declared
     if let Some(Tok::Ident(k)) = pending.last() {
         match k.as_str() {
             "type" => return Some(HoverTarget::Type(word.to_string())),
@@ -80,7 +76,7 @@ fn classify(
         }
     }
 
-    // `Owner::Variant` access (default values, discriminant literals, etc).
+    // Owner::Variant access (default values, discriminant literals, etc)
     if let [.., Tok::Ident(owner), Tok::DoubleColon] = pending {
         return Some(HoverTarget::Variant {
             owner: owner.clone(),
@@ -88,10 +84,8 @@ fn classify(
         });
     }
 
-    // Field/const/variant *declaration* position: the word is the first
-    // token on its line (no `:` seen yet this line — past the colon means
-    // we're inside a type annotation/payload, i.e. a reference, not a
-    // declaration).
+    // declaration position: first token on the line, no `:` yet — past the
+    // colon means we're in a type annotation, i.e. a reference not a declaration
     let past_colon = pending.iter().any(|t| matches!(t, Tok::Punct(':')));
     if !past_colon {
         match stack.last() {
@@ -119,9 +113,7 @@ fn classify(
         }
     }
 
-    // Fallback: a bare reference anywhere (field type annotation, `extends`
-    // clause, generic argument, array/map element, ...) — types/enums/
-    // unions/bitsets share one namespace, so a name match is unambiguous.
+    // fallback: bare reference anywhere, one shared namespace so name match is unambiguous
     if idx.type_names.contains(word) {
         return Some(HoverTarget::Type(word.to_string()));
     }
@@ -135,18 +127,14 @@ fn classify(
         return Some(HoverTarget::Bitset(word.to_string()));
     }
 
-    // A monomorphized generic instantiation's name — either auto-mangled
-    // (`Box<i32>` -> `BoxI32`) or an explicit `as Alias` — exists only as a
-    // resolved `TypeId`, never as a `type` keyword declaration, so it's
-    // absent from every `idx.*_names` set above.
+    // monomorphized generic name, only exists as a resolved TypeId, not in idx.*_names
     if let Some(r) = resolved
         && r.types.types.keys().any(|id| id.name == word)
     {
         return Some(HoverTarget::Type(word.to_string()));
     }
 
-    // Last resort: a bare variant name with no `Owner::` qualifier (best
-    // effort — picks whichever enum/union/bitset happens to declare it).
+    // last resort: bare variant name, no Owner:: qualifier, best-effort match
     idx.variant_docs
         .keys()
         .find(|(_, v)| v == word)
@@ -184,11 +172,7 @@ fn render_hover(
                 let sig = render_type_signature(&name, &t.fields, &t.const_fields);
                 return Some(markdown_with_doc(&sig, &t.doc));
             }
-            // Un-instantiated generic template (e.g. `Box<T>` hovered by its
-            // own name) — codegen never sees these, only monomorphizations,
-            // so there's no resolved `TypeId` to look up; render the
-            // declared shape straight from the AST instead, params left
-            // abstract.
+            // un-instantiated generic template, no resolved TypeId, render straight from the AST
             if let Some(fields) = idx.generic_field_asts.get(&name) {
                 let params = idx.generic_params.get(&name).cloned().unwrap_or_default();
                 let sig = render_generic_type_signature(&name, &params, fields);
@@ -259,9 +243,7 @@ fn render_hover(
                     }
                 }
             }
-            // Field of an un-instantiated generic template — no resolved
-            // `TypeId` for the owner (see the `HoverTarget::Type` case
-            // above), so render straight from the declared AST shape.
+            // field of an un-instantiated generic template, same fallback as HoverTarget::Type
             if let Some(o) = &owner
                 && let Some(f) = idx
                     .generic_field_asts
@@ -400,9 +382,8 @@ fn render_type_ref(ty: &ResolvedTypeRef) -> String {
     }
 }
 
-/// Same idea as `render_type_ref`, but for the unresolved parser `TypeAst`
-/// — used for generic templates, which have no monomorphized `ResolvedTypeRef`
-/// of their own (only their concrete instantiations do).
+/// same idea as `render_type_ref` but for unresolved `TypeAst`, used for generic
+/// templates which have no `ResolvedTypeRef` of their own
 fn render_type_ast(ty: &TypeAst) -> String {
     match ty {
         TypeAst::Named(n) => n.clone(),
@@ -814,9 +795,7 @@ schema Test {
 
     #[test]
     fn hover_on_generic_template_declaration_shows_abstract_shape() {
-        // `Box<T>` itself is never a resolved `TypeId` — only its concrete
-        // instantiations (`BoxI32`, ...) are — so this must fall back to
-        // the raw AST shape rather than finding nothing.
+        // Box<T> itself is never a resolved TypeId, only its instantiations are
         let md = hover(
             r#"
 schema Test {
@@ -862,9 +841,7 @@ schema Test {
 
     #[test]
     fn hover_on_generic_instantiation_reference_shows_template_shape() {
-        // Hovering `Box` at a use site (`b: Box<i32>`) shows the same
-        // abstract template shape — there's no way to know from the bare
-        // name alone which instantiation the reader has in mind.
+        // hovering at a use site can't know which instantiation is meant, shows the template
         let md = hover(
             r#"
 schema Test {
@@ -887,9 +864,7 @@ schema Test {
 
     #[test]
     fn hover_on_as_alias_resolves_the_monomorphized_type() {
-        // `as FlagBox` names a monomorphization explicitly; it only exists
-        // as a resolved `TypeId`, never as a `type` keyword declaration, so
-        // it's absent from every raw-AST name set.
+        // as-alias only exists as a resolved TypeId, absent from every raw-AST name set
         let md = hover(
             r#"
 schema Test {
@@ -911,9 +886,7 @@ schema Test {
 
     #[test]
     fn hover_on_generic_field_added_via_extends_diff() {
-        // Fields added to a generic template via `extends` must also show
-        // up in the raw-AST fallback shape, not just fields from the
-        // original declaration.
+        // extends-added fields must also show in the raw-AST fallback shape
         let md = hover(
             r#"
 schema Test {

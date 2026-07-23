@@ -39,9 +39,7 @@ pub struct FieldIR {
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
     pub lazy: bool,
-    /// `///` doc lines carried through unchanged across renames/retypes,
-    /// same as `default` — only set (or replaced) where the field is
-    /// declared or `+ Add`ed.
+    /// doc lines carried through unchanged across renames/retypes, like default
     pub doc: Vec<String>,
 }
 
@@ -198,8 +196,7 @@ pub struct ResolvedSchema {
     pub bitsets: BitsetRegistry,
     pub lineage: SchemaLineage,
     pub imports: HashMap<String, Arc<ResolvedSchema>>,
-    /// `///` doc comments directly above the `schema` header — emitted on
-    /// the generated root struct.
+    /// doc comments above the `schema` header, emitted on the generated root struct
     pub doc: Vec<String>,
 }
 
