@@ -15,5 +15,5 @@ name = "pojoc"
 path = "src/main.rs"
 
 [dependencies]
-pojoc-build = { path = "../build", version = "0.5.2" }
+pojoc-build = { path = "../build", version = "0.6.0" }
 clap = { workspace = true, features = ["derive"] }
