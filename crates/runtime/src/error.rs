@@ -20,6 +20,9 @@ pub enum Error {
     },
     /// intern field's table index had no matching entry
     InvalidInternIndex,
+    /// a union value's discriminant doesn't fit a specific historical
+    /// version's fixed wire width.
+    DiscriminantOverflow,
 }
 
 impl fmt::Display for Error {
@@ -37,6 +40,12 @@ impl fmt::Display for Error {
                 )
             }
             Error::InvalidInternIndex => write!(f, "string-interning table index out of range"),
+            Error::DiscriminantOverflow => {
+                write!(
+                    f,
+                    "union discriminant doesn't fit this wire version's width"
+                )
+            }
         }
     }
 }

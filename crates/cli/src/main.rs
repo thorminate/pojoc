@@ -25,6 +25,12 @@ enum Command {
         /// Print per-file diagnostics
         #[arg(short, long)]
         verbose: bool,
+
+        /// Don't emit Serialize/Deserialize derives/impls in generated code.
+        /// The consuming crate's `pojoc` dependency must have its own `serde`
+        /// feature disabled to match, or the generated code won't compile.
+        #[arg(long)]
+        no_serde: bool,
     },
 
     /// Check a schema without writing output
@@ -46,7 +52,8 @@ fn main() {
             input,
             out_dir,
             verbose,
-        } => build(input, out_dir, verbose),
+            no_serde,
+        } => build(input, out_dir, verbose, no_serde),
         Command::Check { input, verbose } => check(input, verbose),
     };
 
@@ -63,7 +70,9 @@ fn log(verbose: bool, msg: &str) {
     }
 }
 
-fn build(input: PathBuf, out_dir: PathBuf, verbose: bool) -> i32 {
+fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool) -> i32 {
+    pojoc_build::set_emit_serde(!no_serde);
+
     let mut orchestrator = ImportOrchestrator::new();
 
     let t = Instant::now();

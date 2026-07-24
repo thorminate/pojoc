@@ -72,13 +72,13 @@ impl Parser {
     fn err_unexpected_at(
         &self,
         got: Token,
-        expected: &'static str,
+        expected: impl Into<String>,
         span: Span,
         line: u32,
     ) -> ParseError {
         ParseError::UnexpectedToken {
             got,
-            expected,
+            expected: expected.into(),
             span,
             line,
         }
@@ -93,7 +93,7 @@ impl Parser {
     }
 
     /// for error sites built off peek() with no advance yet, current_span/line is already correct
-    fn err_unexpected(&self, got: Token, expected: &'static str) -> ParseError {
+    fn err_unexpected(&self, got: Token, expected: impl Into<String>) -> ParseError {
         self.err_unexpected_at(got, expected, self.current_span(), self.current_line())
     }
 
@@ -114,7 +114,7 @@ impl Parser {
         let (got, span, line) = self.advance_spanned();
         match &got {
             Token::Keyword(k) if *k == kw => Ok(()),
-            _ => Err(self.err_unexpected_at(got, "keyword", span, line)),
+            _ => Err(self.err_unexpected_at(got, format!("`{kw}`"), span, line)),
         }
     }
 
@@ -163,6 +163,13 @@ impl Parser {
     pub fn parse_schema(&mut self) -> Result<SchemaAst, ParseError> {
         let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
+        // `import` is only valid inside the `schema { }` block, not before it —
+        // callers used to other languages' file-scope imports hit this first
+        if matches!(self.peek(), Token::Keyword(Keyword::Import)) {
+            return Err(self.err_invalid(
+                "`import` must be declared inside the `schema { }` block, e.g. `schema Foo { import \"other.pojoc\" as Other ... }`",
+            ));
+        }
         self.expect_keyword(Keyword::Schema)?;
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "'{'")?;
@@ -257,6 +264,18 @@ impl Parser {
                             "version {} has duplicate `diff` block",
                             version
                         )));
+                    }
+                    // the first version has no prior version to diff against —
+                    // it must declare its shape with `fields { }` instead
+                    if is_first_version {
+                        return Err(self.err_invalid_at(
+                            format!(
+                                "version {} uses a `diff` block, but the first version must use `fields {{ }}` — there's nothing to diff against yet",
+                                version
+                            ),
+                            block_span,
+                            block_line,
+                        ));
                     }
                 }
                 VersionBlockAst::TypeDef(td) => {
@@ -793,10 +812,37 @@ impl Parser {
                         line: op_line,
                     });
                 }
-                Token::Minus => {
-                    return Err(self.err_invalid("union variants cannot be removed"));
+                Token::Tilde => {
+                    self.advance();
+                    let from = self.expect_ident()?;
+                    self.expect(Token::Arrow, "'->'")?;
+                    let to = self.expect_ident()?;
+                    if matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                    }
+
+                    if !seen.insert(from.clone()) {
+                        return Err(self.err_invalid(format!(
+                            "variant `{}` appears more than once in union ops",
+                            from
+                        )));
+                    }
+
+                    ops.push(UnionVariantOpAst::Rename {
+                        from,
+                        to,
+                        span: op_span.join(self.last_consumed_span()),
+                        line: op_line,
+                    });
                 }
-                got => return Err(self.err_unexpected(got, "+ (add) in union extension")),
+                Token::Minus => {
+                    return Err(self.err_invalid("union variants cannot be removed — removing a variant makes old wire values undecodable"));
+                }
+                got => {
+                    return Err(
+                        self.err_unexpected(got, "+ (add) or ~ (rename) in union extension")
+                    );
+                }
             }
         }
 
@@ -821,7 +867,7 @@ impl Parser {
             let (start_span, start_line) = self.here();
             let name = self.expect_ident()?;
             if !seen_names.insert(name.clone()) {
-                return Err(self.err_invalid(format!("duplicate field name: {}", name)));
+                return Err(self.err_invalid(format!("field '{}' is defined twice", name)));
             }
             self.expect(Token::Colon, "':'")?;
 

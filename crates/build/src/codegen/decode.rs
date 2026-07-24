@@ -15,6 +15,7 @@ pub fn emit_decode_functions(
     w: &mut CodeWriter,
 ) {
     emit_type_readers(schema, w);
+    emit_type_lazy_helpers(schema, w);
     emit_type_skippers(schema, w);
     emit_bitset_readers(schema, w);
     emit_union_readers(schema, infected, w);
@@ -68,10 +69,42 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
                     let byte_idx = optional_counter / 8;
                     let bit_idx = optional_counter % 8;
                     optional_counter += 1;
-                    let inner_expr = emit_read_expr(inner);
+                    if field.lazy {
+                        let fname = &field.name;
+                        let helper_name = lazy_field_helper_name(name, fname);
+                        let default_expr = type_info(&field.ty).default_expr;
+                        w.line(&format!("let __{fname}_start = *__pos;"));
+                        if let Some(stmt) = emit_skip_stmt(inner) {
+                            w.line(&format!(
+                                "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
+                            ));
+                            w.indent();
+                            w.line(&stmt);
+                            w.dedent();
+                            w.line("}");
+                        }
+                        w.line(&format!(
+                            "let {fname} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ \
+                             LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name}) \
+                             }} else {{ LazyView::Owned({default_expr}) }};"
+                        ));
+                    } else {
+                        let inner_expr = emit_read_expr(inner);
+                        w.line(&format!(
+                            "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
+                            field.name
+                        ));
+                    }
+                }
+                _ if field.lazy => {
+                    let fname = &field.name;
+                    let helper_name = lazy_field_helper_name(name, fname);
+                    w.line(&format!("let __{fname}_start = *__pos;"));
+                    if let Some(stmt) = emit_skip_stmt(&field.ty) {
+                        w.line(&stmt);
+                    }
                     w.line(&format!(
-                        "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
-                        field.name
+                        "let {fname} = LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name});"
                     ));
                 }
                 _ => {
@@ -152,43 +185,50 @@ fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+// maps a historical discriminant to its current (possibly renamed) variant name.
+fn latest_variant_name(latest: &ResolvedUnion, discriminant: u64) -> &str {
+    latest
+        .variants
+        .iter()
+        .find(|v| v.discriminant == discriminant)
+        .map(|v| v.name.as_str())
+        .expect("a discriminant known to an earlier version must still exist in the latest one")
+}
+
 fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
+    let latest_by_name =
+        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
 
-    for name in names {
-        let (_, resolved) = latest[name];
+    let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
+    entries
+        .sort_by(|(a, _), (b, _)| (a.name.as_str(), a.version).cmp(&(b.name.as_str(), b.version)));
 
-        for variant in &resolved.variants {
-            let infected_name = match &variant.payload {
-                ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => Some(id.name.as_str()),
-                _ => None,
-            };
-            if let Some(n) = infected_name {
-                assert!(
-                    !infected.contains(n),
-                    "union `{name}` variant `{}` has a lazy-infected payload type `{n}` — \
-             lazy fields inside union payloads aren't supported yet",
-                    variant.name
-                );
-            }
-            // a borrowed &'buf str payload would need the union enum to carry <'buf>, which isn't generated, so fail loudly instead
-            assert!(
-                !crate::codegen::field_carries_borrowed_string(&variant.payload),
-                "union `{name}` variant `{}` carries a borrowed string payload — \
-                 borrowed strings inside union payloads aren't supported yet",
-                variant.name
-            );
-        }
+    for (id, resolved) in entries {
+        let name = &id.name;
+        let (_, latest) = latest_by_name[name];
 
-        let fn_name = format!("read_{}", name.to_snake_case());
+        let needs_lifetime = infected.contains(name.as_str());
+        let (lt, buf_ty) = if needs_lifetime {
+            ("<'buf>", "&'buf [u8]")
+        } else {
+            ("", "&[u8]")
+        };
+        let interning = is_union_intern_infected(id);
+        let extra_param = if interning {
+            ", __table: &[&'buf str]"
+        } else {
+            ""
+        };
+        let (_, read_prim, _) = width_prim_names(resolved.discriminant_width());
+        let fn_name = format!("read_{}_v{}", name.to_snake_case(), id.version);
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
+            "fn {fn_name}{lt}(__buf: {buf_ty}, __pos: &mut usize{extra_param}) -> PojocResult<{name}{lt}> {{"
         ));
         w.indent();
-        w.line("let __discriminant = read_varint64(__buf, __pos)?;");
+        w.line(&format!(
+            "let __discriminant = {read_prim}(__buf, __pos)? as u64;"
+        ));
         w.line("let __len = read_varint32(__buf, __pos)? as usize;");
         w.line("let __payload_start = *__pos;");
         w.line(
@@ -199,16 +239,21 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
         w.indent();
         for variant in &resolved.variants {
             let read_expr = emit_read_expr(&variant.payload);
+            let current_name = latest_variant_name(latest, variant.discriminant);
             w.line(&format!(
-                "{} => {name}::{}({read_expr}),",
-                variant.discriminant, variant.name
+                "{} => {name}::{current_name}({read_expr}),",
+                variant.discriminant
             ));
         }
         w.line("other => {");
         w.indent();
         w.line("let data = __buf[__payload_start..__payload_end].to_vec();");
         w.line("*__pos = __payload_end;");
-        w.line(&format!("{name}::Unknown {{ discriminant: other, data }}"));
+        // widths only ever grow, so upcasting to the latest width is lossless.
+        let (unknown_rust_int, _, _) = width_prim_names(latest.discriminant_width());
+        w.line(&format!(
+            "{name}::Unknown {{ discriminant: other as {unknown_rust_int}, data }}"
+        ));
         w.dedent();
         w.line("}");
         w.dedent();
@@ -222,18 +267,19 @@ fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &m
 }
 
 fn emit_union_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
+    let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
+    entries
+        .sort_by(|(a, _), (b, _)| (a.name.as_str(), a.version).cmp(&(b.name.as_str(), b.version)));
 
-    for name in names {
-        let fn_name = format!("skip_{}", name.to_snake_case());
+    for (id, resolved) in entries {
+        let (_, read_prim, _) = width_prim_names(resolved.discriminant_width());
+        let fn_name = format!("skip_{}_v{}", id.name.to_snake_case(), id.version);
         w.line("#[allow(dead_code)]");
         w.line(&format!(
             "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<()> {{"
         ));
         w.indent();
-        w.line("let _ = read_varint64(__buf, __pos)?;");
+        w.line(&format!("let _ = {read_prim}(__buf, __pos)?;"));
         w.line("let __len = read_varint32(__buf, __pos)? as usize;");
         w.line("let __end = __pos.checked_add(__len).ok_or(Error::InvalidLength)?;");
         w.line("if __end > __buf.len() { return Err(Error::InvalidLength); }");
@@ -459,7 +505,7 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                let some_fn = format!("{target_name}_read");
+                let some_fn = lazy_field_helper_name(&schema.name_hint, target_name);
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
                     w.line(&stmt);
@@ -512,13 +558,21 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             };
             format!("{}(__buf, __pos{extra})?", info.read_fn)
         }
-        ResolvedTypeRef::Enum(id) => {
+        ResolvedTypeRef::Enum(id, width) => {
+            let (_, read_prim, _) = width_prim_names(*width);
             format!(
-                "{{ let __raw = read_varint64(__buf, __pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}",
+                "{{ let __raw = {read_prim}(__buf, __pos)? as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}",
                 id.name
             )
         }
-        ResolvedTypeRef::Union(_) => format!("{}(__buf, __pos)?", info.read_fn),
+        ResolvedTypeRef::Union(id) => {
+            let extra = if is_union_intern_infected(id) {
+                ", __table"
+            } else {
+                ""
+            };
+            format!("{}(__buf, __pos{extra})?", info.read_fn)
+        }
         ResolvedTypeRef::Bitset(id, _) => {
             format!("read_{}(__buf, __pos)?", id.name.to_snake_case())
         }
@@ -648,12 +702,20 @@ fn emit_blastable_field_read(
     }
 }
 
-// non-fallible read using *_unchecked accessors, only reached for types is_blastable accepts
+// reads via *_unchecked accessors under the blastable block's single upfront
+// bounds check. Enum still needs its fallible TryFrom, `?`-propagated normally.
 fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(_) => {
             format!("unsafe {{ {}_unchecked(__buf, __pos) }}", info.read_fn)
+        }
+        ResolvedTypeRef::Enum(id, width) => {
+            let (_, read_prim, _) = width_prim_names(*width);
+            format!(
+                "{{ let __raw = unsafe {{ {read_prim}_unchecked(__buf, __pos) }} as u32; {}::try_from(__raw).map_err(|_| Error::InvalidEnumVariant)? }}",
+                id.name
+            )
         }
         ResolvedTypeRef::Bitset(id, _) => {
             format!(
@@ -741,7 +803,7 @@ fn emit_field_mapping_arm(
                 .find(|f| f.name == *target_name)
                 .unwrap();
             if target_field.lazy {
-                let some_fn = format!("{target_name}_read");
+                let some_fn = lazy_field_helper_name(&schema.name_hint, target_name);
                 let default_expr = type_info(&target_field.ty).default_expr;
                 w.line(&format!("let __{target_name}_start = *__pos;"));
                 if let Some(stmt) = emit_skip_stmt(inner) {
@@ -813,7 +875,7 @@ fn emit_field_mapping_arm(
     }
 }
 
-fn get_field_default_expr(
+pub(crate) fn get_field_default_expr(
     default_val: Option<&DefaultValue>,
     type_ref: &ResolvedTypeRef,
     schema: &ResolvedSchema,
@@ -1112,11 +1174,7 @@ fn emit_struct_cast_body(schema: &ResolvedSchema, from: &TypeId, to: &TypeId, w:
     for dst in &to_type.fields {
         if !from_type.fields.iter().any(|f| f.id == dst.id) {
             let dst_name = &dst.name;
-            let default_str = if let Some(ref explicit_default) = dst.default {
-                emit_default(explicit_default, schema)
-            } else {
-                type_info(&dst.ty).default_expr
-            };
+            let default_str = get_field_default_expr(dst.default.as_ref(), &dst.ty, schema);
             w.line(&format!("let {dst_name} = {default_str};"));
         }
     }
@@ -1130,6 +1188,23 @@ fn emit_struct_cast_body(schema: &ResolvedSchema, from: &TypeId, to: &TypeId, w:
     w.line("}");
 }
 
+// body of a lazy field's decode_fn: `fn(&'buf [u8], &mut usize) -> PojocResult<T>`
+// where T is the field's declared (possibly Optional) type — the signature/name
+// are written by the caller, this only fills in the `{ ... }` block.
+fn emit_lazy_helper_body(ty: &ResolvedTypeRef, w: &mut CodeWriter) {
+    if let ResolvedTypeRef::Optional(inner) = ty {
+        let body = emit_read_expr(inner);
+        w.line(&format!("Ok(Some({body}))"));
+    } else {
+        let body = emit_read_expr(ty);
+        let result_body = body
+            .strip_suffix('?')
+            .map(|s| s.trim_end().to_string())
+            .unwrap_or_else(|| format!("Ok({body})"));
+        w.line(&result_body);
+    }
+}
+
 fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let mut emitted: HashSet<String> = HashSet::new();
     let latest = schema.versions.last().unwrap();
@@ -1140,10 +1215,9 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         }
         let target_name = &fl.name;
         let ty = &fl.ty;
-        let is_optional = matches!(ty, ResolvedTypeRef::Optional(_));
         let rust_ty = type_info(ty).rust_type;
 
-        let some_name = format!("{target_name}_read");
+        let some_name = lazy_field_helper_name(&schema.name_hint, target_name);
         // if the value borrows the buffer, the reader must be generic over the input lifetime so it coerces to LazyView's fn pointer type
         let (lt, buf_ty) = if rust_ty.contains("'buf") {
             ("<'buf>", "&'buf [u8]")
@@ -1156,21 +1230,50 @@ fn emit_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
                 "fn {some_name}{lt}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{rust_ty}> {{"
             ));
             w.indent();
-            if is_optional {
-                let inner = match ty {
-                    ResolvedTypeRef::Optional(i) => &**i,
-                    _ => unreachable!(),
-                };
-                let body = emit_read_expr(inner);
-                w.line(&format!("Ok(Some({body}))"));
-            } else {
-                let body = emit_read_expr(ty);
-                let result_body = body
-                    .strip_suffix('?')
-                    .map(|s| s.trim_end().to_string())
-                    .unwrap_or_else(|| format!("Ok({body})"));
-                w.line(&result_body);
+            emit_lazy_helper_body(ty, w);
+            w.dedent();
+            w.line("}");
+            w.blank();
+        }
+    }
+}
+
+// name of a lazy field's decode_fn helper, namespaced by its declaring type
+// (the root schema type or any named type) since field names collide across
+// types — used consistently by both the root's per-version decode path and
+// any named type's nested read_foo, plus serde (structs.rs) for either.
+pub(crate) fn lazy_field_helper_name(type_name: &str, field_name: &str) -> String {
+    format!("read_{}_{field_name}_lazy", type_name.to_snake_case())
+}
+
+// mirrors emit_lazy_helpers but for lazy fields on any named type nested
+// elsewhere (e.g. a union payload struct) — read via emit_type_readers'
+// `read_foo`, not the root's per-version decode_vN.
+fn emit_type_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let mut names: Vec<&String> = latest.keys().collect();
+    names.sort();
+
+    for name in names {
+        let (_, resolved) = latest[name];
+        for field in &resolved.fields {
+            if !field.lazy {
+                continue;
             }
+            let ty = &field.ty;
+            let rust_ty = type_info(ty).rust_type;
+            let helper_name = lazy_field_helper_name(name, &field.name);
+            let (lt, buf_ty) = if rust_ty.contains("'buf") {
+                ("<'buf>", "&'buf [u8]")
+            } else {
+                ("", "&[u8]")
+            };
+            w.line("#[allow(dead_code)]");
+            w.line(&format!(
+                "fn {helper_name}{lt}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{rust_ty}> {{"
+            ));
+            w.indent();
+            emit_lazy_helper_body(ty, w);
             w.dedent();
             w.line("}");
             w.blank();

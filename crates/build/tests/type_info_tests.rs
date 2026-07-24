@@ -1,4 +1,5 @@
 use pojoc_build::core::types::*;
+use pojoc_build::schema::ir::ir_types::{EnumVariant, ResolvedEnum};
 
 fn id(name: &str) -> TypeId {
     TypeId {
@@ -53,7 +54,7 @@ fn type_id_unwraps_through_containers() {
     assert_eq!(scalar.type_id(), Some(&id("i32")));
 
     let wrapped = ResolvedTypeRef::Optional(Box::new(ResolvedTypeRef::Array(Box::new(
-        ResolvedTypeRef::Enum(id("Status")),
+        ResolvedTypeRef::Enum(id("Status"), 1),
     ))));
     assert_eq!(wrapped.type_id(), Some(&id("Status")));
 
@@ -286,5 +287,31 @@ fn delta_eligible_integers_only() {
         );
     }
     assert!(!is_delta_eligible(&ResolvedTypeRef::Scalar(id("MyStruct"))));
-    assert!(!is_delta_eligible(&ResolvedTypeRef::Enum(id("Status"))));
+    assert!(!is_delta_eligible(&ResolvedTypeRef::Enum(id("Status"), 1)));
+}
+
+fn enum_with_variants(count: usize) -> ResolvedEnum {
+    ResolvedEnum {
+        variants: (0..count)
+            .map(|i| EnumVariant {
+                name: format!("V{i}"),
+                wire_value: i as u32,
+                doc: Vec::new(),
+            })
+            .collect(),
+        doc: Vec::new(),
+    }
+}
+
+// regression test: enum wire discriminants are now a fixed-width u8/u16/u32
+// (see docs/schema.md's "Enum discriminant width" note) instead of varint —
+// pins the exact variant-count thresholds where the width must grow, since
+// `variants` already includes the compiler-injected `Unknown = 0` slot.
+#[test]
+fn enum_byte_width_thresholds() {
+    assert_eq!(enum_with_variants(1).byte_width(), 1);
+    assert_eq!(enum_with_variants(256).byte_width(), 1);
+    assert_eq!(enum_with_variants(257).byte_width(), 2);
+    assert_eq!(enum_with_variants(65536).byte_width(), 2);
+    assert_eq!(enum_with_variants(65537).byte_width(), 4);
 }

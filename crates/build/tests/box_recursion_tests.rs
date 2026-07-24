@@ -2,6 +2,7 @@ mod common;
 use common::*;
 use pojoc_build::schema::error::{AnalysisError, SchemaError};
 
+#[allow(clippy::result_large_err)]
 fn analyze(src: &str) -> Result<pojoc_build::schema::ir::ir_types::ResolvedSchema, SchemaError> {
     let ast = parse_schema(src).expect("parse failed");
     analyze_schema(&ast)

@@ -171,9 +171,10 @@ runtime error (`Error::ConstraintViolation`), not a silent clamp.
 - On `[T]` / `map<K, V>`: bounds the element count.
 - Composes with everything else a type supports, e.g. `[string(min: 1, max: 20)]`.
 
-> The generated `Default` impl zero-inits every field, so a constrained
-> field's `min` should generally include `0` — otherwise `T::default()`
-> violates its own field's constraint.
+> The generated `Default` impl uses each field's declared `= value` default
+> (falling back to the type's zero value for a field with none). A
+> constrained field's default — declared or zero — must itself satisfy the
+> constraint, or encoding `T::default()` fails with `Error::ConstraintViolation`.
 
 ### `box<T>` — recursive types
 
@@ -206,14 +207,28 @@ Declared inside a `version` block, referenced by later fields.
 
 ```pojoc
 enum Status {
-  Alive,   // first variant is the Default
+  Alive,
   Dead,
   Dying,
 }
 ```
 
-Wire values are assigned by declaration order. Decoding an unknown discriminant
-is an error.
+Wire values are assigned by declaration order, starting at 1 — every enum gets
+a compiler-injected `Unknown = 0` variant ahead of your declared ones, which
+is the `#[default]` and the value `T::default()` produces. `Unknown` is a
+reserved variant name; declaring your own is a compile-time error. Decoding an
+unrecognized discriminant is an error.
+
+The wire discriminant is a fixed-width unsigned integer — `u8` for up to 256
+total variants (including the injected `Unknown`), `u16` up to 65536, `u32`
+beyond that — sized to the smallest width that fits, per resolved version (so
+adding enough variants to cross a width threshold only affects versions from
+that point forward; older wire data keeps decoding at the width it was
+written with). Because an out-of-range discriminant is always a decode error
+here (never preserved), this fixed width costs nothing forward-compatibility
+would otherwise need. `union` needs the same per-version fixed width for a
+harder case — see below, where an out-of-range discriminant must be
+*preserved*, not rejected.
 
 ### `type` (struct)
 
@@ -241,6 +256,30 @@ A discriminant + length-prefixed payload. An unrecognized discriminant is
 preserved losslessly as an `Unknown { discriminant, data }` variant (so a proxy
 running an older schema can forward newer variants unchanged). Payloads are
 typically structs.
+
+The discriminant is a fixed-width unsigned integer, same as `enum`'s — but
+where an enum collapses to a single wire representation using its *latest*
+shape, a union's discriminant width is frozen **per resolved version** and
+never recomputed from "how many variants exist today": `Big@1` keeps decoding
+and encoding at whatever width it had when it was first defined, forever, even
+after a later `Big@2` (via `extends`) adds enough variants to need a wider
+one. This is what lets `Unknown` do its job safely — it exists specifically to
+carry a discriminant *this* resolved version doesn't recognize, and sizing
+that field to "whatever the union has grown to by now" would silently
+truncate exactly the values it's meant to preserve. A root field that's never
+re-pinned after a `~ field: SomeUnion` diff stays on that pinned version's
+own width and variant set permanently, same as it stays on an old shape for
+any other type (see the `extends` section below) — a variant added to the
+union afterward decodes as `Unknown` through that field, correctly, until the
+field is explicitly re-pinned to the newer version.
+
+A union variant can be renamed the same way struct fields are, via `extends`:
+
+```pojoc
+union Payload extends Payload@1 {
+  ~ Move -> Walk   // rename, discriminant unchanged
+}
+```
 
 ### `bitset`
 
@@ -286,7 +325,17 @@ crossing template names and dropping a type parameter with `_`.
 ## Defaults
 
 A field may declare a default with `= value`. Defaults fill in fields that are
-missing when decoding older data, and back the generated `Default` impl.
+missing when decoding older data, and also back the generated `Default` impl
+— `T::default()` and a freshly-decoded old-version message use the same
+declared value. A field with no declared default zero-inits instead (see the
+[Constraints](#constraints-minmax) note above).
+
+Retyping a field in place (`~ field: NewType`, with or without a rename) has
+no syntax to supply a new default alongside the new type, since the old
+default's shape may no longer fit — the field's default resets to the type's
+zero value from that version forward. Give the field a fresh declared default
+if it needs one, by adding it as a new field on the new type instead of
+retyping in place.
 
 | Type                     | Default syntax                                                           |
 | ------------------------ | ------------------------------------------------------------------------ |
@@ -421,7 +470,8 @@ type Stats extends Stats@1 {
 }
 
 union Payload extends Payload@1 {
-  + Heal: HealPayload   // add a variant (add-only)
+  + Heal: HealPayload    // add a variant
+  ~ Move -> Walk         // rename a variant (its discriminant is unchanged)
 }
 
 bitset Flags extends Flags@1 {

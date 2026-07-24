@@ -36,7 +36,7 @@ schema Player {
     }
 
     diff {
-      ~ name -> display_name: string   // renamed
+      ~ name -> display_name           // renamed, type unchanged
       + level: i32 = 1                 // new field, decoding older data makes this field decode to 1.
       ~ stats: Stats                   // even if you evolved the type,
         // it still counts as a new type
@@ -74,6 +74,7 @@ validation, etc.)? Install the CLI:
 ```sh
 cargo install pojoc-cli
 pojoc build schemas/player.pojoc   # writes out/player.rs
+pojoc build schemas/player.pojoc --no-serde   # omit Serialize/Deserialize (must match your `pojoc` dependency's own serde feature)
 pojoc check schemas/player.pojoc   # validate without writing output
 ```
 
@@ -99,6 +100,9 @@ Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the g
 include!(concat!(env!("OUT_DIR"), "/player.rs"));
 
 fn main() {
+    // Player::default() applies the schema's declared defaults (display_name
+    // "Player", status Alive, level 1) — the same defaults used to backfill
+    // fields absent from older wire data.
     let player = Player::default();
 
     let mut bytes = Vec::new();
@@ -150,6 +154,10 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 | Protobuf    |     903 |  1,517 |      2,630 |
 
 Cap'n Proto gets a slight edge here because they are zero-copy (flatbuffers is too, no idea why they are so slow tho). Pojoc isn't, so they naturally get an edge there. However, with pojoc's lazy keyword you can theoretically get near zero-copy speeds and defer actually loading them until needed. Also with Cap'n Proto's zero-copy approach, they end up copying the entire memory profile plus lookup tables into the output, severely bloating its results. With pojoc being unbelievably efficient in encoding it is still the **fastest end-to-end**.
+
+## Security
+
+`PojocMap`/`InternBuilder` hash with a fast, non-cryptographic hasher by default, seeded randomly per process to resist hash-flooding from untrusted wire data. Enable the `secure-hasher` feature on the `pojoc` runtime crate to switch to SipHash if you need the stronger guarantee. See [`docs/security.md`](docs/security.md) for the full threat model and tradeoffs.
 
 ## Project Layout
 

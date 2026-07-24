@@ -182,11 +182,11 @@ impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
 
 /// hashing for [`PojocMap`]/`InternBuilder`, random seed per process to
 /// defend against hash-flooding on decoded wire data, see docs/security.md
-#[cfg(feature = "foldhash")]
+#[cfg(not(feature = "secure-hasher"))]
 pub type PojocHasher = foldhash::fast::RandomState;
 
-/// same as the foldhash variant but falls back to std's SipHash RandomState
-#[cfg(not(feature = "foldhash"))]
+/// same as the foldhash variant but uses std's SipHash-based RandomState
+#[cfg(feature = "secure-hasher")]
 pub type PojocHasher = std::collections::hash_map::RandomState;
 
 /// map for `map<K, V>` fields, backed by HashMap keyed with [`PojocHasher`]
@@ -215,6 +215,7 @@ impl<'buf, T> LazyView<'buf, T> {
         Self::Raw { buf, decode_fn }
     }
 
+    // yes this is supposed to consume self.
     #[inline]
     pub fn get(self) -> PojocResult<T> {
         match self {

@@ -78,6 +78,12 @@ impl ResolvedEnum {
             .max()
             .map_or(0, |m| m + 1)
     }
+
+    /// smallest unsigned width (1/2/4 bytes) that can hold every wire value
+    /// this enum declares, including the compiler-injected `Unknown = 0`.
+    pub fn byte_width(&self) -> u8 {
+        discriminant_byte_width(self.variants.len())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +150,26 @@ pub struct UnionVariant {
 pub struct ResolvedUnion {
     pub variants: Vec<UnionVariant>,
     pub doc: Vec<String>,
+}
+
+impl ResolvedUnion {
+    /// smallest unsigned width (1/2/4 bytes) that fits every variant this
+    /// specific resolved version declares, frozen per version rather than
+    /// recomputed from the union's latest shape. See docs/schema.md's `union` section.
+    pub fn discriminant_width(&self) -> u8 {
+        discriminant_byte_width(self.variants.len())
+    }
+}
+
+/// smallest unsigned width (1/2/4 bytes) that can represent `count` distinct
+/// contiguous 0-based discriminant values — shared by `ResolvedEnum::byte_width`
+/// and `ResolvedUnion::discriminant_width`.
+fn discriminant_byte_width(count: usize) -> u8 {
+    match count {
+        n if n <= 256 => 1,
+        n if n <= 65536 => 2,
+        _ => 4,
+    }
 }
 
 #[derive(Debug, Default)]
