@@ -24,8 +24,7 @@ fn test_unsupported_version() {
 
 #[test]
 fn test_invalid_length() {
-    // claim payload is huge but buffer is tiny
-    let mut buf = vec![0x05]; // version varint = 5
-    buf.extend_from_slice(&u32::MAX.to_le_bytes()); // absurd length
+    let mut buf = vec![0x05];
+    buf.extend_from_slice(&u32::MAX.to_le_bytes());
     assert!(decode(&buf).is_err());
 }

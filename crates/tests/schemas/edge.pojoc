@@ -113,6 +113,9 @@ schema Edge {
       delta_fixed_empty: [i32](delta, 0) = []
 
       legacy_positions: [i32] = []
+      plain_f32_arr: [f32] = []
+      plain_u8_arr: [u8] = []
+      plain_i8_arr: [i8] = []
 
       // Deep Structured Objects
       root_struct: MiddleLayer
@@ -208,11 +211,9 @@ schema Edge {
       ~ legacy_positions: [i32](delta)
       + delta_u32_seq: [u32](delta, 6) = [1000, 1000, 999, 1500, 1500, 1000]
 
-      // Re-resolve to Payload@2 (now Heal-aware). The generated reader/writer
-      // is name-keyed and identical regardless of which TypeId the field
-      // carries, but this still walks the FieldMapping::Cast branch in
-      // lineage/decode/encode for a union type — worth confirming it's a
-      // clean no-op rather than a silent miscompile.
+      // Re-pin to Payload@2 (now Heal-aware) and never re-pin again — `action`
+      // stays frozen at Payload@2's variant set/width forever, unlike
+      // `final_action`/`deferred_action` below (see their comments).
       ~ action: Payload
 
       // Lazy field added via diff — must be optional so v1 messages default to None
@@ -269,7 +270,10 @@ schema Edge {
       + generic_mono_v3: Mono<string>
 
       ~ fixed_arr_populated -> array_to_map: map<i32, u8>
-      ~ tuple_array -> flattened_tuple_array: [(f64, i64, string)]
+
+      // Rename only, type unchanged — tuples have no cross-shape cast support,
+      // so this exercises "renamed, then removed" without retyping.
+      ~ tuple_array -> flattened_tuple_array
 
       + sensor_log: [SensorFrame] = []
       + delta_value_map: map<string, [i64](delta)>(2) = {"entry": [], "entry2": []}
@@ -378,10 +382,31 @@ schema Edge {
       entity_id: u32 = 0
     }
 
-    // Extends from the latest existing Payload *definition* (@2) — v3/v4
-    // never redefined Payload, only referenced it, so @2 is still correct.
+    // A struct payload with a genuine (min:/max:) constraint, exercising the
+    // union-writer path for a constraint-infected named struct payload.
+    type BoundedPayload {
+      value: i32(min: 0, max: 100) = 0
+    }
+
+    // A struct payload with both a `lazy` and an `intern` field, exercising
+    // the nested (non-root) lazy read path (emit_type_readers, decode.rs) and
+    // the union codec's threaded intern table (compute_intern_infected/
+    // emit_union_readers/emit_union_writers, codegen/mod.rs+decode.rs+encode.rs)
+    // together — both were previously rejected at analysis time.
+    type RichPayload {
+      note: intern string = ""
+      blob: lazy [u8] = []
+    }
+
+    // Extends from Payload@2, the latest existing definition (v3/v4 only
+    // referenced it). `Message` is a bare string payload, infecting Payload
+    // with the `'buf` lifetime like a struct's string field would.
     union Payload extends Payload@2 {
       + Despawn: DespawnPayload
+      + Message: string
+      + Bounded: i32(min: 0, max: 100)
+      + BoundedStruct: BoundedPayload
+      + Rich: RichPayload
     }
 
     // Self-referencing types require heap indirection: `next` couldn't be a
@@ -423,6 +448,10 @@ schema Edge {
       // Rename + retype an optional union field — Transform path, no default
       // logic involved at all (just name + type re-resolution).
       ~ pending_action -> deferred_action: Payload?
+
+      // Re-pin so it tracks Payload's latest shape instead of staying frozen
+      // at Payload@1 (Move/Attack only) like `action` deliberately does.
+      ~ action_log: [Payload]
 
       // New field added fresh at v5 automatically picks up the most current
       // Payload (Move/Attack/Heal/Despawn) with no manual re-pin needed —

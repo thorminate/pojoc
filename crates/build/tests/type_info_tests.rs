@@ -1,4 +1,5 @@
 use pojoc_build::core::types::*;
+use pojoc_build::schema::ir::ir_types::{EnumVariant, ResolvedEnum};
 
 fn id(name: &str) -> TypeId {
     TypeId {
@@ -53,7 +54,7 @@ fn type_id_unwraps_through_containers() {
     assert_eq!(scalar.type_id(), Some(&id("i32")));
 
     let wrapped = ResolvedTypeRef::Optional(Box::new(ResolvedTypeRef::Array(Box::new(
-        ResolvedTypeRef::Enum(id("Status")),
+        ResolvedTypeRef::Enum(id("Status"), 1),
     ))));
     assert_eq!(wrapped.type_id(), Some(&id("Status")));
 
@@ -90,9 +91,7 @@ fn type_id_is_none_for_shapeless_containers() {
         .type_id(),
         None
     );
-    // Map only exposes the value type's id, not the key's, and is None when
-    // the value itself has no id (a `Scalar`, even a primitive one, always
-    // does — so use a value kind that genuinely has none).
+    // map only exposes the value type's id, not the key's, so use a value kind with no id at all
     assert_eq!(
         ResolvedTypeRef::Map(
             Box::new(ResolvedTypeRef::Scalar(id("string"))),
@@ -136,9 +135,6 @@ fn type_info_scalar_primitives_have_fixed_or_variable_wire_size() {
 
 #[test]
 fn type_info_scalar_struct_fallthrough_uses_name_verbatim() {
-    // A non-primitive Scalar name (a user-defined struct, or a monomorphized
-    // generic instantiation like `BoxI32`) is not special-cased: codegen
-    // derives everything from the bare name.
     let info = type_info(&ResolvedTypeRef::Scalar(id("BoxI32")));
     assert_eq!(info.rust_type, "BoxI32");
     assert_eq!(info.read_fn, "read_box_i32");
@@ -291,5 +287,31 @@ fn delta_eligible_integers_only() {
         );
     }
     assert!(!is_delta_eligible(&ResolvedTypeRef::Scalar(id("MyStruct"))));
-    assert!(!is_delta_eligible(&ResolvedTypeRef::Enum(id("Status"))));
+    assert!(!is_delta_eligible(&ResolvedTypeRef::Enum(id("Status"), 1)));
+}
+
+fn enum_with_variants(count: usize) -> ResolvedEnum {
+    ResolvedEnum {
+        variants: (0..count)
+            .map(|i| EnumVariant {
+                name: format!("V{i}"),
+                wire_value: i as u32,
+                doc: Vec::new(),
+            })
+            .collect(),
+        doc: Vec::new(),
+    }
+}
+
+// regression test: enum wire discriminants are now a fixed-width u8/u16/u32
+// (see docs/schema.md's "Enum discriminant width" note) instead of varint —
+// pins the exact variant-count thresholds where the width must grow, since
+// `variants` already includes the compiler-injected `Unknown = 0` slot.
+#[test]
+fn enum_byte_width_thresholds() {
+    assert_eq!(enum_with_variants(1).byte_width(), 1);
+    assert_eq!(enum_with_variants(256).byte_width(), 1);
+    assert_eq!(enum_with_variants(257).byte_width(), 2);
+    assert_eq!(enum_with_variants(65536).byte_width(), 2);
+    assert_eq!(enum_with_variants(65537).byte_width(), 4);
 }

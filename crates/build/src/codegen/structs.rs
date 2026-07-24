@@ -1,7 +1,10 @@
 use super::writer::CodeWriter;
+use crate::codegen::decode::{get_field_default_expr, lazy_field_helper_name};
 use crate::codegen::encode::emit_write_expr;
 use crate::codegen::get_latest_versions;
-use crate::core::types::type_info;
+use crate::core::types::{
+    TypeId, emit_serde, is_union_intern_infected, type_info, width_prim_names,
+};
 use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use std::collections::{HashMap, HashSet};
@@ -70,7 +73,7 @@ pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     let has_default = !resolved.variants.is_empty();
-    let serde_derive = if cfg!(feature = "serde") {
+    let serde_derive = if emit_serde() {
         ", Serialize, Deserialize"
     } else {
         ""
@@ -121,27 +124,41 @@ fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     w.line("}");
 }
 
-pub fn emit_unions(schema: &ResolvedSchema, w: &mut CodeWriter) {
+pub fn emit_unions(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
     let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
 
     for name in names {
-        let (_, resolved) = latest[name];
-        emit_union(name, resolved, w);
+        let (version, resolved) = latest[name];
+        emit_union(name, version, resolved, infected, w);
         w.blank();
     }
 }
 
-fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
-    let serde_derive = if cfg!(feature = "serde") {
+fn emit_union(
+    name: &str,
+    latest_version: i128,
+    resolved: &ResolvedUnion,
+    infected: &HashSet<String>,
+    w: &mut CodeWriter,
+) {
+    let needs_lifetime = infected.contains(name);
+    let enum_lt = if needs_lifetime { "<'buf>" } else { "" };
+
+    // lifetime-infected unions get a hand-written impl below, see emit_lazy_struct_serde.
+    let serde_derive = if emit_serde() && !needs_lifetime {
         ", Serialize, Deserialize"
     } else {
         ""
     };
+    // Unknown stores its discriminant at the union's latest width, which is
+    // always wide enough since width only ever grows.
+    let (unknown_rust_int, _, _) = width_prim_names(resolved.discriminant_width());
+
     emit_doc(&resolved.doc, w);
     w.line(&format!("#[derive(Debug, Clone{serde_derive})]"));
-    w.line(&format!("pub enum {name} {{"));
+    w.line(&format!("pub enum {name}{enum_lt} {{"));
     w.indent();
     for variant in &resolved.variants {
         emit_doc(&variant.doc, w);
@@ -151,12 +168,14 @@ fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
             type_info(&variant.payload).rust_type
         ));
     }
-    w.line("Unknown { discriminant: u64, data: Vec<u8> },");
+    w.line(&format!(
+        "Unknown {{ discriminant: {unknown_rust_int}, data: Vec<u8> }},"
+    ));
     w.dedent();
     w.line("}");
     w.blank();
 
-    w.line(&format!("impl Default for {name} {{"));
+    w.line(&format!("impl{enum_lt} Default for {name}{enum_lt} {{"));
     w.indent();
     w.line("fn default() -> Self {");
     w.indent();
@@ -173,7 +192,7 @@ fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
     w.line("}");
     w.blank();
 
-    w.line(&format!("impl {name} {{"));
+    w.line(&format!("impl{enum_lt} {name}{enum_lt} {{"));
     w.indent();
     w.line("#[allow(dead_code)]");
     w.line("pub const fn discriminant(&self) -> u64 {");
@@ -187,10 +206,100 @@ fn emit_union(name: &str, resolved: &ResolvedUnion, w: &mut CodeWriter) {
         ));
     }
     w.line(&format!(
-        "{name}::Unknown {{ discriminant, .. }} => *discriminant,"
+        "{name}::Unknown {{ discriminant, .. }} => *discriminant as u64,"
     ));
     w.dedent();
     w.line("}");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+
+    if needs_lifetime && emit_serde() {
+        emit_lazy_union_serde(name, latest_version, w);
+    }
+}
+
+// a lifetime-infected union round-trips through serde as opaque wire bytes
+// rather than a tagged enum, same reasoning as emit_lazy_struct_serde.
+fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
+    let lower = name.to_snake_case();
+    let interning = is_union_intern_infected(&TypeId {
+        name: name.to_string(),
+        version: latest_version,
+    });
+
+    w.blank();
+    w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
+    w.indent();
+    w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
+    w.indent();
+    if interning {
+        // same table-must-precede-fields dance as encode_vN: encode into a
+        // scratch buffer first so every intern() call happens before the
+        // table is finished, then prepend the table.
+        w.line("let mut __interner_owned = InternBuilder::new();");
+        w.line("let mut __scratch: Vec<u8> = Vec::new();");
+        w.line(&format!(
+            "write_{lower}_v{latest_version}(&mut __scratch, self, &mut __interner_owned).map_err(serde::ser::Error::custom)?;"
+        ));
+        w.line("let mut __buf = Vec::new();");
+        w.line("write_intern_table(&mut __buf, &__interner_owned.finish());");
+        w.line("__buf.extend_from_slice(&__scratch);");
+    } else {
+        w.line("let mut __buf = Vec::new();");
+        // union writers are always fallible now, so this always needs map_err.
+        w.line(&format!(
+            "write_{lower}_v{latest_version}(&mut __buf, self).map_err(serde::ser::Error::custom)?;"
+        ));
+    }
+    w.line("serializer.serialize_bytes(&__buf)");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line(&format!(
+        "impl<'de: 'buf, 'buf> Deserialize<'de> for {name}<'buf> {{"
+    ));
+    w.indent();
+    w.line(
+        "fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {",
+    );
+    w.indent();
+    w.line("struct __Visitor<'buf>(std::marker::PhantomData<&'buf ()>);");
+    w.line("impl<'de: 'buf, 'buf> serde::de::Visitor<'de> for __Visitor<'buf> {");
+    w.indent();
+    w.line(&format!("type Value = {name}<'buf>;"));
+    w.line("fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {");
+    w.indent();
+    w.line(&format!("write!(f, \"bytes for {name}\")"));
+    w.dedent();
+    w.line("}");
+    w.blank();
+    w.line(
+        "fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {",
+    );
+    w.indent();
+    w.line("let mut __pos = 0;");
+    if interning {
+        w.line("let __table_owned = read_intern_table(v, &mut __pos).map_err(serde::de::Error::custom)?;");
+        w.line("let __table = __table_owned.as_slice();");
+        w.line(&format!(
+            "read_{lower}_v{latest_version}(v, &mut __pos, __table).map_err(serde::de::Error::custom)"
+        ));
+    } else {
+        w.line(&format!(
+            "read_{lower}_v{latest_version}(v, &mut __pos).map_err(serde::de::Error::custom)"
+        ));
+    }
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.blank();
+    w.line("deserializer.deserialize_bytes(__Visitor(std::marker::PhantomData))");
     w.dedent();
     w.line("}");
     w.dedent();
@@ -209,7 +318,7 @@ pub fn emit_bitsets(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
     for name in names {
         let (_, bs) = latest[name];
-        emit_bitset_struct(name, bs, schema, w); // Pass schema to handle default calculations
+        emit_bitset_struct(name, bs, schema, w);
         w.blank();
     }
 }
@@ -222,13 +331,13 @@ fn emit_bitset_struct(
 ) {
     let computed_len = bs.variants.len().div_ceil(8);
 
-    let serde_derive = if cfg!(feature = "serde") {
+    let serde_derive = if emit_serde() {
         ", Serialize, Deserialize"
     } else {
         ""
     };
     emit_doc(&bs.doc, w);
-    // Added PartialOrd, Ord, and Hash so these can be sorted or used as keys in a HashMap/HashSet
+    // needed for sorting and use as hashmap/hashset keys
     w.line(&format!(
         "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash{serde_derive})]"
     ));
@@ -238,7 +347,6 @@ fn emit_bitset_struct(
     w.line(&format!("impl {name} {{"));
     w.indent();
 
-    // const flags
     for (idx, variant) in bs.variants.iter().enumerate() {
         if variant.name.starts_with("__deprecated_") {
             continue;
@@ -258,7 +366,6 @@ fn emit_bitset_struct(
     }
     w.blank();
 
-    // Added a helper to check if any flags are active
     w.line("#[inline]");
     w.line("pub const fn is_empty(&self) -> bool {");
     w.indent();
@@ -271,7 +378,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // getters, setters, builders (all decorated with #[inline])
     for (idx, variant) in bs.variants.iter().enumerate() {
         if variant.name.starts_with("__deprecated_") {
             continue;
@@ -306,7 +412,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // Default
     let mut default_bytes = vec![0u8; computed_len];
     if let Some(DefaultValue::BitsetLiteral { kvs, .. }) = find_bitset_default(name, schema) {
         for (flag_name, flag_val) in kvs {
@@ -332,7 +437,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitOr
     w.line(&format!("impl ::std::ops::BitOr for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -349,7 +453,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitOrAssign
     w.line(&format!("impl ::std::ops::BitOrAssign for {name} {{"));
     w.indent();
     w.line("#[inline]");
@@ -364,7 +467,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitAnd
     w.line(&format!("impl ::std::ops::BitAnd for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -381,7 +483,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // BitAndAssign
     w.line(&format!("impl ::std::ops::BitAndAssign for {name} {{"));
     w.indent();
     w.line("#[inline]");
@@ -396,7 +497,6 @@ fn emit_bitset_struct(
     w.line("}");
     w.blank();
 
-    // Not
     w.line(&format!("impl ::std::ops::Not for {name} {{"));
     w.indent();
     w.line("type Output = Self;");
@@ -439,7 +539,7 @@ fn emit_named_struct(
     let struct_lt = if needs_lifetime { "<'buf>" } else { "" };
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
-    let serde_derive = if cfg!(feature = "serde") {
+    let serde_derive = if emit_serde() {
         ", Serialize, Deserialize"
     } else {
         ""
@@ -447,17 +547,18 @@ fn emit_named_struct(
     emit_doc(doc, w);
     w.line("#[allow(clippy::type_complexity)]");
     if needs_lifetime {
+        // a lifetime-infected struct may hold a `lazy` field (LazyView), which
+        // needs a hand-written Serialize/Deserialize impl below rather than a
+        // derive — see emit_lazy_struct_serde
         w.line("#[derive(Debug, Clone)]");
     } else {
-        w.line(&format!("#[derive(Debug, Clone, Default{serde_derive})]"));
+        w.line(&format!("#[derive(Debug, Clone{serde_derive})]"));
     }
 
     w.line(&format!("pub struct {name}{struct_lt} {{"));
     w.indent();
     for field in fields {
-        // `type_info` already renders infected named types (and borrowed
-        // strings) with `<'buf>` wherever they nest, so a plain lookup is
-        // correct for every non-lazy field; only lazy needs the wrapper.
+        // type_info already renders <'buf> on infected types, only lazy needs wrapping
         let ty = if field.lazy {
             let inner = type_info(&field.ty).rust_type;
             format!("LazyView<'buf, {inner}>")
@@ -470,32 +571,33 @@ fn emit_named_struct(
     w.dedent();
     w.line("}");
 
-    if needs_lifetime {
-        w.blank();
-        w.line(&format!(
-            "impl{impl_lt_param} Default for {name}{struct_lt} {{"
-        ));
-        w.indent();
-        w.line("#[inline]");
-        w.line("fn default() -> Self {");
-        w.indent();
-        w.line("Self {");
-        w.indent();
-        for field in fields {
-            if field.lazy {
-                let default_expr = type_info(&field.ty).default_expr;
-                w.line(&format!("{}: LazyView::Owned({default_expr}),", field.name));
-            } else {
-                w.line(&format!("{}: Default::default(),", field.name));
-            }
+    // manual (not derived) so a field's declared `= value` schema default —
+    // not just its Rust type's zero value — backs `T::default()`
+    w.blank();
+    w.line(&format!(
+        "impl{impl_lt_param} Default for {name}{struct_lt} {{"
+    ));
+    w.indent();
+    w.line("#[inline]");
+    w.line("fn default() -> Self {");
+    w.indent();
+    w.line("Self {");
+    w.indent();
+    for field in fields {
+        if field.lazy {
+            let default_expr = type_info(&field.ty).default_expr;
+            w.line(&format!("{}: LazyView::Owned({default_expr}),", field.name));
+        } else {
+            let default_expr = get_field_default_expr(field.default.as_ref(), &field.ty, schema);
+            w.line(&format!("{}: {default_expr},", field.name));
         }
-        w.dedent();
-        w.line("}");
-        w.dedent();
-        w.line("}");
-        w.dedent();
-        w.line("}");
     }
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
 
     if !consts.is_empty() {
         w.blank();
@@ -515,7 +617,7 @@ fn emit_named_struct(
         w.line("}");
     }
 
-    if needs_lifetime && cfg!(feature = "serde") {
+    if needs_lifetime && emit_serde() {
         emit_lazy_struct_serde(name, fields, schema, w);
     }
 }
@@ -544,7 +646,6 @@ fn emit_lazy_struct_serde(
 ) {
     w.blank();
 
-    // Serialize
     w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
     w.indent();
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
@@ -564,11 +665,19 @@ fn emit_lazy_struct_serde(
             ));
             w.line("LazyView::Owned(__val) => {");
             w.indent();
+            // emit_write_expr may emit an internal `?`, so wrap in a closure and
+            // translate the error to the serializer's error type at the boundary.
             w.line("let mut __buf = Vec::new();");
+            w.line("#[allow(clippy::redundant_closure_call)]");
+            w.line("(|| -> PojocResult<()> {");
+            w.indent();
             w.line("let __buf = &mut __buf;");
             emit_write_expr(&f.ty, "__val", Some(schema), true, w);
+            w.line("Ok(())");
+            w.dedent();
+            w.line("})().map_err(serde::ser::Error::custom)?;");
             w.line(&format!(
-                "__s.serialize_field(\"{}\", SerdeBytes::new(__buf))?;",
+                "__s.serialize_field(\"{}\", SerdeBytes::new(&__buf))?;",
                 f.name
             ));
             w.dedent();
@@ -589,7 +698,6 @@ fn emit_lazy_struct_serde(
     w.line("}");
     w.blank();
 
-    // Deserialize
     let field_list = fields
         .iter()
         .map(|f| format!("\"{}\"", f.name))
@@ -634,7 +742,11 @@ fn emit_lazy_struct_serde(
     w.indent();
     for f in fields {
         if f.lazy {
-            w.line(&format!("{n}: LazyView::new(__{n}, {n}_read),", n = f.name));
+            let helper_name = lazy_field_helper_name(name, &f.name);
+            w.line(&format!(
+                "{n}: LazyView::new(__{n}, {helper_name}),",
+                n = f.name
+            ));
         } else {
             w.line(&format!("{n},", n = f.name));
         }

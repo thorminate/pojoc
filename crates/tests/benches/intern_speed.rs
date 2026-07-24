@@ -1,12 +1,5 @@
-//! Throughput cost of `intern`'s lookup/dedup machinery: encoding an
-//! interned field does a `HashMap` lookup-or-insert per element
-//! (`InternBuilder::intern`) instead of writing the string's bytes
-//! directly; decoding does a bounds-checked table index instead of reading
-//! length-prefixed bytes. This isolates that cost by comparing `tags`
-//! (interned) against `tags_plain` (identical data, no interning) on the
-//! same schema — same element count, same string pool, only the intern
-//! bookkeeping differs.
-
+// tags vs tags_plain isolates the cost of intern's hashmap lookup-or-insert
+// on encode and table index on decode, vs writing/reading bytes directly
 use criterion::{Criterion, criterion_group, criterion_main};
 use pojoc_tests::pojoc_intern_bench::{self, InternBench, runtime::*};
 use std::hint::black_box;

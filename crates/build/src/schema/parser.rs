@@ -21,7 +21,6 @@ impl Parser {
             .unwrap_or(&Token::Eof)
     }
 
-    /// Look `n` tokens past the current position without consuming anything.
     fn peek_ahead(&self, n: usize) -> &Token {
         self.tokens
             .get(self.pos + n)
@@ -48,10 +47,7 @@ impl Parser {
             .unwrap_or_else(|| self.current_span())
     }
 
-    /// Span and line of whatever `peek()`/`advance()` would currently
-    /// return. Call this BEFORE advancing — that's the whole fix: read
-    /// location first, consume second, so errors point at the offending
-    /// token instead of whatever follows it.
+    /// call before advancing, so errors point at the offending token, not the next one
     fn here(&self) -> (Span, u32) {
         (self.current_span(), self.current_line())
     }
@@ -68,8 +64,6 @@ impl Parser {
         tok
     }
 
-    /// Advances and returns the consumed token along with the span/line
-    /// it started at, captured before the advance.
     fn advance_spanned(&mut self) -> (Token, Span, u32) {
         let (span, line) = self.here();
         (self.advance(), span, line)
@@ -78,13 +72,13 @@ impl Parser {
     fn err_unexpected_at(
         &self,
         got: Token,
-        expected: &'static str,
+        expected: impl Into<String>,
         span: Span,
         line: u32,
     ) -> ParseError {
         ParseError::UnexpectedToken {
             got,
-            expected,
+            expected: expected.into(),
             span,
             line,
         }
@@ -98,9 +92,8 @@ impl Parser {
         }
     }
 
-    /// For error sites built straight off `peek()` with no advance yet —
-    /// `current_span`/`current_line` are already correct there.
-    fn err_unexpected(&self, got: Token, expected: &'static str) -> ParseError {
+    /// for error sites built off peek() with no advance yet, current_span/line is already correct
+    fn err_unexpected(&self, got: Token, expected: impl Into<String>) -> ParseError {
         self.err_unexpected_at(got, expected, self.current_span(), self.current_line())
     }
 
@@ -121,7 +114,7 @@ impl Parser {
         let (got, span, line) = self.advance_spanned();
         match &got {
             Token::Keyword(k) if *k == kw => Ok(()),
-            _ => Err(self.err_unexpected_at(got, "keyword", span, line)),
+            _ => Err(self.err_unexpected_at(got, format!("`{kw}`"), span, line)),
         }
     }
 
@@ -133,9 +126,6 @@ impl Parser {
         }
     }
 
-    /// Consumes any consecutive `///` doc-comment lines at the current
-    /// position and returns their text, one entry per line, in source order.
-    /// Returns an empty `Vec` if there are none.
     fn parse_doc_comments(&mut self) -> Vec<String> {
         let mut doc = Vec::new();
         while let Token::DocComment(s) = self.peek().clone() {
@@ -145,10 +135,7 @@ impl Parser {
         doc
     }
 
-    /// Like `peek()`, but looks past any leading `///` doc-comment tokens —
-    /// for dispatch points that switch on the token itself (keyword, `+`/`-`/`~`,
-    /// etc.) while docs, if any, are consumed separately by whichever parse
-    /// function ends up handling the item they precede.
+    /// skips past doc-comment tokens; used at dispatch points that switch on the token itself
     fn peek_significant(&self) -> Token {
         let mut i = self.pos;
         while matches!(
@@ -176,6 +163,13 @@ impl Parser {
     pub fn parse_schema(&mut self) -> Result<SchemaAst, ParseError> {
         let doc = self.parse_doc_comments();
         let (start_span, start_line) = self.here();
+        // `import` is only valid inside the `schema { }` block, not before it —
+        // callers used to other languages' file-scope imports hit this first
+        if matches!(self.peek(), Token::Keyword(Keyword::Import)) {
+            return Err(self.err_invalid(
+                "`import` must be declared inside the `schema { }` block, e.g. `schema Foo { import \"other.pojoc\" as Other ... }`",
+            ));
+        }
         self.expect_keyword(Keyword::Schema)?;
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "'{'")?;
@@ -234,10 +228,8 @@ impl Parser {
         self.expect(Token::LBrace, "'{'")?;
 
         let mut seen_sections: HashSet<&'static str> = HashSet::new();
-        // type/enum/union/bitset share one namespace per version — `resolve()` picks
-        // one of them by priority (bitset > enum > union > type) when a field
-        // references a name, so two defs with the same name would silently shadow
-        // each other at codegen time instead of erroring here where it's cheap to catch.
+        // type/enum/union/bitset share one namespace per version; resolve() picks one
+        // by priority if names collide, so catch the collision here instead
         let mut seen_decl_names: HashMap<String, &'static str> = HashMap::new();
         let mut blocks = Vec::new();
 
@@ -253,11 +245,8 @@ impl Parser {
                             version
                         )));
                     }
-                    // Only the first version may redeclare the whole field list —
-                    // every later version must describe changes via `diff { }`.
-                    // Without this, a `fields { }` block in version 2+ silently
-                    // adds its fields on top of the prior version's instead of
-                    // replacing them, producing duplicate-named struct fields.
+                    // only the first version may use `fields`; later ones use `diff`,
+                    // otherwise fields would silently duplicate on top of the prior version
                     if !is_first_version {
                         return Err(self.err_invalid_at(
                             format!(
@@ -275,6 +264,18 @@ impl Parser {
                             "version {} has duplicate `diff` block",
                             version
                         )));
+                    }
+                    // the first version has no prior version to diff against —
+                    // it must declare its shape with `fields { }` instead
+                    if is_first_version {
+                        return Err(self.err_invalid_at(
+                            format!(
+                                "version {} uses a `diff` block, but the first version must use `fields {{ }}` — there's nothing to diff against yet",
+                                version
+                            ),
+                            block_span,
+                            block_line,
+                        ));
                     }
                 }
                 VersionBlockAst::TypeDef(td) => {
@@ -811,10 +812,37 @@ impl Parser {
                         line: op_line,
                     });
                 }
-                Token::Minus => {
-                    return Err(self.err_invalid("union variants cannot be removed"));
+                Token::Tilde => {
+                    self.advance();
+                    let from = self.expect_ident()?;
+                    self.expect(Token::Arrow, "'->'")?;
+                    let to = self.expect_ident()?;
+                    if matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                    }
+
+                    if !seen.insert(from.clone()) {
+                        return Err(self.err_invalid(format!(
+                            "variant `{}` appears more than once in union ops",
+                            from
+                        )));
+                    }
+
+                    ops.push(UnionVariantOpAst::Rename {
+                        from,
+                        to,
+                        span: op_span.join(self.last_consumed_span()),
+                        line: op_line,
+                    });
                 }
-                got => return Err(self.err_unexpected(got, "+ (add) in union extension")),
+                Token::Minus => {
+                    return Err(self.err_invalid("union variants cannot be removed — removing a variant makes old wire values undecodable"));
+                }
+                got => {
+                    return Err(
+                        self.err_unexpected(got, "+ (add) or ~ (rename) in union extension")
+                    );
+                }
             }
         }
 
@@ -839,7 +867,7 @@ impl Parser {
             let (start_span, start_line) = self.here();
             let name = self.expect_ident()?;
             if !seen_names.insert(name.clone()) {
-                return Err(self.err_invalid(format!("duplicate field name: {}", name)));
+                return Err(self.err_invalid(format!("field '{}' is defined twice", name)));
             }
             self.expect(Token::Colon, "':'")?;
 

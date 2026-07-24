@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: cargo fmt --check"
+if ! cargo fmt --check; then
+  echo "Error: formatting check failed. Run 'cargo fmt' and re-stage." >&2
+  exit 1
+fi
+
+echo "pre-commit: cargo clippy -- -D warnings"
+if ! cargo clippy -- -D warnings; then
+  echo "Error: clippy found warnings." >&2
+  exit 1
+fi
+
+echo "pre-commit: cargo test"
+if ! cargo test; then
+  echo "Error: tests failed." >&2
+  exit 1
+fi

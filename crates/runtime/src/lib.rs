@@ -17,12 +17,10 @@ pub use varint::*;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-/// A vector that stores up to 8 elements inline before spilling to the heap.
+/// vector that stores up to 8 elements inline before spilling to the heap
 pub type PojocVec<T> = SmallVec<[T; 8]>;
 
-/// A map for `map<K, V>(N)` fields, backed by a linear `PojocVec<(K, V)>`
-/// rather than hashing — lookups are O(n), which is fine for the small `N`
-/// fixed maps are declared with.
+/// map for `map<K, V>(N)` fields, linear not hashed, fine for the small N fixed maps use
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PojocFixedMap<K, V, const N: usize = 0> {
@@ -182,20 +180,27 @@ impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
     }
 }
 
-pub use std::collections::HashMap as PojocMap;
+/// hashing for [`PojocMap`]/`InternBuilder`, random seed per process to
+/// defend against hash-flooding on decoded wire data, see docs/security.md
+#[cfg(not(feature = "secure-hasher"))]
+pub type PojocHasher = foldhash::fast::RandomState;
+
+/// same as the foldhash variant but uses std's SipHash-based RandomState
+#[cfg(feature = "secure-hasher")]
+pub type PojocHasher = std::collections::hash_map::RandomState;
+
+/// map for `map<K, V>` fields, backed by HashMap keyed with [`PojocHasher`]
+pub type PojocMap<K, V> = std::collections::HashMap<K, V, PojocHasher>;
 
 #[cfg(feature = "serde")]
 pub use serde_bytes::Bytes as SerdeBytes;
 
-/// A `lazy` field's value: either unread bytes plus the decoder to run on
-/// [`get`](Self::get), or an already-decoded/constructed value.
+/// a `lazy` field's value: unread bytes plus a decoder to run on get, or an
+/// already-decoded value
 pub enum LazyView<'buf, T> {
     Raw {
         buf: &'buf [u8],
-        // Input is `&'buf [u8]` (not an elided/fresh lifetime) so that a decoded
-        // `T` which itself borrows the buffer (e.g. `Foo<'buf>` with zero-copy
-        // strings) type-checks: a generic reader `for<'a> fn(&'a [u8]) -> Foo<'a>`
-        // coerces to this fixed-`'buf` pointer, and owned readers coerce too.
+        // fixed 'buf (not elided) so a decoded T borrowing the buffer type-checks
         decode_fn: fn(&'buf [u8], &mut usize) -> PojocResult<T>,
     },
     Owned(T),
@@ -210,6 +215,7 @@ impl<'buf, T> LazyView<'buf, T> {
         Self::Raw { buf, decode_fn }
     }
 
+    // yes this is supposed to consume self.
     #[inline]
     pub fn get(self) -> PojocResult<T> {
         match self {
@@ -248,8 +254,8 @@ impl<'buf, T> std::fmt::Debug for LazyView<'buf, T> {
     }
 }
 
-/// Build a [`PojocVec`], or a fixed-size array when a `; N` length is given,
-/// converting each element with `Into` when a target element type is named.
+/// builds a [`PojocVec`], or a fixed array when a `; N` length is given,
+/// converting each element with `Into` when a target type is named
 ///
 /// ```
 /// use pojoc::{PojocVec, pojvec};
@@ -264,22 +270,19 @@ impl<'buf, T> std::fmt::Debug for LazyView<'buf, T> {
 /// ```
 #[macro_export]
 macro_rules! pojvec {
-    // pojvec![]
     () => {
         $crate::PojocVec::new()
     };
 
-    // pojvec![u32 =>]
     ($t:ty =>) => {
         $crate::PojocVec::<$t>::new()
     };
 
-    // pojvec![u32 =>; 4]  →  [u32; 4] default-filled
+    // [$t; $n] default-filled
     ($t:ty =>; $n:literal) => {
         ::core::array::from_fn::<$t, $n, _>(|_| <$t as ::core::default::Default>::default())
     };
 
-    // pojvec![u32 => 1, 2, 3]  →  PojocVec<u32>
     ($t:ty => $($x:expr),+ $(,)?) => {{
         trait SafeCast<T> { fn cast(self) -> T; }
         impl<T, U> SafeCast<U> for T where T: ::core::convert::TryInto<U>, <T as ::core::convert::TryInto<U>>::Error: ::core::fmt::Debug {
@@ -288,7 +291,6 @@ macro_rules! pojvec {
         $crate::PojocVec::from_vec(vec![$( SafeCast::<$t>::cast($x) ),+])
     }};
 
-    // pojvec![u32 => 1, 2, 3; 4]  →  [u32; 4]
     ($t:ty => $($x:expr),+ $(,)?; $n:literal) => {{
         trait SafeCast<T> { fn cast(self) -> T; }
         impl<T, U> SafeCast<U> for T where T: ::core::convert::TryInto<U>, <T as ::core::convert::TryInto<U>>::Error: ::core::fmt::Debug {
@@ -298,7 +300,6 @@ macro_rules! pojvec {
         __arr
     }};
 
-    // pojvec![1, 2, 3; 3]  →  [T; 3] inferred
     ($($x:expr),+ $(,)?; $n:literal) => {{
         trait SafeCast<T> { fn cast(self) -> T; }
         impl<T, U> SafeCast<U> for T where T: ::core::convert::TryInto<U>, <T as ::core::convert::TryInto<U>>::Error: ::core::fmt::Debug {
@@ -308,7 +309,6 @@ macro_rules! pojvec {
         __arr
     }};
 
-    // pojvec![1, 2, 3]  →  PojocVec<T> inferred
     ($($x:expr),+ $(,)?) => {{
         trait SafeCast<T> { fn cast(self) -> T; }
         impl<T, U> SafeCast<U> for T where T: ::core::convert::TryInto<U>, <T as ::core::convert::TryInto<U>>::Error: ::core::fmt::Debug {
@@ -318,10 +318,8 @@ macro_rules! pojvec {
     }};
 }
 
-/// Build a fixed-size byte array (`[u8; N]`) for a `FixedString` field from a
-/// string literal, asserting the length matches at compile time. Non-fixed
-/// `string` fields decode as borrowed `&str`, so a plain string literal is used
-/// for those directly — there is no owned-string constructor.
+/// builds a `[u8; N]` for a `FixedString` field from a string literal, asserting
+/// the length matches at compile time
 ///
 /// ```
 /// use pojoc::pojstr;
@@ -340,8 +338,8 @@ macro_rules! pojstr {
     }};
 }
 
-/// Build a [`PojocMap`], or a [`PojocFixedMap`] when an `N` capacity is given,
-/// converting each key/value with `Into`.
+/// builds a [`PojocMap`], or a [`PojocFixedMap`] when an `N` capacity is given,
+/// converting each key/value with `Into`
 ///
 /// ```
 /// use pojoc::{PojocFixedMap, PojocMap, pojmap};
@@ -356,15 +354,15 @@ macro_rules! pojstr {
 #[macro_export]
 macro_rules! pojmap {
     () => {{
-        $crate::PojocMap::new()
+        $crate::PojocMap::default()
     }};
 
     ($k:ty, $v:ty) => {{
-        $crate::PojocMap::<$k, $v>::new()
+        $crate::PojocMap::<$k, $v>::default()
     }};
 
     ($($k:expr => $v:expr),+ $(,)?) => {{
-        let mut __m = $crate::PojocMap::new();
+        let mut __m = $crate::PojocMap::default();
         $(
             __m.insert(
                 ::core::convert::Into::into($k),

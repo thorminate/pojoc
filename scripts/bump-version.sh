@@ -24,6 +24,12 @@ sed -i '' "s/\"version\": \".*\"/\"version\": \"$new_version\"/" vscode-extensio
 sed -i '' "s/\"version\": \".*\"/\"version\": \"$new_version\"/" jetbrains-plugin/src/main/resources/textmate/pojoc/package.json
 sed -i '' "s/^pluginVersion=.*/pluginVersion=$new_version/" jetbrains-plugin/gradle.properties
 
+# pojoc-cli pins its pojoc-build path dependency to an exact published
+# version (needed for `cargo publish`, which can't resolve bare path deps) —
+# version.workspace = true doesn't reach into this string, so it goes stale
+# on every bump unless updated here too.
+sed -i '' -E "s/(pojoc-build = \{ path = \"\.\.\/build\", version = \")[^\"]*(\" \})/\1$new_version\2/" crates/cli/Cargo.toml
+
 # Refresh Cargo.lock so it doesn't go stale against the new workspace version.
 cargo check --workspace --quiet
 

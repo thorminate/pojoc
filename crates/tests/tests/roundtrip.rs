@@ -1,13 +1,10 @@
 mod helpers;
 use helpers::*;
 use pojoc::{LazyView, pojvec};
+use pojoc_tests::pojoc_edge::runtime::Error;
 use pojoc_tests::pojoc_edge::*;
 
-/// Decode into a `'static` value by leaking a copy of the buffer. Decoded
-/// strings are borrowed (`&'buf str`), so to compare a decoded `Edge` against a
-/// `'static`-built original with plain `assert_eq!` (homogeneous `PartialEq`),
-/// both must share the `'static` lifetime. Test-only; the leak is reclaimed at
-/// process exit.
+// leaks the buffer so the decoded &'buf str fields become 'static, matching a 'static-built original for assert_eq!
 fn decode_static(buf: &[u8]) -> Edge<'static> {
     decode(Vec::leak(buf.to_vec())).expect("decode failed")
 }
@@ -135,8 +132,6 @@ fn test_encode_for_version_latest_version_fields_survive() {
     assert_duo_string_i32_eq(&decoded.generic_duo_v4, &original.generic_duo_v4);
     assert_mono_string_eq(&decoded.generic_mono_v5, &original.generic_mono_v5);
 
-    // v5-only fields (interning, recursive box<T>) — must survive when
-    // encoding at the latest version.
     assert_eq!(
         decoded.interned_label, original.interned_label,
         "v{latest}: interned_label mismatch"
@@ -154,11 +149,7 @@ fn test_encode_for_version_latest_version_fields_survive() {
 
 #[test]
 fn test_encode_for_version_pre_v5_omits_new_fields() {
-    // interned_label / interned_tags / linked_list were added in v5's diff —
-    // encoding a populated Edge at any earlier version must silently drop
-    // them (they didn't exist on that version's wire format yet), and
-    // decoding must come back with their zero-value defaults, not an error
-    // and not stale/leftover data.
+    // these fields were added in v5's diff, so encoding at an earlier version must drop them and decode to zero-value defaults
     let original = make_version_probe_edge();
 
     for &version in supported_versions() {
@@ -218,16 +209,136 @@ fn test_roundtrip_payload_variants() {
             splash_radius: 1.5,
         }),
         Payload::Despawn(DespawnPayload { entity_id: 808 }),
+        Payload::Message("a borrowed string payload round-tripping through a union"),
+        Payload::Bounded(50),
+        Payload::BoundedStruct(BoundedPayload { value: 50 }),
+        Payload::Rich(RichPayload {
+            note: "rich-note",
+            blob: LazyView::Owned(pojvec![1, 2, 3]),
+        }),
     ];
 
+    // final_action tracks Payload's latest shape; `action` is frozen at
+    // Payload@2 and has its own test below.
     for variant in variants {
         let mut e = Edge::default();
-        e.action = variant;
+        e.final_action = variant;
         let mut buf = Vec::new();
         encode(&mut buf, &e).expect("encode failed");
         let decoded = decode(&buf).expect("decode failed");
-        assert_payload_eq(&e.action, &decoded.action);
+        assert_payload_eq(&e.final_action, &decoded.final_action);
     }
+}
+
+// regression test: a union variant's payload struct holding a `lazy` field
+// used to reach codegen and panic (only the root's per-version decode_vN
+// understood `lazy`, not a nested type's own read_foo/write_foo) — this
+// exercises the Raw (decoded-then-re-encoded, never materialized) path
+// specifically, complementing test_roundtrip_payload_variants's Owned path.
+#[test]
+fn test_rich_payload_lazy_field_raw_reencode_is_byte_identical() {
+    let mut e = Edge::default();
+    e.final_action = Payload::Rich(RichPayload {
+        note: "rich-note",
+        blob: LazyView::Owned(pojvec![9, 8, 7]),
+    });
+
+    let mut buf = Vec::new();
+    encode(&mut buf, &e).expect("encode failed");
+    let decoded = decode_static(&buf);
+
+    match &decoded.final_action {
+        Payload::Rich(r) => match &r.blob {
+            LazyView::Raw { .. } => {}
+            LazyView::Owned(_) => panic!("decoded lazy union payload field should be Raw"),
+        },
+        other => panic!("expected Rich, got {other:?}"),
+    }
+
+    let mut buf2 = Vec::new();
+    encode(&mut buf2, &decoded).expect("re-encode failed");
+    assert_eq!(
+        buf, buf2,
+        "re-encoding a Raw lazy union payload field must be byte-identical"
+    );
+}
+
+// regression test: a union variant's payload struct holding an `intern`
+// field used to be rejected at analysis time (union codecs never threaded
+// the shared string table) — this checks it actually dedupes against the
+// same table as the rest of the message, not just that it compiles.
+#[test]
+fn test_rich_payload_interned_field_dedups_with_root_table() {
+    let make = |note: &'static str| {
+        let mut e = Edge::default();
+        e.interned_label = note;
+        e.final_action = Payload::Rich(RichPayload {
+            note,
+            blob: LazyView::Owned(pojvec![]),
+        });
+        e
+    };
+
+    let mut shared_buf = Vec::new();
+    encode(&mut shared_buf, &make("shared-interned-value")).expect("encode failed");
+
+    let mut distinct_buf = Vec::new();
+    encode(&mut distinct_buf, &{
+        let mut e = Edge::default();
+        e.interned_label = "aaaaaaaaaaaaaaaaaaaaa";
+        e.final_action = Payload::Rich(RichPayload {
+            note: "bbbbbbbbbbbbbbbbbbbbb",
+            blob: LazyView::Owned(pojvec![]),
+        });
+        e
+    })
+    .expect("encode failed");
+
+    assert!(
+        shared_buf.len() < distinct_buf.len(),
+        "identical root/union-payload interned strings should dedupe into one table entry, \
+         shrinking the buffer versus two distinct strings of the same length"
+    );
+}
+
+// regression test: `action` stays frozen at Payload@2 forever since it's never
+// re-pinned, so Despawn (added at v5) must decode/encode as Unknown, not the real variant.
+#[test]
+fn test_field_frozen_at_older_union_pin_downgrades_newer_variants_to_unknown() {
+    let mut e = Edge::default();
+    e.action = Payload::Despawn(DespawnPayload { entity_id: 808 });
+
+    let mut buf = Vec::new();
+    encode(&mut buf, &e).expect("encode failed");
+    let decoded = decode(&buf).expect("decode failed");
+
+    match &decoded.action {
+        Payload::Unknown { discriminant, .. } => {
+            assert_eq!(*discriminant, 3, "Despawn's real discriminant");
+        }
+        other => panic!(
+            "expected Despawn to downgrade to Unknown through the frozen `action` field, got {other:?}"
+        ),
+    }
+}
+
+// regression test: a union variant payload's `(min:/max:)` constraint used to
+// be silently ignored on encode — no error, out-of-range bytes written
+// anyway — for both a bare constrained scalar payload (`Bounded`) and a named
+// struct payload that's itself constraint-infected (`BoundedStruct`).
+#[test]
+fn test_encode_rejects_out_of_range_union_payload() {
+    let mut e = Edge::default();
+    e.action = Payload::Bounded(999);
+    let mut buf = Vec::new();
+    let err = encode(&mut buf, &e).expect_err("out-of-range union payload must be rejected");
+    assert!(matches!(err, Error::ConstraintViolation { .. }));
+
+    let mut e = Edge::default();
+    e.action = Payload::BoundedStruct(BoundedPayload { value: 999 });
+    let mut buf = Vec::new();
+    let err = encode(&mut buf, &e).expect_err("out-of-range struct union payload must be rejected");
+    assert!(matches!(err, Error::ConstraintViolation { .. }));
 }
 
 #[test]
@@ -250,13 +361,11 @@ fn test_roundtrip_control_signal_variants() {
 
 #[test]
 fn test_roundtrip_unknown_union_variant_is_lossless() {
-    // Simulates a proxy/middleware scenario: a peer running a newer schema
-    // sends a Payload variant this binary doesn't recognize. The decoder
-    // should preserve it as Unknown { discriminant, data } rather than
-    // erroring, and re-encoding must reproduce the exact same bytes.
+    // simulates a peer on a newer schema sending an unknown variant; must
+    // round-trip as Unknown, not error. 200 fits Payload's u8 wire width.
     let mut e = Edge::default();
     e.action = Payload::Unknown {
-        discriminant: 9999,
+        discriminant: 200,
         data: vec![0xDE, 0xAD, 0xBE, 0xEF],
     };
 
@@ -266,12 +375,16 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
 
     match &decoded.action {
         Payload::Unknown { discriminant, data } => {
-            assert_eq!(*discriminant, 9999);
+            assert_eq!(*discriminant, 200);
             assert_eq!(data, &vec![0xDE, 0xAD, 0xBE, 0xEF]);
         }
         other => panic!("expected Unknown variant to survive roundtrip, got {other:?}"),
     }
 }
+
+// Note: a discriminant overflowing Payload's own u8 width can't even be
+// written as a literal anymore (rejected at compile time); see `union_width.rs`
+// for a union that actually crosses a width threshold.
 
 #[test]
 fn test_raw_passthrough_is_byte_identical() {

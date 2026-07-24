@@ -1,7 +1,7 @@
 # Pojoc
 
 [![CI](https://github.com/thorminate/pojoc/actions/workflows/ci.yml/badge.svg)](https://github.com/thorminate/pojoc/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/pojoc.svg)](https://crates.io/crates/pojoc)
+[![crates.io](https://img.shields.io/crates/v/pojoc.svg?label=pojoc)](https://crates.io/crates/pojoc)
 [![crates.io](https://img.shields.io/crates/v/pojoc-build.svg?label=pojoc-build)](https://crates.io/crates/pojoc-build)
 [![crates.io](https://img.shields.io/crates/v/pojoc-cli.svg?label=pojoc-cli)](https://crates.io/crates/pojoc-cli)
 [![Release](https://img.shields.io/github/v/release/thorminate/pojoc)](https://github.com/thorminate/pojoc/releases)
@@ -36,11 +36,11 @@ schema Player {
     }
 
     diff {
-      ~ name -> display_name: string   // renamed
+      ~ name -> display_name           // renamed, type unchanged
       + level: i32 = 1                 // new field, decoding older data makes this field decode to 1.
       ~ stats: Stats                   // even if you evolved the type,
-        // it still counts as a new type 
-        // so you have to retype the field 
+        // it still counts as a new type
+        // so you have to retype the field
         // for it to take effect
     }
   }
@@ -74,6 +74,7 @@ validation, etc.)? Install the CLI:
 ```sh
 cargo install pojoc-cli
 pojoc build schemas/player.pojoc   # writes out/player.rs
+pojoc build schemas/player.pojoc --no-serde   # omit Serialize/Deserialize (must match your `pojoc` dependency's own serde feature)
 pojoc check schemas/player.pojoc   # validate without writing output
 ```
 
@@ -85,15 +86,13 @@ fn main() {
 }
 ```
 
-`Error::render` gives the same `file:line:col` + caret-pointing-at-the-mistake
-output as `pojoc check`, so a broken schema fails the build with something
-readable instead of a bare one-line message.
+`Error::render` gives a really neat `file:line:col` + caret-pointing-at-the-mistake error message, so an error looks nice.
 
 Generated types derive `Serialize`/`Deserialize`, so `serde` (with the `derive`
 feature) needs to be a direct dependency too. If you don't want that, disable
 it: `cargo add pojoc --no-default-features` and
 `cargo add --build pojoc-build --no-default-features` (the `pojoc`/`pojoc-build`
-`serde` feature must be turned off on *both* to stay consistent).
+`serde` feature must be turned off on _both_ to stay consistent).
 
 Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the generated module. That gives you `encode_vN(&mut Vec<u8>, &T)` / `decode_vN(&[u8], &mut usize) -> PojocResult<T>` for the latest and every prior version:
 
@@ -101,6 +100,9 @@ Then `include!(concat!(env!("OUT_DIR"), "/player.rs"));` wherever you want the g
 include!(concat!(env!("OUT_DIR"), "/player.rs"));
 
 fn main() {
+    // Player::default() applies the schema's declared defaults (display_name
+    // "Player", status Alive, level 1) — the same defaults used to backfill
+    // fields absent from older wire data.
     let player = Player::default();
 
     let mut bytes = Vec::new();
@@ -134,7 +136,7 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 **Serialized size** (identical populated message, bytes. Smaller is better):
 
 | Format      | Bytes   |
-|-------------|---------|
+| ----------- | ------- |
 | **Pojoc**   | **429** |
 | Protobuf    | 463     |
 | Bebop       | 634     |
@@ -144,7 +146,7 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 **Encode / decode / full round-trip** (nanoseconds, lower is better):
 
 | Format      |  Encode | Decode | Round-trip |
-|-------------|--------:|-------:|-----------:|
+| ----------- | ------: | -----: | ---------: |
 | **Pojoc**   | **233** |    250 |    **492** |
 | Cap'n Proto |     532 | **90** |        628 |
 | Bebop       |     554 |    322 |        857 |
@@ -153,10 +155,14 @@ Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo 
 
 Cap'n Proto gets a slight edge here because they are zero-copy (flatbuffers is too, no idea why they are so slow tho). Pojoc isn't, so they naturally get an edge there. However, with pojoc's lazy keyword you can theoretically get near zero-copy speeds and defer actually loading them until needed. Also with Cap'n Proto's zero-copy approach, they end up copying the entire memory profile plus lookup tables into the output, severely bloating its results. With pojoc being unbelievably efficient in encoding it is still the **fastest end-to-end**.
 
+## Security
+
+`PojocMap`/`InternBuilder` hash with a fast, non-cryptographic hasher by default, seeded randomly per process to resist hash-flooding from untrusted wire data. Enable the `secure-hasher` feature on the `pojoc` runtime crate to switch to SipHash if you need the stronger guarantee. See [`docs/security.md`](docs/security.md) for the full threat model and tradeoffs.
+
 ## Project Layout
 
 | Crate         | What it is                                                             |
-|---------------|------------------------------------------------------------------------|
+| ------------- | ---------------------------------------------------------------------- |
 | `pojoc`       | Runtime support library the generated code depends on.                 |
 | `pojoc-build` | Compile `.pojoc` files.                                                |
 | `pojoc-cli`   | `pojoc check` / `pojoc build`, thin wrapper over `pojoc-build`         |

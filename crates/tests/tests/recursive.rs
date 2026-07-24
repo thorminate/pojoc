@@ -108,9 +108,7 @@ fn test_plain_ref_box_retype_across_versions() {
         ..Default::default()
     };
 
-    // Encode as the (retyped) latest version and every historical version;
-    // v1 had `plain_ref: Node`, v2 retypes it to `plain_ref: box<Node>` —
-    // this exercises the box/unbox FieldMapping::Cast path both ways.
+    // v1 had plain_ref: Node, v2 retyped it to box<Node>; this exercises the box/unbox Cast path both ways
     for &version in supported_versions() {
         let mut buf = Vec::new();
         encode_for_version(&mut buf, &original, version)

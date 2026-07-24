@@ -14,13 +14,13 @@ pub enum ParseError {
     #[error("unexpected token `{got}`, expected {expected}")]
     UnexpectedToken {
         got: Token,
-        expected: &'static str,
+        expected: String,
         span: Span,
         line: u32,
     },
     #[error("unexpected EOF")]
     UnexpectedEof,
-    #[error("invalid syntax: `{message}`")]
+    #[error("{message}")]
     InvalidSyntax {
         message: String,
         span: Span,
@@ -307,26 +307,50 @@ pub enum AnalysisError {
         line: u32,
     },
 
-    #[error("import path '{path}' could not be found")]
+    #[error(
+        "{}",
+        if *is_root {
+            format!("could not find file '{path}'")
+        } else {
+            format!("import path '{path}' could not be found")
+        }
+    )]
     ImportNotFound {
         path: String,
+        is_root: bool,
         origin: PathBuf,
         span: Span,
         line: u32,
     },
 
-    #[error("import is not valid UTF-8: {path} (invalid byte at offset {offset})")]
+    #[error(
+        "{}",
+        if *is_root {
+            format!("file '{path}' is not valid UTF-8 (invalid byte at offset {offset})")
+        } else {
+            format!("import is not valid UTF-8: {path} (invalid byte at offset {offset})")
+        }
+    )]
     ImportNotUtf8 {
         path: String,
         offset: usize,
+        is_root: bool,
         origin: PathBuf,
         span: Span,
         line: u32,
     },
 
-    #[error("failed to read import '{path}': {kind:?}")]
+    #[error(
+        "{}",
+        if *is_root {
+            format!("failed to read file '{path}': {kind}")
+        } else {
+            format!("failed to read import '{path}': {kind}")
+        }
+    )]
     ImportReadFailed {
         path: String,
+        is_root: bool,
         origin: PathBuf,
         span: Span,
         line: u32,
@@ -391,6 +415,18 @@ pub enum AnalysisError {
         span: Span,
         line: u32,
     },
+
+    #[error(
+        "version {version}: field '{field}' can't be retyped from '{old_type}' to unrelated type '{new_type}' — add a new field instead"
+    )]
+    IncompatibleStructRetype {
+        field: String,
+        old_type: String,
+        new_type: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
 }
 
 impl IndexableError for AnalysisError {
@@ -431,6 +467,7 @@ impl IndexableError for AnalysisError {
             AnalysisError::UnboxedRecursiveType { span, .. } => *span,
             AnalysisError::InvalidConstraint { span, .. } => *span,
             AnalysisError::InvalidIntern { span, .. } => *span,
+            AnalysisError::IncompatibleStructRetype { span, .. } => *span,
         }
     }
 
@@ -471,13 +508,14 @@ impl IndexableError for AnalysisError {
             AnalysisError::UnboxedRecursiveType { line, .. } => *line,
             AnalysisError::InvalidConstraint { line, .. } => *line,
             AnalysisError::InvalidIntern { line, .. } => *line,
+            AnalysisError::IncompatibleStructRetype { line, .. } => *line,
         }
     }
 }
 
 impl AnalysisError {
-    /// The file this error should be reported against — usually `root`, but
-    /// import-related errors point at the importing/imported file instead.
+    /// the file this error is reported against, usually root but import errors
+    /// point at the importing/imported file instead
     fn source_path<'a>(&'a self, root: &'a std::path::Path) -> &'a std::path::Path {
         match self {
             AnalysisError::ImportParseFailed { path, .. } => std::path::Path::new(path.as_str()),
@@ -489,22 +527,25 @@ impl AnalysisError {
         }
     }
 
-    /// Renders this error with source context: a `file:line:col` location and
-    /// a caret pointing at the offending span, matching what `pojoc check`/`pojoc
-    /// build` print. `root` is the entry-point `.pojoc` file passed to
-    /// [`compile`](crate::compile)/[`compile_dir`](crate::compile_dir) — used as
-    /// the file to read from unless this error points elsewhere (e.g. into an
-    /// import). Reads the source file from disk to build the snippet, so it may
-    /// diverge if the file changed since the error was produced.
+    /// renders with a file:line:col location and caret, matching pojoc check/build.
+    /// reads the source file from disk, so it may diverge if the file changed since
     pub fn render(&self, root: &std::path::Path) -> String {
         use std::fmt::Write;
+
+        let line = self.line() as usize;
+        let message = self.to_string();
+
+        // line 0 means there's no real source location (file couldn't be
+        // loaded at all — not found, unreadable, not UTF-8) — a snippet/caret
+        // pointing at nothing is worse than no snippet at all.
+        if line == 0 {
+            return format!("error: {message}\n");
+        }
 
         let source_path = self.source_path(root);
         let source = std::fs::read_to_string(source_path).unwrap_or_default();
 
-        let line = self.line() as usize;
         let span = self.span();
-        let message = self.to_string();
 
         let display_path = source_path
             .canonicalize()
@@ -558,7 +599,7 @@ pub enum LoadError {
     NotFound,
     #[error("not valid UTF-8 (invalid byte at offset {offset})")]
     NotUtf8 { offset: usize },
-    #[error("read failed: {kind:?}")]
+    #[error("read failed: {kind}")]
     Io { kind: io::ErrorKind },
 }
 

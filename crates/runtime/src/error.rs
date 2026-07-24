@@ -2,26 +2,27 @@ use std::fmt;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
-    /// Buffer ended before we finished reading
+    /// buffer ended before we finished reading
     UnexpectedEof,
-    /// A varint had too many continuation bytes (>10 for u64)
+    /// varint had too many continuation bytes (>10 for u64)
     VarIntOverflow,
-    /// The enum variant was not recognized
+    /// enum variant not recognized
     InvalidEnumVariant,
-    /// The message envelope had an unrecognized version
+    /// message envelope had an unrecognized version
     UnsupportedVersion(u64),
-    /// The declared payload length exceeds what's in the buffer
+    /// declared payload length exceeds what's in the buffer
     InvalidLength,
-    /// A `min:`/`max:` constrained field's value (or, for a string/array/map,
-    /// its length/element count) fell outside its declared bounds.
+    /// a min/max constrained field's value (or length/count) was out of bounds
     ConstraintViolation {
         field: &'static str,
         min: Option<f64>,
         max: Option<f64>,
     },
-    /// An `intern`-marked field's varint table index had no corresponding
-    /// entry in the message's string-interning table.
+    /// intern field's table index had no matching entry
     InvalidInternIndex,
+    /// a union value's discriminant doesn't fit a specific historical
+    /// version's fixed wire width.
+    DiscriminantOverflow,
 }
 
 impl fmt::Display for Error {
@@ -39,6 +40,12 @@ impl fmt::Display for Error {
                 )
             }
             Error::InvalidInternIndex => write!(f, "string-interning table index out of range"),
+            Error::DiscriminantOverflow => {
+                write!(
+                    f,
+                    "union discriminant doesn't fit this wire version's width"
+                )
+            }
         }
     }
 }

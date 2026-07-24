@@ -28,8 +28,8 @@ impl ImportOrchestrator {
     #[allow(clippy::result_large_err)]
     pub fn resolve_root(&mut self, path: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let origin = path.to_path_buf();
-        let canonical = self.canonicalize(path, &origin, Span::new(0, 0), 0)?;
-        self.resolve_canonical(canonical, &origin, Span::new(0, 0), 0)
+        let canonical = self.canonicalize(path, &origin, Span::new(0, 0), 0, true)?;
+        self.resolve_canonical(canonical, &origin, Span::new(0, 0), 0, true)
     }
 
     #[allow(clippy::result_large_err)]
@@ -68,8 +68,8 @@ impl ImportOrchestrator {
         decl: &ImportDeclAst,
     ) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let target = base_dir.join(&decl.path);
-        let canonical = self.canonicalize(&target, importer, decl.span, decl.line)?;
-        self.resolve_canonical(canonical, importer, decl.span, decl.line)
+        let canonical = self.canonicalize(&target, importer, decl.span, decl.line, false)?;
+        self.resolve_canonical(canonical, importer, decl.span, decl.line, false)
     }
 
     #[allow(clippy::result_large_err)]
@@ -79,9 +79,11 @@ impl ImportOrchestrator {
         importer: &Path,
         span: Span,
         line: u32,
+        is_root: bool,
     ) -> Result<PathBuf, AnalysisError> {
         fs::canonicalize(path).map_err(|_| AnalysisError::ImportNotFound {
             path: path.display().to_string(),
+            is_root,
             origin: importer.to_path_buf(),
             span,
             line,
@@ -95,6 +97,7 @@ impl ImportOrchestrator {
         importer: &Path,
         span: Span,
         line: u32,
+        is_root: bool,
     ) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         if let Some(cached) = self.cache.get(&canonical) {
             return Ok(cached.clone());
@@ -120,6 +123,7 @@ impl ImportOrchestrator {
         let source = load_source(&canonical).map_err(|e| match e {
             LoadError::NotFound => AnalysisError::ImportNotFound {
                 path: path_str.clone(),
+                is_root,
                 origin: origin.clone(),
                 span,
                 line,
@@ -127,12 +131,14 @@ impl ImportOrchestrator {
             LoadError::NotUtf8 { offset } => AnalysisError::ImportNotUtf8 {
                 path: path_str.clone(),
                 offset,
+                is_root,
                 origin: origin.clone(),
                 span,
                 line,
             },
             LoadError::Io { kind } => AnalysisError::ImportReadFailed {
                 path: path_str.clone(),
+                is_root,
                 origin: origin.clone(),
                 span,
                 line,

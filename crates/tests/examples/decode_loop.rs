@@ -1,9 +1,6 @@
-// Pure decode loop for sampling profilers (samply/instruments).
-// Runs `pojoc_player::decode` in a tight loop for a fixed number of iterations
-// so a flamegraph attributes decode's internal cost (bounds/unchecked reads,
-// UTF-8 validation, string/collection construction, drop).
-//   cargo build --release -p pojoc-tests --example decode_loop
-//   samply record ./target/release/examples/decode_loop
+// decode-only loop for sampling profilers (samply/instruments)
+// cargo build --release -p pojoc-tests --example decode_loop
+// samply record ./target/release/examples/decode_loop
 use pojoc_tests::pojoc_player::{
     self, AABB, Class, Flags, Perks, Player, Region, Stats, Status, Transform, Vector3,
     runtime::{pojstr, pojtup, pojvec},

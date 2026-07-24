@@ -1,5 +1,8 @@
 use super::writer::CodeWriter;
-use crate::codegen::{emit_constraint_guard, get_latest_versions, ordered_wire_fields};
+use crate::codegen::{
+    emit_constraint_guard, emit_union_variant_constraint_guard, get_latest_versions,
+    ordered_wire_fields,
+};
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
 use crate::schema::ir::lineage::*;
@@ -56,29 +59,67 @@ fn deref_if_copy(ty: &ResolvedTypeRef, var: &str) -> String {
             format!("*{var}")
         }
         ResolvedTypeRef::VFloat { .. } => format!("*{var}"),
+        // transparent on the wire — look through to the underlying scalar
+        ResolvedTypeRef::Constrained { inner, .. } => deref_if_copy(inner, var),
         _ => var.to_string(),
     }
 }
 
-fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
+// max value representable in `width` bytes (1/2/4) — always fits u64
+pub(crate) fn width_max_value(width: u8) -> u64 {
+    (1u128 << (width as u32 * 8)) as u64 - 1
+}
 
-    for name in names {
-        let (_, resolved) = latest[name];
+// one writer per resolved union version, frozen at that version's own
+// discriminant width forever — see ResolvedUnion::discriminant_width.
+fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
+    let latest_by_name =
+        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+
+    let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
+    entries
+        .sort_by(|(a, _), (b, _)| (a.name.as_str(), a.version).cmp(&(b.name.as_str(), b.version)));
+
+    for (id, resolved) in entries {
+        let name = &id.name;
+        let (_, latest) = latest_by_name[name];
+        let width = resolved.discriminant_width();
+        let max_value = width_max_value(width);
+        let (rust_int, _, write_prim) = width_prim_names(width);
+        // only emit the overflow guard when this version's width is actually
+        // narrower than Unknown's (latest) width — otherwise it's dead code.
+        let overflow_possible = width < latest.discriminant_width();
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
+        let interning = is_union_write_intern_infected(id);
+        let extra_param = if interning {
+            ", __interner: &mut InternBuilder<'buf>"
+        } else {
+            ""
+        };
+        let fn_name = format!("write_{}_v{}", name.to_snake_case(), id.version);
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}(__buf: &mut Vec<u8>, __value: &{name}) {{",
-            name.to_snake_case()
+            "fn {fn_name}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}{extra_param}) -> PojocResult<()> {{"
         ));
         w.indent();
         w.line("match __value {");
         w.indent();
-        for variant in &resolved.variants {
+        for variant in &latest.variants {
+            if variant.discriminant > max_value {
+                w.line(&format!(
+                    "{name}::{}(_) => return Err(Error::DiscriminantOverflow),",
+                    variant.name
+                ));
+                continue;
+            }
             w.line(&format!("{name}::{}(__payload) => {{", variant.name));
             w.indent();
-            w.line(&format!("write_varint64(__buf, {});", variant.discriminant));
+            emit_union_variant_constraint_guard(&variant.payload, "__payload", &variant.name, w);
+            // suffixed literal (`3u8`), not `3 as u8` — clippy flags a redundant cast on a constant.
+            w.line(&format!(
+                "{write_prim}(__buf, {}{rust_int});",
+                variant.discriminant
+            ));
             w.line("let mut __tmp = Vec::new();");
             emit_union_payload_write(&variant.payload, w);
             w.line("write_varint32(__buf, __tmp.len() as u32);");
@@ -88,13 +129,24 @@ fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         }
         w.line(&format!("{name}::Unknown {{ discriminant, data }} => {{"));
         w.indent();
-        w.line("write_varint64(__buf, *discriminant);");
+        if overflow_possible {
+            w.line(&format!(
+                "if *discriminant > {max_value} {{ return Err(Error::DiscriminantOverflow); }}"
+            ));
+            w.line(&format!(
+                "{write_prim}(__buf, *discriminant as {rust_int});"
+            ));
+        } else {
+            // no cast needed: declared type already matches this version's width.
+            w.line(&format!("{write_prim}(__buf, *discriminant);"));
+        }
         w.line("write_varint32(__buf, data.len() as u32);");
         w.line("__buf.extend_from_slice(data);");
         w.dedent();
         w.line("}");
         w.dedent();
         w.line("}");
+        w.line("Ok(())");
         w.dedent();
         w.line("}");
         w.blank();
@@ -168,9 +220,19 @@ fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 fn emit_union_payload_write(payload: &ResolvedTypeRef, w: &mut CodeWriter) {
     match payload {
         ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-            // existing named write helper, __payload is already &T
+            // __payload is already &T here
+            let q = if is_constraint_infected(&id.name) {
+                "?"
+            } else {
+                ""
+            };
+            let extra = if is_intern_infected(&id.name) {
+                ", __interner"
+            } else {
+                ""
+            };
             w.line(&format!(
-                "write_{}(&mut __tmp, __payload);",
+                "write_{}(&mut __tmp, __payload{extra}){q};",
                 id.name.to_snake_case()
             ));
         }
@@ -237,22 +299,14 @@ pub(crate) fn emit_write_expr(
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            if normalize_type(&id.name) == "string" {
-                // Field is already a `&str`; pass it straight through.
-                // Deref coercion collapses any `&&str` from array iterators.
-                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
-            } else {
-                w.line(&format!("{}(__buf, {accessor});", info.write_fn));
-            }
+            w.line(&format!("{}(__buf, {accessor});", info.write_fn));
         }
 
-        ResolvedTypeRef::Enum(id) => {
+        ResolvedTypeRef::Enum(id, width) => {
+            let (rust_int, _, write_prim) = width_prim_names(*width);
             if let Some(schema) = vn {
-                // The in-memory Rust enum is the latest version's definition. When
-                // encoding *this* version, the clamp maps any variant newer than
-                // the version's wire range down to 0. When `id` is the latest
-                // enum version, every representable variant is already in range, so
-                // the branch is provably dead — emit the direct write instead.
+                // if id is the latest enum version every variant is in range,
+                // so the clamp branch below is dead, skip it
                 let latest_enum_version = schema
                     .enums
                     .enums
@@ -261,7 +315,7 @@ pub(crate) fn emit_write_expr(
                     .map(|k| k.version)
                     .max();
                 if latest_enum_version == Some(id.version) {
-                    w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
+                    w.line(&format!("{write_prim}(__buf, {accessor} as {rust_int});"));
                 } else {
                     let max = schema
                         .enums
@@ -271,18 +325,26 @@ pub(crate) fn emit_write_expr(
                         .unwrap_or(0);
                     w.line(&format!(
                         "{{ let __disc = {accessor} as u32; \
-                         write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                         {write_prim}(__buf, if __disc <= {max} {{ __disc as {rust_int} }} else {{ 0{rust_int} }}); }}"
                     ));
                 }
             } else {
-                w.line(&format!("write_varint64(__buf, {accessor} as u64);"));
+                w.line(&format!("{write_prim}(__buf, {accessor} as {rust_int});"));
             }
         }
 
         ResolvedTypeRef::Union(id) => {
+            // union writers are always fallible: a discriminant too wide for
+            // this version's width is a genuine encode error.
+            let extra = if is_union_write_intern_infected(id) {
+                ", __interner"
+            } else {
+                ""
+            };
             w.line(&format!(
-                "write_{}(__buf, {}{accessor});",
+                "write_{}_v{}(__buf, {}{accessor}{extra})?;",
                 id.name.to_snake_case(),
+                id.version,
                 if is_ref { "" } else { "&" }
             ));
         }
@@ -314,6 +376,12 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Array(inner) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                w.line(&format!("write_pod_array(__buf, {accessor}.as_slice());"));
+                return;
+            }
             w.line(&format!("write_array_len(__buf, {accessor}.len());"));
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
@@ -323,6 +391,15 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::FixedArray(inner, _) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+            {
+                w.line(&format!(
+                    "write_fixed_pod_array(__buf, {}{accessor});",
+                    if is_ref { "" } else { "&" }
+                ));
+                return;
+            }
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_write_expr(inner, &deref_if_copy(inner, "__item"), vn, true, w);
@@ -399,14 +476,9 @@ pub(crate) fn emit_write_expr(
         }
 
         ResolvedTypeRef::Boxed(inner) => {
-            // `&Box<T>` and `Box<T>` both auto-deref-coerce to `&T` at a
-            // call site expecting `&T` (Rust's built-in `Deref` for `Box`),
-            // so non-Copy inner types (structs, strings) need no manual
-            // deref at all — passing the boxed reference through as-is is
-            // enough, and doing `&**x` there is exactly what clippy's
-            // `explicit_auto_deref` flags. Copy primitives still need a
-            // genuine `T` value rather than a reference, which
-            // `deref_if_copy` provides by adding an explicit `*`.
+            // Box<T> auto-derefs to &T, so non-Copy inner types need no manual
+            // deref (avoids clippy's explicit_auto_deref); Copy primitives still
+            // need deref_if_copy's explicit *
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -417,17 +489,12 @@ pub(crate) fn emit_write_expr(
             emit_write_expr(inner, &derefed, vn, !now_a_value, w);
         }
 
-        // Transparent on the wire — the constraint check itself is emitted
-        // separately, around the field write, by the caller.
+        // transparent on the wire, constraint check is emitted separately by the caller
         ResolvedTypeRef::Constrained { inner, .. } => {
             emit_write_expr(inner, accessor, vn, is_ref, w)
         }
 
-        // `accessor` is always already a `&str` value here — a `string`
-        // scalar's Rust type never needs an extra `&`/deref (see the
-        // primitive-string branch above), and `Interned` always wraps a bare
-        // `string` (enforced at analysis time), so no dereffing needed
-        // regardless of `is_ref`.
+        // accessor is always already &str here, no dereffing needed regardless of is_ref
         ResolvedTypeRef::Interned(_) => {
             w.line(&format!(
                 "write_varint64(__buf, __interner.intern({accessor}) as u64);"
@@ -445,10 +512,8 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     let v = vl.version;
     let fallible = is_constraint_infected(name);
     let ret = if fallible { " -> PojocResult<()>" } else { "" };
-    // Per-*version* check, not the global `is_intern_infected(name)` — this
-    // function emits version `v`'s own historical wire format, which must
-    // not gain an intern-table header just because a *later* version added
-    // an interned field. See `version_uses_intern`.
+    // per-version check, not is_intern_infected(name) — this version's wire
+    // format shouldn't gain an intern table just because a later version added one
     let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
     w.line(&format!(
@@ -457,24 +522,15 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     w.indent();
 
     if fallible {
-        // Validated once against the *current* (latest-schema) struct,
-        // regardless of which historical version's wire format this
-        // particular `encode_vN` produces — see `emit_constraint_guard`.
+        // validated against the current struct, not this version's historical shape
         for field in &schema.versions.last().unwrap().fields {
             emit_constraint_guard(field, &format!("__value.{}", field.name), w);
         }
     }
 
     if interning {
-        // The string table must precede the fields on the wire, but it can
-        // only be built by visiting every `intern` field first — so encode
-        // the fields into a scratch buffer (shadowing `__buf`, so every
-        // existing write statement below is unaffected), then prepend the
-        // now-complete table to the real output.
-        // `__interner` is always threaded as `&mut InternBuilder` (never the
-        // owned value), so a call-site injection like `, __interner` is
-        // valid identically at the root and in any nested `write_*` — Rust
-        // auto-reborrows a `&mut T` passed where `&mut T` is expected.
+        // string table must precede fields on wire but needs every intern field
+        // visited first, so encode fields into a scratch buffer and prepend the table after
         w.line("let mut __interner_owned = InternBuilder::new();");
         w.line("let __interner = &mut __interner_owned;");
         w.line("let mut __scratch: Vec<u8> = Vec::new();");
@@ -483,7 +539,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
         w.line("let __buf = &mut __scratch;");
     }
 
-    // Same fixed-first reordering the decoder uses, so the wire order matches.
+    // same fixed-first reordering the decoder uses, keeps wire order matching
     let ordered = ordered_wire_fields(schema, vl);
     let opt_fields: Vec<&FieldLineage> = ordered
         .iter()
@@ -830,7 +886,8 @@ fn emit_vn_cast_value(
             w.line("}");
         }
 
-        (Enum(f_id), Enum(_)) => {
+        (Enum(f_id, f_width), Enum(..)) => {
+            let (rust_int, _, write_prim) = width_prim_names(*f_width);
             let max = schema
                 .enums
                 .enums
@@ -839,7 +896,7 @@ fn emit_vn_cast_value(
                 .unwrap_or(0);
             w.line(&format!(
                 "{{ let __disc = {accessor} as u32; \
-                 write_varint64(__buf, if __disc <= {max} {{ __disc as u64 }} else {{ 0u64 }}); }}"
+                 {write_prim}(__buf, if __disc <= {max} {{ __disc as {rust_int} }} else {{ 0{rust_int} }}); }}"
             ));
         }
 
@@ -928,13 +985,8 @@ fn emit_vn_cast_value(
             }
         }
 
-        (Array(f_elem), DeltaArray(_)) => {
-            w.line(&format!("write_array_len(__buf, {accessor}.len());"));
-            w.line(&format!("for __item in {accessor}.iter() {{"));
-            w.indent();
-            emit_write_expr(f_elem, &deref_if_copy(f_elem, "__item"), None, true, w);
-            w.dedent();
-            w.line("}");
+        (Array(_), DeltaArray(_)) => {
+            emit_write_expr(from, accessor, Some(schema), is_ref, w);
         }
 
         (DeltaArray(_), Array(_)) => {
@@ -1003,11 +1055,7 @@ fn emit_vn_cast_value(
         }
 
         (Boxed(f_inner), Boxed(t_inner)) => {
-            // `accessor` is always the *current* (latest-shape) struct
-            // field's actual Rust value, so its real type is `Box<t_inner>`
-            // — unwrap that via auto-deref-coercion (see the matching
-            // comment in `emit_write_expr`'s `Boxed` arm) rather than a
-            // manual `&**`, which clippy flags as redundant.
+            // unwrap via auto-deref like emit_write_expr's Boxed arm, not manual &**
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -1041,8 +1089,6 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) if is_primitive(&id.name) => {
-            // Borrowed-string defaults (`""`) are already `&str`; every other
-            // primitive default is a plain value. Neither needs a `&`.
             w.line(&format!("{}(__buf, {});", info.write_fn, info.default_expr));
         }
         ResolvedTypeRef::Scalar(id) => {
@@ -1076,11 +1122,20 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
             w.dedent();
             w.line("}");
         }
-        ResolvedTypeRef::Enum(_) => {
-            w.line("write_varint64(__buf, 0u64);");
+        ResolvedTypeRef::Enum(_, width) => {
+            let (rust_int, _, write_prim) = width_prim_names(*width);
+            w.line(&format!("{write_prim}(__buf, 0{rust_int});"));
         }
-        ResolvedTypeRef::Union(_) => {
-            w.line("write_varint64(__buf, 0u64);");
+        ResolvedTypeRef::Union(id) => {
+            // 0 always fits any width, so no overflow check needed here
+            let width = schema
+                .unions
+                .unions
+                .get(id)
+                .map(|u| u.discriminant_width())
+                .unwrap_or(1);
+            let (rust_int, _, write_prim) = width_prim_names(width);
+            w.line(&format!("{write_prim}(__buf, 0{rust_int});"));
             w.line("write_varint32(__buf, 0u32);");
         }
         ResolvedTypeRef::Bitset(id, _) => {
@@ -1143,14 +1198,11 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
         }
         ResolvedTypeRef::Optional(_) => {}
         ResolvedTypeRef::Boxed(inner) => {
-            // Heap indirection doesn't change the wire bytes — the default
-            // for `box<T>` on the wire is just `T`'s default.
+            // box<T>'s wire default is just T's default
             emit_vn_default_write(inner, schema, w);
         }
         ResolvedTypeRef::Constrained { inner, .. } => emit_vn_default_write(inner, schema, w),
-        // The old-version reader still expects a table index at this wire
-        // position (not raw bytes), so the filler must go through the
-        // interner too, not `write_string`.
+        // old-version reader expects a table index here, filler must go through the interner
         ResolvedTypeRef::Interned(_) => {
             w.line("write_varint64(__buf, __interner.intern(\"\") as u64);");
         }
@@ -1191,46 +1243,61 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+// mirrors emit_union_writers: one size hint per resolved union version.
 fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
+    let latest_by_name =
+        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
 
-    for name in names {
-        let (_, resolved) = latest[name];
+    let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
+    entries
+        .sort_by(|(a, _), (b, _)| (a.name.as_str(), a.version).cmp(&(b.name.as_str(), b.version)));
+
+    for (id, resolved) in entries {
+        let name = &id.name;
+        let (_, latest) = latest_by_name[name];
+        let width = resolved.discriminant_width();
+        let max_value = width_max_value(width);
+        let lt = if is_infected(name) { "<'buf>" } else { "" };
+        let fn_name = format!("size_hint_{}_v{}", name.to_snake_case(), id.version);
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn size_hint_{}(__value: &{name}) -> usize {{",
-            name.to_snake_case()
+            "fn {fn_name}{lt}(__value: &{name}{lt}) -> usize {{"
         ));
         w.indent();
         w.line("match __value {");
         w.indent();
-        for variant in &resolved.variants {
+        for variant in &latest.variants {
+            if variant.discriminant > max_value {
+                w.line(&format!("{name}::{}(_) => 0,", variant.name));
+                continue;
+            }
             w.line(&format!("{name}::{}(__p) => {{", variant.name));
             w.indent();
             match &variant.payload {
-                ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-                    let size_fn = format!("size_hint_{}", id.name.to_snake_case());
+                ResolvedTypeRef::Scalar(pid) if !is_primitive(&pid.name) => {
+                    let size_fn = format!("size_hint_{}", pid.name.to_snake_case());
                     w.line(&format!("let __plen = {size_fn}(__p);"));
                 }
                 _ => {
-                    // use emit_size_expr with its own `size` accumulator, then rename
                     w.line("let mut size = 0usize;");
                     emit_size_expr(&variant.payload, "__p", true, w, schema);
                     w.line("let __plen = size;");
                 }
             }
-            w.line(&format!(
-                "varint_size({}) + varint_size(__plen) + __plen",
-                variant.discriminant
-            ));
+            w.line(&format!("{width} + varint_size(__plen) + __plen"));
             w.dedent();
             w.line("}");
         }
-        w.line(&format!(
-            "{name}::Unknown {{ discriminant, data }} => varint_size(*discriminant as usize) + varint_size(data.len()) + data.len(),"
-        ));
+        // same overflow-guard condition as emit_union_writers.
+        let unknown_size = format!("{width} + varint_size(data.len()) + data.len()");
+        let unknown_arm = if width < latest.discriminant_width() {
+            format!(
+                "{name}::Unknown {{ discriminant, data }} => if *discriminant > {max_value} {{ 0 }} else {{ {unknown_size} }},"
+            )
+        } else {
+            format!("{name}::Unknown {{ data, .. }} => {unknown_size},")
+        };
+        w.line(&unknown_arm);
         w.dedent();
         w.line("}");
         w.dedent();
@@ -1281,11 +1348,19 @@ fn emit_size_expr(
         ResolvedTypeRef::Scalar(_) => {
             w.line(&format!("size += {};", info.size_expr(is_ref, accessor)));
         }
-        ResolvedTypeRef::Enum(_) => {
-            w.line(&format!("size += varint_size({accessor} as usize);"));
+        ResolvedTypeRef::Enum(_, width) => {
+            w.line(&format!("size += {width};"));
         }
-        ResolvedTypeRef::Union(_) => {
-            w.line(&format!("size += {};", info.size_expr(is_ref, accessor)));
+        ResolvedTypeRef::Union(id) => {
+            // info.size_expr's generic rust_type-derived fallback doesn't know
+            // about the per-version function-name suffix (see type_info's
+            // Union arm), so compute the call directly here instead
+            let borrow_symbol = if is_ref { "" } else { "&" };
+            w.line(&format!(
+                "size += size_hint_{}_v{}({borrow_symbol}{accessor});",
+                id.name.to_snake_case(),
+                id.version
+            ));
         }
         ResolvedTypeRef::Bitset(id, _) => {
             let computed_len = schema
@@ -1297,8 +1372,19 @@ fn emit_size_expr(
             w.line(&format!("size += {computed_len};"));
         }
         ResolvedTypeRef::Array(inner) => {
+            if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+                && let WireSize::Fixed(elem_size) = type_info(inner).wire_size
+            {
+                let bytes = if elem_size == 1 {
+                    format!("{accessor}.len()")
+                } else {
+                    format!("{accessor}.len() * {elem_size}")
+                };
+                w.line(&format!("size += varint_size({accessor}.len()) + {bytes};"));
+                return;
+            }
             w.line(&format!("size += varint_size({accessor}.len());"));
-            // ...
             w.line(&format!("for __item in {accessor}.iter() {{"));
             w.indent();
             emit_size_expr(inner, "__item", true, w, schema);
@@ -1311,16 +1397,10 @@ fn emit_size_expr(
                 if *n > 0 {
                     let size_str = if *n == 1 {
                         format!("size += {elem_size};")
+                    } else if elem_size == 1 {
+                        format!("size += {n};")
                     } else {
-                        if elem_size == 1 {
-                            format!("size += {n};")
-                        } else {
-                            if *n == 1 {
-                                format!("size += {n};")
-                            } else {
-                                format!("size += {n} * {elem_size};")
-                            }
-                        }
+                        format!("size += {n} * {elem_size};")
                     };
                     w.line(&size_str);
                 }
@@ -1346,10 +1426,7 @@ fn emit_size_expr(
             w.line(&format!("size += {n};"));
         }
         ResolvedTypeRef::Map(k_ty, v_ty) => {
-            // A fixed-size side's contribution doesn't depend on its value,
-            // so looping `for (__k, __v)` over it would leave that binding
-            // unused (clippy::for_kv_map) — fold it into `len() * size` and
-            // only iterate the side(s) that actually vary per entry.
+            // fixed-size side folds into len() * size, only iterate the varying side(s)
             let k_wire = type_info(k_ty).wire_size;
             let v_wire = type_info(v_ty).wire_size;
             match (k_wire, v_wire) {
@@ -1357,7 +1434,12 @@ fn emit_size_expr(
                     w.line(&format!("size += {accessor}.len() * ({ks} + {vs});"));
                 }
                 (WireSize::Fixed(ks), WireSize::Variable) => {
-                    w.line(&format!("size += {accessor}.len() * {ks};"));
+                    let bytes = if ks == 1 {
+                        format!("{accessor}.len()")
+                    } else {
+                        format!("{accessor}.len() * {ks}")
+                    };
+                    w.line(&format!("size += {bytes};"));
                     w.line(&format!("for __v in {accessor}.values() {{"));
                     w.indent();
                     emit_size_expr(v_ty, "__v", true, w, schema);
@@ -1365,7 +1447,12 @@ fn emit_size_expr(
                     w.line("}");
                 }
                 (WireSize::Variable, WireSize::Fixed(vs)) => {
-                    w.line(&format!("size += {accessor}.len() * {vs};"));
+                    let bytes = if vs == 1 {
+                        format!("{accessor}.len()")
+                    } else {
+                        format!("{accessor}.len() * {vs}")
+                    };
+                    w.line(&format!("size += {bytes};"));
                     w.line(&format!("for __k in {accessor}.keys() {{"));
                     w.indent();
                     emit_size_expr(k_ty, "__k", true, w, schema);
@@ -1431,8 +1518,7 @@ fn emit_size_expr(
             w.line("}");
         }
         ResolvedTypeRef::Boxed(inner) => {
-            // See the matching comment in `emit_write_expr`'s `Boxed` arm —
-            // same auto-deref-coercion reasoning applies here.
+            // same auto-deref reasoning as emit_write_expr's Boxed arm
             let boxed_ref = if is_ref {
                 accessor.to_string()
             } else {
@@ -1445,9 +1531,8 @@ fn emit_size_expr(
         ResolvedTypeRef::Constrained { inner, .. } => {
             emit_size_expr(inner, accessor, is_ref, w, schema)
         }
-        // The actual wire cost is a small varint table index, not the string
-        // itself — a flat upper-bound estimate is fine since this only
-        // drives `Vec::reserve`'s pre-allocation, not correctness.
+        // wire cost is a small varint index, not the string; flat estimate is fine
+        // since this only drives Vec::reserve, not correctness
         ResolvedTypeRef::Interned(_) => {
             w.line("size += 10;");
         }
@@ -1706,6 +1791,31 @@ fn emit_vn_cast_size_hint(
                 "size += fixed_delta_array_size_hint(&{accessor}[..{f_n}]);"
             ));
         }
+        (FixedArray(elem, n), Map(_, _)) => {
+            // mirrors encode_vN: writes exactly N values, so size walks the same window.
+            if let WireSize::Fixed(s) = type_info(elem).wire_size {
+                if *n == 1 {
+                    w.line(&format!("size += {s};"));
+                } else if s == 1 {
+                    w.line(&format!("size += {n};"));
+                } else {
+                    w.line(&format!("size += {n} * {s};"));
+                }
+            } else {
+                w.line("let mut __written = 0usize;");
+                w.line(&format!("for (_, __v) in {accessor}.iter().take({n}) {{"));
+                w.indent();
+                emit_size_expr(elem, "__v", true, w, schema);
+                w.line("__written += 1;");
+                w.dedent();
+                w.line("}");
+                w.line(&format!("for _ in __written..{n} {{"));
+                w.indent();
+                emit_default_size(schema, elem, w);
+                w.dedent();
+                w.line("}");
+            }
+        }
         _ => emit_size_expr(from, accessor, is_ref, w, schema),
     }
 }
@@ -1738,8 +1848,17 @@ fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut Code
                 }
             }
         }
-        ResolvedTypeRef::Enum(_) => w.line("size += 1;"),
-        ResolvedTypeRef::Union(_) => w.line("size += 2;"),
+        ResolvedTypeRef::Enum(_, width) => w.line(&format!("size += {width};")),
+        ResolvedTypeRef::Union(id) => {
+            let width = schema
+                .unions
+                .unions
+                .get(id)
+                .map(|u| u.discriminant_width())
+                .unwrap_or(1);
+            // discriminant (fixed width) + a zero-length payload's 1-byte varint length prefix
+            w.line(&format!("size += {};", width + 1));
+        }
         ResolvedTypeRef::Bitset(id, _) => {
             let len = schema
                 .bitsets
@@ -1754,18 +1873,14 @@ fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut Code
         ResolvedTypeRef::FixedArray(inner, n) => {
             if *n > 0 {
                 if let WireSize::Fixed(s) = type_info(inner).wire_size {
-                    if *n > 0 {
-                        let size_str = if *n == 1 {
-                            format!("size += {s};")
-                        } else {
-                            if *n == 1 {
-                                format!("size += {n};")
-                            } else {
-                                format!("size += {n} * {s};")
-                            }
-                        };
-                        w.line(&size_str);
-                    }
+                    let size_str = if *n == 1 {
+                        format!("size += {s};")
+                    } else if s == 1 {
+                        format!("size += {n};")
+                    } else {
+                        format!("size += {n} * {s};")
+                    };
+                    w.line(&size_str);
                 } else {
                     for _ in 0..*n {
                         emit_default_size(schema, inner, w);

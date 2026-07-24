@@ -30,22 +30,17 @@ pub fn skip_signed_varint(buf: &[u8], pos: &mut usize) -> Result<(), Error> {
     skip_varint64(buf, pos)
 }
 
-/// A scalar type usable as an element of a `(delta)`-encoded array.
-///
-/// The *first* element is written using the type's natural representation
-/// (unsigned varint for unsigned types, zigzag varint for signed types) so
-/// that large unsigned values don't get doubled by zigzag encoding. All
-/// *later* elements are written as signed zigzag deltas from the
-/// previous element, computed via wrapping arithmetic so even u64 values
-/// that wrap around the full range round-trip losslessly.
+// first element of a delta array uses its natural representation (unsigned
+// varint for unsigned types, zigzag for signed) so large unsigned values
+// don't get doubled by zigzag; later elements are zigzag deltas from the
+// previous element via wrapping arithmetic so u64 wraparound still round-trips
 pub trait DeltaElement: Copy + Default {
     fn write_first(out: &mut Vec<u8>, value: Self);
     fn read_first(buf: &[u8], pos: &mut usize) -> Result<Self, Error>;
     fn skip_first(buf: &[u8], pos: &mut usize) -> Result<(), Error>;
     fn delta_to(self, prev: Self) -> i64;
     fn apply_delta(prev: Self, delta: i64) -> Self;
-    /// Encoded byte length of `value` written via [`write_first`](Self::write_first),
-    /// computed arithmetically (no scratch allocation).
+    // size of value as written by write_first, computed arithmetically to avoid a scratch alloc
     fn first_encoded_size(value: Self) -> usize;
 }
 
@@ -263,7 +258,6 @@ pub fn skip_fixed_delta_array<T: DeltaElement, const N: usize>(
     Ok(())
 }
 
-/// Encoded byte length of a zigzag-varint-encoded delta, computed arithmetically.
 #[inline]
 fn signed_varint_size(delta: i64) -> usize {
     varint_size(zigzag_encode(delta) as usize)

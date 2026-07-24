@@ -1,16 +1,7 @@
 mod common;
 use common::*;
 
-/// Regression coverage for a real bug: `intern_infected` used to be computed
-/// once per type (from the *latest* version's fields only) and applied
-/// uniformly to every version's `encode_vN`/`decode_vN`. That meant adding an
-/// `intern` field in a later version retroactively put an intern-table
-/// header on every earlier version's wire format too — breaking decode of
-/// genuinely old data written before `intern` existed in the schema, which
-/// is exactly the guarantee schema versioning exists to provide.
-///
-/// The fix scopes the intern-table header per version, based on that
-/// version's own (historical) field types, not the latest struct's shape.
+/// regression test: intern table header must be scoped per version's own historical fields, not computed once from the latest version and applied to all
 fn generate(src: &str) -> String {
     let ast = parse_schema(src).expect("parse failed");
     let resolved = analyze_schema(&ast).expect("analyze failed");
@@ -61,10 +52,7 @@ fn pre_intern_versions_get_no_table_header() {
 
 #[test]
 fn intern_removed_in_a_later_version_keeps_earlier_versions_tabled() {
-    // Mirror case: a field is interned at v1 but the field is dropped
-    // entirely by v2. Re-encoding at v1 from the latest struct must still
-    // emit a table (v1's own historical wire format used one), even though
-    // the latest struct itself carries no interned data anymore.
+    // mirror case: field interned at v1, dropped by v2 — re-encoding v1 must still emit a table
     let code = generate(
         r#"
         schema Mini {
@@ -101,10 +89,7 @@ fn intern_removed_in_a_later_version_keeps_earlier_versions_tabled() {
     );
 }
 
-/// Slices out a single top-level function's source by name, from its
-/// signature line to the matching closing brace at column 0, so assertions
-/// can target one `encode_vN`/`decode_vN` without being confused by sibling
-/// functions containing similar substrings.
+/// slices one top-level fn's source by signature, to the closing brace at column 0, so assertions target only that fn
 fn extract_fn<'a>(code: &'a str, signature_prefix: &str) -> &'a str {
     let start = code
         .find(signature_prefix)

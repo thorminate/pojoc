@@ -1,13 +1,5 @@
-//! Size comparison for pojoc's `intern` string-dedup feature: a large array
-//! of strings drawn from a small pool of repeated values (the case `intern`
-//! is built for), compared against protobuf/Cap'n Proto/FlatBuffers/Bebop —
-//! none of which dedup repeated string values, so they scale linearly with
-//! element count regardless of how few distinct strings are actually present.
-//!
-//! `pojoc (plain)` re-encodes the identical data through a non-interned
-//! `[string]` field in the same schema, isolating interning's contribution
-//! from pojoc's general wire-format overhead.
-
+// other formats don't dedup repeated strings, so they scale linearly with
+// element count no matter how few distinct strings are actually present
 use bebop::Record;
 use flatbuffers::FlatBufferBuilder;
 use pojoc_tests::{
@@ -44,8 +36,7 @@ fn pool_cycle() -> Vec<&'static str> {
 fn main() {
     let values = pool_cycle();
 
-    // Only `tags` (interned) populated — `tags_plain` stays empty so its
-    // own (near-zero) wire cost doesn't get counted into this measurement.
+    // tags_plain stays empty so it doesn't add its own wire cost here
     let interned_only = InternBench {
         tags: PojocVec::from_vec(values.clone()),
         tags_plain: PojocVec::new(),
@@ -53,8 +44,7 @@ fn main() {
     let mut pojoc_interned_buf = Vec::new();
     pojoc_intern_bench::encode(&mut pojoc_interned_buf, &interned_only);
 
-    // Same data through the non-interned `[string]` field instead — isolates
-    // interning's own contribution from pojoc's general wire-format overhead.
+    // same data through the non-interned field, isolates interning's own cost
     let plain_only = InternBench {
         tags: PojocVec::new(),
         tags_plain: PojocVec::from_vec(values.clone()),
