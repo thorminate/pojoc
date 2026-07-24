@@ -24,14 +24,13 @@ attacker can recover *that* seed — which requires sustained interaction with
 one running process (e.g. a timing side-channel), not a one-shot crafted
 payload.
 
-`PojocHasher` is [`foldhash::fast::RandomState`] by default (the `foldhash`
-crate feature, on by default). `foldhash` is not a cryptographic hash and
-carries no formal collision-resistance proof; it trades that for being
-materially cheaper per hash than SipHash. That's a fine tradeoff for the
-threat model above. It would not be a fine tradeoff somewhere an attacker
-gets sustained oracle access to a single long-lived process and seed
-recovery over time becomes plausible — if either map ever sits behind that
-kind of exposure, disable the `foldhash` feature, which falls `PojocHasher`
-back to std's SipHash-based `RandomState`.
+`PojocHasher` is [`foldhash::fast::RandomState`] by default. `foldhash` is not
+a cryptographic hash and carries no formal collision-resistance proof; it
+trades that for being materially cheaper per hash than SipHash. That's a fine
+tradeoff for the threat model above. It would not be a fine tradeoff
+somewhere an attacker gets sustained oracle access to a single long-lived
+process and seed recovery over time becomes plausible — if either map ever
+sits behind that kind of exposure, enable the `secure-hasher` feature, which
+switches `PojocHasher` to std's SipHash-based `RandomState`.
 
 [`foldhash::fast::RandomState`]: https://docs.rs/foldhash/latest/foldhash/fast/type.RandomState.html

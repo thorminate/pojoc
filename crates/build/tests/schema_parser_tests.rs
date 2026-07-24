@@ -288,6 +288,21 @@ schema Player {
 }
 
 #[test]
+fn rejects_diff_on_first_version() {
+    let input = r#"
+schema Player {
+  version 1 {
+    diff {
+      + field: string
+    }
+  }
+}
+"#;
+
+    assert!(parse_schema(input).is_err());
+}
+
+#[test]
 fn parses_extends_on_type() {
     let ast = parse_schema(SAMPLE_SCHEMA).unwrap();
     let v3 = &ast.versions[2];
@@ -693,7 +708,11 @@ schema Test {
       + other: B?
     }
     diff {
-      ~ m: Pair<i32, string>
+      // each version pins its own field to the generic instantiation it cares
+      // about rather than retyping `m` in place — a struct field can't be
+      // retyped across an incompatible shape (see edge.pojoc's
+      // generic_mono_v3/generic_duo_v4/generic_mono_v5 for the same pattern)
+      + p: Pair<i32, string>
     }
   }
   version 3 {
@@ -701,7 +720,7 @@ schema Test {
       - other
     }
     diff {
-      ~ m: Mono<i32>
+      + q: Mono<i32>
     }
   }
 }
@@ -1128,10 +1147,13 @@ fn parses_doc_comments_on_diff_add_ops() {
         .expect("Action union extension not found");
     match action {
         UnionDefAst::Extension { ops, .. } => {
-            let UnionVariantOpAst::Add { doc, .. } = ops
+            let found = ops
                 .iter()
                 .find(|op| matches!(op, UnionVariantOpAst::Add { name, .. } if name == "Jump"))
                 .unwrap();
+            let UnionVariantOpAst::Add { doc, .. } = found else {
+                unreachable!("filtered to Add above")
+            };
             assert_eq!(doc, &vec!["Newly added union variant doc.".to_string()]);
         }
         UnionDefAst::Definition { .. } => panic!("expected Extension"),
@@ -1309,4 +1331,603 @@ schema Test {
 "#;
     let ast = parse_schema(src).unwrap();
     assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_to_unrelated_struct() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type StatsA { hp: i32 = 0 }
+    type StatsB { name: string = "x" }
+    fields {
+      stats: StatsA
+    }
+  }
+  version 2 {
+    diff {
+      ~ stats: StatsB
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn allows_retype_to_later_version_of_same_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Stats { hp: i32 = 0 }
+    fields {
+      stats: Stats
+    }
+  }
+  version 2 {
+    type Stats extends Stats@1 { + luck: i32 = 0 }
+    diff {
+      ~ stats: Stats
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+// regression tests: retyping between numeric primitives (any width/signedness,
+// including varint) always compiles via a plain `as` cast, so the analyzer
+// should accept all of it. `bool` and `string`, on the other hand, have no
+// sound `as` cast to/from anything else — Rust flatly rejects `u8 as bool` and
+// `&str as i32` — so retyping to/from either used to slip past analysis and
+// only fail in the *consuming* crate's build with a raw rustc error pointing
+// into pojoc-generated code, not a rendered schema error.
+#[test]
+fn allows_retype_between_numeric_primitives() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      a: u8 = 0
+      b: i64 = 0
+      c: varint32 = 0
+    }
+  }
+  version 2 {
+    diff {
+      ~ a: i32
+      ~ b: u8
+      ~ c: varint64
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+#[test]
+fn rejects_retype_between_bool_and_numeric() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      x: bool = false
+    }
+  }
+  version 2 {
+    diff {
+      ~ x: i32
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_between_string_and_numeric() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      x: string = "hi"
+    }
+  }
+  version 2 {
+    diff {
+      ~ x: i32
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_between_bool_and_string() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields {
+      x: bool = false
+    }
+  }
+  version 2 {
+    diff {
+      ~ x: string
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+// regression test: a primitive scalar retyped to an unrelated struct type
+// used to pass analysis (the old check only looked at whether *either* side
+// was primitive, not whether the primitive side had any sound cast at all)
+// and then panic during codegen instead of erroring during analysis.
+#[test]
+fn rejects_retype_from_primitive_to_unrelated_struct() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Stats { hp: i32 = 0 }
+    fields {
+      x: string = "hi"
+    }
+  }
+  version 2 {
+    diff {
+      ~ x: Stats
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+// regression tests: `check_type_update` used to bail out immediately for any
+// pairing that wasn't (Scalar, Scalar) — meaning arrays, maps, tuples, fixed
+// strings, and enums could be retyped into any other shape with zero
+// validation, relying entirely on emit_cast_value's catch-all (which just
+// reads the old value and treats it as the new type with no conversion) to
+// either accidentally type-check or blow up in the *consuming* crate's build.
+#[test]
+fn rejects_retype_between_variable_array_and_map() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: [i32] = [] }
+  }
+  version 2 {
+    diff { ~ x: map<i32, i32> }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_with_tuple_arity_mismatch() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: (i32, i32) = (0, 0) }
+  }
+  version 2 {
+    diff { ~ x: (i32, i32, i32) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_with_tuple_element_type_change() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: (i32, string) = (0, "") }
+  }
+  version 2 {
+    diff { ~ x: (bool, string) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_between_string_and_fixed_string() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: string = "hi" }
+  }
+  version 2 {
+    diff { ~ x: string(8) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_between_unrelated_enums() {
+    let src = r#"
+schema Test {
+  version 1 {
+    enum StatusA { Alive, Dead }
+    enum StatusB { On, Off }
+    fields { x: StatusA = StatusA::Alive }
+  }
+  version 2 {
+    diff { ~ x: StatusB }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_changing_fixed_map_value_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: map<string, i32>(3) = {"a": 1, "b": 2, "c": 3} }
+  }
+  version 2 {
+    diff { ~ x: map<string, i64>(3) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_retype_changing_fixed_array_element_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: [i32](3) = [1, 2, 3] }
+  }
+  version 2 {
+    diff { ~ x: [i64](3) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn rejects_fixed_array_to_map_with_wrong_key_or_value_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: [string](3) = ["a", "b", "c"] }
+  }
+  version 2 {
+    diff { ~ x: map<i32, i32> }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn allows_fixed_array_to_map_with_i32_key_and_matching_value_type() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: [string](3) = ["a", "b", "c"] }
+  }
+  version 2 {
+    diff { ~ x: map<i32, string> }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+#[test]
+fn allows_fixed_map_size_only_change() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: map<string, i32>(3) = {"a": 1, "b": 2, "c": 3} }
+  }
+  version 2 {
+    diff { ~ x: map<string, i32>(5) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+// `[T]` and `[T](delta)` both render as the same PojocVec<T>, differing only
+// in wire encoding, so retyping between them is a sound no-op cast.
+#[test]
+fn allows_retype_between_array_and_delta_array() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: [i32] = [] }
+  }
+  version 2 {
+    diff { ~ x: [i32](delta) }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+// a `lazy` field stores raw wire bytes and defers to whatever the *current*
+// schema's decode function expects when actually read — it never goes
+// through emit_cast_value, so the old/new shape-compatibility rule above
+// doesn't apply to it at all, even for shapes that'd otherwise be rejected.
+#[test]
+fn allows_lazy_field_retype_to_incompatible_shape() {
+    let src = r#"
+schema Test {
+  version 1 {
+    fields { x: lazy [u8] = [] }
+  }
+  version 2 {
+    diff { ~ x: lazy [(u64, [u8])] }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+#[test]
+fn allows_union_variant_rename() {
+    let src = r#"
+schema Test {
+  version 1 {
+    union Payload {
+      Move: i32,
+    }
+    fields {
+      p: Payload
+    }
+  }
+  version 2 {
+    union Payload extends Payload@1 {
+      ~ Move -> Walk
+    }
+    diff {}
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let resolved = analyze_schema(&ast).unwrap();
+    let latest = resolved
+        .unions
+        .unions
+        .iter()
+        .filter(|(id, _)| id.name == "Payload")
+        .max_by_key(|(id, _)| id.version)
+        .unwrap()
+        .1;
+    assert_eq!(latest.variants.len(), 1);
+    assert_eq!(latest.variants[0].name, "Walk");
+    assert_eq!(latest.variants[0].discriminant, 0);
+}
+
+#[test]
+fn rejects_union_variant_rename_of_unknown_variant() {
+    let src = r#"
+schema Test {
+  version 1 {
+    union Payload {
+      Move: i32,
+    }
+    fields {
+      p: Payload
+    }
+  }
+  version 2 {
+    union Payload extends Payload@1 {
+      ~ Nonexistent -> Walk
+    }
+    diff {}
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_err());
+}
+
+#[test]
+fn accepts_borrowed_string_union_payload() {
+    let src = r#"
+schema Test {
+  version 1 {
+    union Payload {
+      Move: string,
+    }
+    fields {
+      p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+#[test]
+fn accepts_borrowed_string_union_payload_via_nested_struct() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Msg { text: string = "" }
+    union Payload {
+      Move: Msg,
+    }
+    fields {
+      p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    assert!(analyze_schema(&ast).is_ok());
+}
+
+// regression test: a union variant whose payload is a struct holding a `lazy`
+// field used to reach codegen and panic there (a raw Rust assert, not a
+// rendered schema error). Now generalized nested-type lazy support in
+// emit_type_readers (crates/build/src/codegen/decode.rs) makes this analyze
+// and generate cleanly.
+#[test]
+fn allows_lazy_field_inside_union_payload() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Msg {
+      blob: lazy [u8] = []
+    }
+    union Payload {
+      Move: Msg,
+    }
+    fields {
+      p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let resolved = analyze_schema(&ast).expect("analyze failed");
+    pojoc_build::codegen::generate(&resolved);
+}
+
+#[test]
+fn allows_lazy_field_inside_union_payload_added_via_extends() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Msg {
+      blob: lazy [u8] = []
+    }
+    union Payload {
+      Num: i32,
+    }
+    fields {
+      p: Payload
+    }
+  }
+  version 2 {
+    union Payload extends Payload@1 {
+      + Move: Msg
+    }
+    diff {
+      ~ p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let resolved = analyze_schema(&ast).expect("analyze failed");
+    pojoc_build::codegen::generate(&resolved);
+}
+
+// regression test: a union variant whose payload is (or transitively
+// contains) an `intern`-marked field used to be rejected outright at
+// analysis time, since union read_*/write_* functions never threaded the
+// intern-table parameter structs get. compute_intern_infected/
+// emit_union_readers/emit_union_writers (crates/build/src/codegen) now cover
+// unions the same way structs always have.
+#[test]
+fn allows_interned_field_directly_as_union_payload() {
+    let src = r#"
+schema Test {
+  version 1 {
+    union Payload {
+      Move: intern string,
+    }
+    fields {
+      p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let resolved = analyze_schema(&ast).expect("analyze failed");
+    // smoke test: codegen must not panic on a bare interned union payload
+    pojoc_build::codegen::generate(&resolved);
+}
+
+#[test]
+fn allows_interned_field_inside_union_payload_struct() {
+    let src = r#"
+schema Test {
+  version 1 {
+    type Msg {
+      label: intern string = ""
+    }
+    union Payload {
+      Move: Msg,
+    }
+    fields {
+      p: Payload
+    }
+  }
+}
+"#;
+    let ast = parse_schema(src).unwrap();
+    let resolved = analyze_schema(&ast).expect("analyze failed");
+    // smoke test: codegen must not panic on an intern-infected union payload
+    pojoc_build::codegen::generate(&resolved);
+}
+
+#[test]
+fn rejects_import_before_schema_keyword() {
+    let src = r#"
+import "b.pojoc" as B
+schema A {
+  version 1 {
+    fields { b: i32 }
+  }
+}
+"#;
+    let err = parse_schema(src).unwrap_err();
+    assert!(err.to_string().contains("schema { }"));
+}
+
+#[test]
+fn duplicate_field_name_message_is_not_wrapped_as_syntax_error() {
+    let src = r#"
+schema Dup {
+  version 1 {
+    fields {
+      a: i32
+      a: i32
+    }
+  }
+}
+"#;
+    let err = parse_schema(src).unwrap_err();
+    assert!(err.to_string().contains("field 'a' is defined twice"));
+    assert!(!err.to_string().contains("invalid syntax"));
 }

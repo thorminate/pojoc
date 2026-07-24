@@ -491,12 +491,7 @@ impl<'a> SchemaAnalyzer<'a> {
             for block in &version.blocks {
                 if let VersionBlockAst::UnionDef(ud) = block {
                     let resolved = match ud {
-                        UnionDefAst::Definition {
-                            name: _,
-                            variants,
-                            doc,
-                            ..
-                        } => ResolvedUnion {
+                        UnionDefAst::Definition { variants, doc, .. } => ResolvedUnion {
                             variants: self.resolve_union_variants(variants, version.version)?,
                             doc: doc.clone(),
                         },
@@ -573,6 +568,26 @@ impl<'a> SchemaAnalyzer<'a> {
                                             discriminant,
                                             doc: variant_doc.clone(),
                                         });
+                                    }
+
+                                    UnionVariantOpAst::Rename {
+                                        from,
+                                        to,
+                                        span,
+                                        line,
+                                    } => {
+                                        let v = variants
+                                            .iter_mut()
+                                            .find(|v| v.name == *from)
+                                            .ok_or_else(|| AnalysisError::FieldNotFound {
+                                                op: "rename",
+                                                field: from.clone(),
+                                                type_name: name.clone(),
+                                                version: version.version,
+                                                span: *span,
+                                                line: *line,
+                                            })?;
+                                        v.name = to.clone();
                                     }
                                 }
                             }
@@ -1253,9 +1268,14 @@ impl<'a> SchemaAnalyzer<'a> {
                 } => {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *name) {
                         let new_ty = self.resolve(ty, version, *span, *line, &HashMap::new())?;
-                        check_type_update(&f.ty, &new_ty, version)?;
+                        // lazy fields never go through emit_cast_value, so the shape check doesn't apply.
+                        if !*lazy {
+                            check_type_update(&f.ty, &new_ty, name, version, *span, *line)?;
+                        }
                         f.ty = new_ty;
                         f.lazy = *lazy;
+                        // no syntax to supply a new default on retype, so fall back to the type's zero value.
+                        f.default = None;
                     }
                 }
 
@@ -1270,7 +1290,14 @@ impl<'a> SchemaAnalyzer<'a> {
                     if let Some(f) = ctx.fields.iter_mut().find(|f| f.name == *from) {
                         f.name = to.clone();
                         if let Some(ty) = ty {
-                            f.ty = self.resolve(ty, version, *span, *line, &HashMap::new())?;
+                            let new_ty =
+                                self.resolve(ty, version, *span, *line, &HashMap::new())?;
+                            // see UpdateType above
+                            if !*lazy {
+                                check_type_update(&f.ty, &new_ty, to, version, *span, *line)?;
+                            }
+                            f.ty = new_ty;
+                            f.default = None;
                         }
                         f.lazy = *lazy;
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
@@ -1608,7 +1635,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 Ok(DefaultValue::Float(as_f64))
             }
 
-            ResolvedTypeRef::Enum(type_id) => match value {
+            ResolvedTypeRef::Enum(type_id, _) => match value {
                 DefaultValue::EnumVariant { ty_name, variant } => {
                     if ty_name != type_id.name {
                         return Err(AnalysisError::TypeMismatch {
@@ -1743,8 +1770,8 @@ impl<'a> SchemaAnalyzer<'a> {
                     return Ok(ResolvedTypeRef::Bitset(id.clone(), bs.byte_width()));
                 }
 
-                if let Some((id, _)) = self.enum_registry.latest_before(name, version + 1) {
-                    return Ok(ResolvedTypeRef::Enum(id.clone()));
+                if let Some((id, e)) = self.enum_registry.latest_before(name, version + 1) {
+                    return Ok(ResolvedTypeRef::Enum(id.clone(), e.byte_width()));
                 }
 
                 if let Some((id, _)) = self.union_registry.latest_before(name, version + 1) {
@@ -2287,13 +2314,92 @@ fn resolve_const(field: &ConstFieldAst, version: i128) -> Result<ResolvedConst, 
 }
 
 #[allow(clippy::result_large_err)]
+/// rejects a field retype with no sound cast (see `retype_is_supported`)
+/// instead of letting it reach codegen and fail to compile.
 fn check_type_update(
-    _old_ty: &ResolvedTypeRef,
-    _new_ty: &ResolvedTypeRef,
-    _version: i128,
+    old_ty: &ResolvedTypeRef,
+    new_ty: &ResolvedTypeRef,
+    field_name: &str,
+    version: i128,
+    span: Span,
+    line: u32,
 ) -> Result<(), AnalysisError> {
-    // TODO: validate the cast is sound, doesn't error today so no span threaded yet
-    Ok(())
+    if retype_is_supported(old_ty, new_ty) {
+        return Ok(());
+    }
+
+    // best-effort labels: exact names only for scalars, a shape description otherwise.
+    let type_label = |ty: &ResolvedTypeRef| match ty {
+        ResolvedTypeRef::Scalar(id) => id.name.clone(),
+        other => mangle_type_ref(other),
+    };
+    Err(AnalysisError::IncompatibleStructRetype {
+        field: field_name.to_string(),
+        old_type: type_label(old_ty),
+        new_type: type_label(new_ty),
+        version,
+        span,
+        line,
+    })
+}
+
+// `bool`/`string` have no sound `as` cast; every other primitive pairing does.
+fn numeric_cast_ok(name: &str) -> bool {
+    is_primitive(name) && !matches!(normalize_type(name), "string" | "bool")
+}
+
+/// true if retyping a field from `old_ty` to `new_ty` has a sound cast in
+/// `emit_cast_value` (crates/build/src/codegen/decode.rs) — keep in sync with
+/// what that function actually implements.
+fn retype_is_supported(old_ty: &ResolvedTypeRef, new_ty: &ResolvedTypeRef) -> bool {
+    use ResolvedTypeRef::*;
+
+    // wrapper peeling, mirroring emit_cast_value's own Optional/Boxed arms
+    match (old_ty, new_ty) {
+        (Optional(o), Optional(n)) => return retype_is_supported(o, n),
+        (o, Optional(n)) if !matches!(o, Optional(_)) => return retype_is_supported(o, n),
+        (Optional(o), n) if !matches!(n, Optional(_)) => return retype_is_supported(o, n),
+        (Boxed(o), Boxed(n)) => return retype_is_supported(o, n),
+        (o, Boxed(n)) if !matches!(o, Boxed(_)) => return retype_is_supported(o, n),
+        (Boxed(o), n) if !matches!(n, Boxed(_)) => return retype_is_supported(o, n),
+        _ => {}
+    }
+
+    match (old_ty, new_ty) {
+        (Scalar(f), Scalar(t)) => {
+            f.name == t.name || (numeric_cast_ok(&f.name) && numeric_cast_ok(&t.name))
+        }
+
+        // fixed-size string: byte-copy truncate/pad, any N to any N
+        (FixedString(_), FixedString(_)) => true,
+
+        // fixed-size map: only the entry count may change, key/value types must match
+        (FixedMap(fk, fv, _), FixedMap(tk, tv, _)) => {
+            same_rust_type(fk, tk) && same_rust_type(fv, tv)
+        }
+
+        // fixed array -> variable map: keys become 0..N as i32
+        (FixedArray(from_elem, _), Map(to_k, to_v)) => {
+            matches!(to_k.as_ref(), Scalar(id) if id.name == "i32")
+                && same_rust_type(from_elem, to_v)
+        }
+
+        // bitset -> primitive scalar: packs the flag bytes into an integer
+        (Bitset(..), Scalar(t)) => numeric_cast_ok(&t.name),
+
+        // fixed-size delta array: only the element count may change
+        (FixedDeltaArray(fe, _), FixedDeltaArray(te, _)) => same_rust_type(fe, te),
+
+        // everything else falls back to reading the old value as the new type
+        // with zero conversion — only sound if it's literally the same Rust type.
+        _ => same_rust_type(old_ty, new_ty),
+    }
+}
+
+/// true if `a` and `b` render to the identical generated Rust type (not
+/// necessarily structural/wire-format equality, e.g. `[T]` vs `[T](delta)`).
+fn same_rust_type(a: &ResolvedTypeRef, b: &ResolvedTypeRef) -> bool {
+    type_info(a).rust_type == type_info(b).rust_type
 }
 
 /// applies a child type def's diff ops to an inherited field/const list at the
@@ -2408,6 +2514,9 @@ fn apply_template_diff_ops(
                     f.lazy = *lazy;
                     f.span = *span;
                     f.line = *line;
+                    // see the root-fields UpdateType handling above: a retype
+                    // invalidates any stale default
+                    f.default = TemplateDefault::Literal(None);
                 } else if consts.iter().any(|c| c.name == *name) {
                 } else {
                     return Err(AnalysisError::FieldNotFound {
@@ -2435,6 +2544,8 @@ fn apply_template_diff_ops(
                         f.ty = ty.clone();
                         f.span = *span;
                         f.line = *line;
+                        // see UpdateType above: a retype invalidates any stale default
+                        f.default = TemplateDefault::Literal(None);
                     }
                     f.lazy = *lazy;
                 } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
@@ -2615,7 +2726,7 @@ fn mangle_type_ref(ty: &ResolvedTypeRef) -> String {
 
     match ty {
         ResolvedTypeRef::Scalar(id) => pascalize(&id.name),
-        ResolvedTypeRef::Enum(id) => id.name.clone(),
+        ResolvedTypeRef::Enum(id, _) => id.name.clone(),
         ResolvedTypeRef::Union(id) => id.name.clone(),
         ResolvedTypeRef::Bitset(id, _) => id.name.clone(),
         ResolvedTypeRef::Array(inner) => format!("{}Array", mangle_type_ref(inner)),

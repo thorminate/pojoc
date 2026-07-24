@@ -1,5 +1,5 @@
 use heck::ToSnakeCase;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 thread_local! {
@@ -16,6 +16,36 @@ thread_local! {
     // mirrors INFECTED; an infected type's write_*/read_* gains an extra
     // __interner/__table param threading the shared string table.
     static INTERN_INFECTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+
+    // unlike INTERN_INFECTED (blanket by name, fine for named structs which
+    // only ever have one nested read_foo/write_foo), a union gets one codec
+    // function *per resolved version* (read_foo_vN/write_foo_vN), each frozen
+    // at that version's own variant set — so whether a specific version's
+    // codec needs the intern-table param is tracked per TypeId (name+version),
+    // not by name alone. Mirrors the "don't retroactively add a table to an
+    // old wire version" precision version_uses_intern already has for the
+    // root schema. This is the *read* side's criterion: read_foo_vN only ever
+    // needs to decode discriminants that version's own historical variant set
+    // could have produced.
+    static UNION_INTERN_INFECTED: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
+
+    // the *write* side's criterion, a distinct (usually larger) set from
+    // UNION_INTERN_INFECTED's read side: because the generated Rust enum only
+    // has one (latest) shape, write_foo_vN's match is exhaustive over the
+    // *latest* variant set (falling back to DiscriminantOverflow for variants
+    // whose discriminant doesn't fit this version's frozen width) — so it
+    // needs the table if any variant it can actually still encode (latest,
+    // width-filtered) uses intern, not just the ones this version originally
+    // declared.
+    static UNION_WRITE_INTERN_INFECTED: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
+
+    // whether to emit Serialize/Deserialize derives/impls in generated code.
+    // defaults to pojoc-build's own "serde" cargo feature (matching build.rs
+    // consumers, who control it that way) but callers that generate code at
+    // runtime for varying consumers — namely pojoc-cli — can override it per
+    // call with set_emit_serde() instead of needing a separate compile of
+    // pojoc-build per desired setting.
+    static EMIT_SERDE: Cell<bool> = const { Cell::new(cfg!(feature = "serde")) };
 }
 
 pub fn set_infected(names: HashSet<String>) -> HashSet<String> {
@@ -40,6 +70,33 @@ pub fn set_intern_infected(names: HashSet<String>) -> HashSet<String> {
 
 pub fn is_intern_infected(name: &str) -> bool {
     INTERN_INFECTED.with(|c| c.borrow().contains(name))
+}
+
+pub fn set_union_intern_infected(ids: HashSet<TypeId>) -> HashSet<TypeId> {
+    UNION_INTERN_INFECTED.with(|c| c.replace(ids))
+}
+
+pub fn is_union_intern_infected(id: &TypeId) -> bool {
+    UNION_INTERN_INFECTED.with(|c| c.borrow().contains(id))
+}
+
+pub fn set_union_write_intern_infected(ids: HashSet<TypeId>) -> HashSet<TypeId> {
+    UNION_WRITE_INTERN_INFECTED.with(|c| c.replace(ids))
+}
+
+pub fn is_union_write_intern_infected(id: &TypeId) -> bool {
+    UNION_WRITE_INTERN_INFECTED.with(|c| c.borrow().contains(id))
+}
+
+/// Overrides whether generated code emits Serialize/Deserialize, returning
+/// the previous value so callers can restore it afterward. Defaults to
+/// pojoc-build's own "serde" cargo feature until set.
+pub fn set_emit_serde(value: bool) -> bool {
+    EMIT_SERDE.with(|c| c.replace(value))
+}
+
+pub fn emit_serde() -> bool {
+    EMIT_SERDE.with(|c| c.get())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -84,7 +141,8 @@ impl VFloatBacking {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedTypeRef {
     Scalar(TypeId),
-    Enum(TypeId),
+    // wire discriminant width in bytes (1/2/4), see ResolvedEnum::byte_width
+    Enum(TypeId, u8),
     Bitset(TypeId, u8),
     Union(TypeId),
     Array(Box<ResolvedTypeRef>),
@@ -128,7 +186,7 @@ impl ResolvedTypeRef {
     pub fn type_id(&self) -> Option<&TypeId> {
         match self {
             ResolvedTypeRef::Scalar(id) => Option::from(id),
-            ResolvedTypeRef::Enum(id) => Some(id),
+            ResolvedTypeRef::Enum(id, _) => Some(id),
             ResolvedTypeRef::Union(id) => Some(id),
             ResolvedTypeRef::Bitset(id, _) => Some(id),
             ResolvedTypeRef::Array(id) => id.type_id(),
@@ -236,29 +294,48 @@ impl TypeInfo {
     }
 }
 
+// (rust integer type, read fn, write fn) for a 1/2/4-byte discriminant width.
+pub(crate) fn width_prim_names(width: u8) -> (&'static str, &'static str, &'static str) {
+    match width {
+        1 => ("u8", "read_u8", "write_u8"),
+        2 => ("u16", "read_u16", "write_u16"),
+        _ => ("u32", "read_u32", "write_u32"),
+    }
+}
+
 pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
     match ty {
         ResolvedTypeRef::Scalar(id) => scalar_info(&id.name),
 
-        ResolvedTypeRef::Enum(id) => TypeInfo {
-            wire_size: WireSize::Variable,
-            rust_type: id.name.clone(),
-            skip_stmt: "{ let _ = read_varint32(__buf, __pos)?; }".into(),
-            read_fn: format!("read_enum::<{}>", id.name),
-            write_fn: "encode_varint".into(),
-            default_expr: format!("{}::default()", id.name),
-            size_fn: None,
-        },
+        ResolvedTypeRef::Enum(id, width) => {
+            let (_, read_prim, write_prim) = width_prim_names(*width);
+            TypeInfo {
+                wire_size: WireSize::Fixed(*width as usize),
+                rust_type: id.name.clone(),
+                skip_stmt: format!("let _ = {read_prim}(__buf, __pos)?;"),
+                read_fn: read_prim.into(),
+                write_fn: write_prim.into(),
+                default_expr: format!("{}::default()", id.name),
+                size_fn: None,
+            }
+        }
 
         ResolvedTypeRef::Union(id) => {
-            let lower = id.name.to_snake_case();
+            // one codec per resolved union version; the TypeId's version picks which.
+            let lower = format!("{}_v{}", id.name.to_snake_case(), id.version);
+            // helper fn names stay lifetime-free; the lifetime is inferred at the call site
+            let rust_type = if is_infected(&id.name) {
+                format!("{}<'buf>", id.name)
+            } else {
+                id.name.clone()
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
-                rust_type: id.name.clone(),
+                rust_type,
                 skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
-                default_expr: format!("{}::default()", id.name),
+                default_expr: "Default::default()".into(),
                 size_fn: None,
             }
         }
@@ -387,7 +464,10 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 skip_stmt: format!("for _ in 0..{n} {{ {} {} }}", ki.skip_stmt, vi.skip_stmt),
                 read_fn: format!("read_fixed_map::<{n}>"),
                 write_fn: format!("write_fixed_map::<{n}>"),
-                default_expr: "PojocFixedMap::new()".into(),
+                // a fixed map must always carry exactly N entries on the wire;
+                // ::new() would give 0, so use the Default impl that pre-fills
+                // N zero-valued (K::default(), V::default()) pairs instead
+                default_expr: "Default::default()".into(),
                 size_fn: None,
             }
         }
@@ -470,6 +550,15 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Boxed(inner) => {
             let i = type_info(inner);
+            // clippy's box_default lint wants `Box::default()` over
+            // `Box::new(X::default())` — sound whenever the inner default is
+            // itself a bare `X::default()` call, since Box<T> is Default for
+            // any T: Default via std's blanket impl regardless of T's size.
+            let default_expr = if i.default_expr.ends_with("::default()") {
+                "Box::default()".to_string()
+            } else {
+                format!("Box::new({})", i.default_expr)
+            };
             TypeInfo {
                 // heap indirection doesn't change the wire bytes, only the in-memory field
                 wire_size: i.wire_size,
@@ -477,7 +566,7 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
                 skip_stmt: i.skip_stmt.clone(),
                 read_fn: "/* boxed expressions are handled inline */".into(),
                 write_fn: "/* boxed expressions are handled inline */".into(),
-                default_expr: format!("Box::new({})", i.default_expr),
+                default_expr,
                 size_fn: None,
             }
         }
@@ -639,6 +728,21 @@ pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
         _ => false,
     }
+}
+
+// true if `ty` reaches an Enum through a FixedArray boundary — its unchecked
+// read builds elements via a closure that can't propagate Enum's fallible `?`.
+pub fn contains_enum_under_closure(ty: &ResolvedTypeRef) -> bool {
+    fn go(ty: &ResolvedTypeRef, under_closure: bool) -> bool {
+        match ty {
+            ResolvedTypeRef::Enum(..) => under_closure,
+            ResolvedTypeRef::FixedArray(inner, _) => go(inner, true),
+            ResolvedTypeRef::Tuple(elems) => elems.iter().any(|e| go(e, under_closure)),
+            ResolvedTypeRef::Constrained { inner, .. } => go(inner, under_closure),
+            _ => false,
+        }
+    }
+    go(ty, false)
 }
 
 pub fn contains_interned(ty: &ResolvedTypeRef) -> bool {

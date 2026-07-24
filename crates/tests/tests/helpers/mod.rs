@@ -346,7 +346,7 @@ pub fn assert_deep_complex_wrapper_eq<'buf>(
 }
 
 // generated union/struct types don't derive PartialEq, so compare by explicit variant match
-pub fn assert_payload_eq(a: &Payload, b: &Payload) {
+pub fn assert_payload_eq(a: &Payload<'_>, b: &Payload<'_>) {
     match (a, b) {
         (Payload::Move(x), Payload::Move(y)) => {
             assert_eq!(x.dx, y.dx);
@@ -363,6 +363,19 @@ pub fn assert_payload_eq(a: &Payload, b: &Payload) {
         }
         (Payload::Despawn(x), Payload::Despawn(y)) => {
             assert_eq!(x.entity_id, y.entity_id);
+        }
+        (Payload::Message(x), Payload::Message(y)) => {
+            assert_eq!(x, y);
+        }
+        (Payload::Bounded(x), Payload::Bounded(y)) => {
+            assert_eq!(x, y);
+        }
+        (Payload::BoundedStruct(x), Payload::BoundedStruct(y)) => {
+            assert_eq!(x.value, y.value);
+        }
+        (Payload::Rich(x), Payload::Rich(y)) => {
+            assert_eq!(x.note, y.note);
+            assert_eq!(x.blob.clone().get().unwrap(), y.blob.clone().get().unwrap());
         }
         (
             Payload::Unknown {

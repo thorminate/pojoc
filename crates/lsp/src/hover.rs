@@ -338,10 +338,8 @@ fn render_const_value(value: &DefaultValue) -> String {
 
 fn render_type_ref(ty: &ResolvedTypeRef) -> String {
     match ty {
-        ResolvedTypeRef::Scalar(id) | ResolvedTypeRef::Enum(id) | ResolvedTypeRef::Union(id) => {
-            id.name.clone()
-        }
-        ResolvedTypeRef::Bitset(id, _) => id.name.clone(),
+        ResolvedTypeRef::Scalar(id) | ResolvedTypeRef::Union(id) => id.name.clone(),
+        ResolvedTypeRef::Enum(id, _) | ResolvedTypeRef::Bitset(id, _) => id.name.clone(),
         ResolvedTypeRef::Array(inner) => format!("[{}]", render_type_ref(inner)),
         ResolvedTypeRef::FixedArray(inner, n) => format!("[{}]({n})", render_type_ref(inner)),
         ResolvedTypeRef::DeltaArray(inner) => format!("[{}](delta)", render_type_ref(inner)),

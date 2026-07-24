@@ -18,8 +18,8 @@ fn roundtrip_bool() {
     write_bool(&mut buf, true);
     write_bool(&mut buf, false);
     let mut pos = 0;
-    assert_eq!(read_bool(&buf, &mut pos).unwrap(), true);
-    assert_eq!(read_bool(&buf, &mut pos).unwrap(), false);
+    assert!(read_bool(&buf, &mut pos).unwrap());
+    assert!(!read_bool(&buf, &mut pos).unwrap());
 }
 
 #[test]

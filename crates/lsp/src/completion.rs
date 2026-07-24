@@ -314,6 +314,14 @@ fn apply_union(idx: &mut SchemaIndex, u: &UnionDefAst) {
                         idx.variant_docs
                             .insert((name.clone(), n.clone()), vdoc.clone());
                     }
+                    UnionVariantOpAst::Rename { from, to, .. } => {
+                        if let Some(slot) = list.iter_mut().find(|v| *v == from) {
+                            *slot = to.clone();
+                        }
+                        if let Some(d) = idx.variant_docs.remove(&(name.clone(), from.clone())) {
+                            idx.variant_docs.insert((name.clone(), to.clone()), d);
+                        }
+                    }
                 }
             }
         }

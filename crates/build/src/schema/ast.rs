@@ -216,6 +216,12 @@ pub enum UnionVariantOpAst {
         span: Span,
         line: u32,
     },
+    Rename {
+        from: String,
+        to: String,
+        span: Span,
+        line: u32,
+    },
 }
 
 #[derive(Debug, Clone)]

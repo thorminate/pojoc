@@ -296,6 +296,7 @@ fn handle_text_update(
                 }
                 None => Err(SchemaError::Analysis(AnalysisError::ImportNotFound {
                     path: "<unsaved document>".to_string(),
+                    is_root: false,
                     origin: PathBuf::from("<unsaved document>"),
                     span: ast.span,
                     line: ast.line,

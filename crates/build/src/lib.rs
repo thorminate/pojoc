@@ -17,6 +17,11 @@ pub mod core;
 #[doc(hidden)]
 pub mod schema;
 
+/// Overrides whether generated code emits `Serialize`/`Deserialize`, for
+/// callers that decide this per invocation rather than via the `serde` cargo
+/// feature. Returns the previous value.
+pub use core::types::set_emit_serde;
+
 use std::io;
 use std::path::{Path, PathBuf};
 
