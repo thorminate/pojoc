@@ -13,4 +13,5 @@ pub use import_orchestrator::*;
 pub use ir::*;
 pub use lexer::*;
 pub use parser::*;
+pub use render::*;
 pub use span::*;

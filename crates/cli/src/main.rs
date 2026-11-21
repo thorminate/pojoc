@@ -86,7 +86,7 @@ fn render_error(err: &AnalysisError, root: &Path) {
 /// imported schemas', each rendered against its own file.
 fn render_warnings(schema: &ResolvedSchema, root: &Path) {
     for (w, path) in schema.warnings_recursive(root) {
-        eprint!("{}", w.render(&path));
+        eprint!("{}", w.render(path));
     }
 }
 

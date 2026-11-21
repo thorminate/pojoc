@@ -69,60 +69,6 @@ struct PendingGeneric {
     found_version: i128,
 }
 
-/// whether a type reaches the shared intern table, following named struct and
-/// union types into their fields — `contains_interned` only walks the type's own
-/// structure, so it misses a struct whose *fields* are interned. `box` allows
-/// cycles, hence the visited set.
-fn reaches_interned(
-    ty: &ResolvedTypeRef,
-    types: &TypeRegistry,
-    unions: &UnionRegistry,
-    visited: &mut HashSet<TypeId>,
-) -> bool {
-    match ty {
-        ResolvedTypeRef::Interned(_) => true,
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::DeltaArray(inner)
-        | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. } => {
-            reaches_interned(inner, types, unions, visited)
-        }
-        ResolvedTypeRef::Tuple(elems) => elems
-            .iter()
-            .any(|e| reaches_interned(e, types, unions, visited)),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            reaches_interned(k, types, unions, visited)
-                || reaches_interned(v, types, unions, visited)
-        }
-        ResolvedTypeRef::Scalar(id) => {
-            if !visited.insert(id.clone()) {
-                return false;
-            }
-            types.types.get(id).is_some_and(|t| {
-                t.fields
-                    .iter()
-                    .any(|f| reaches_interned(&f.ty, types, unions, visited))
-            })
-        }
-        ResolvedTypeRef::Union(id) => {
-            if !visited.insert(id.clone()) {
-                return false;
-            }
-            unions.unions.get(id).is_some_and(|u| {
-                u.variants
-                    .iter()
-                    .any(|v| reaches_interned(&v.payload, types, unions, visited))
-            })
-        }
-        // an imported schema carries its own per-version intern table, decoded
-        // by its own generated module, so it never reaches ours
-        _ => false,
-    }
-}
-
 #[derive(Debug)]
 pub struct SchemaAnalyzer<'a> {
     ast: &'a SchemaAst,
@@ -190,11 +136,14 @@ impl<'a> SchemaAnalyzer<'a> {
         });
     }
 
+    /// see type_reaches_intern_table: a `lazy` field defers to a decode helper
+    /// with no table parameter, and re-encodes through a writer that may need
+    /// one, so anything reaching the table is rejected
     fn reaches_interned(&self, ty: &ResolvedTypeRef) -> bool {
-        reaches_interned(
-            ty,
+        type_reaches_intern_table(
             &self.type_registry,
             &self.union_registry,
+            ty,
             &mut HashSet::new(),
         )
     }
@@ -245,21 +194,14 @@ impl<'a> SchemaAnalyzer<'a> {
         // struct-typed refs reachable from ty without crossing a box<>, Boxed not unwrapped
         // since it's the one thing that legitimately breaks a cycle
         fn collect_struct_refs(ty: &ResolvedTypeRef, out: &mut Vec<TypeId>) {
-            match ty {
-                ResolvedTypeRef::Scalar(id) => out.push(id.clone()),
-                ResolvedTypeRef::Array(inner)
-                | ResolvedTypeRef::FixedArray(inner, _)
-                | ResolvedTypeRef::DeltaArray(inner)
-                | ResolvedTypeRef::FixedDeltaArray(inner, _)
-                | ResolvedTypeRef::Optional(inner) => collect_struct_refs(inner, out),
-                ResolvedTypeRef::Tuple(elems) => {
-                    elems.iter().for_each(|e| collect_struct_refs(e, out))
-                }
-                ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-                    collect_struct_refs(k, out);
-                    collect_struct_refs(v, out);
-                }
-                _ => {}
+            if matches!(ty, ResolvedTypeRef::Boxed(_)) {
+                return;
+            }
+            if let ResolvedTypeRef::Scalar(id) = ty {
+                out.push(id.clone());
+            }
+            for c in ty.children() {
+                collect_struct_refs(c, out);
             }
         }
 
@@ -2324,12 +2266,6 @@ impl<'a> SchemaAnalyzer<'a> {
 
         Ok(ResolvedSchema {
             name_hint: self.ast.name.clone(),
-            import_paths: self
-                .ast
-                .imports
-                .iter()
-                .map(|decl| (decl.alias.clone(), decl.path.clone().into()))
-                .collect(),
             versions: self.version_states,
             types: self.type_registry,
             unions: self.union_registry,
@@ -2339,6 +2275,8 @@ impl<'a> SchemaAnalyzer<'a> {
             lineage,
             doc: self.ast.doc.clone(),
             warnings: self.warnings,
+            // set by the import orchestrator, which knows the file
+            source_path: None,
         })
     }
 }

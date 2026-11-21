@@ -1,0 +1,11 @@
+schema SeekRetype {
+  version 1 {
+    fields {
+      id: seekable u32 = 0
+      label: seekable intern string = "legacy"
+    }
+  }
+  version 2 {
+    diff { ~ label: seekable string? }
+  }
+}

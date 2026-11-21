@@ -24,8 +24,7 @@ use super::{
     version_uses_intern, wire_fixed_size, wire_rank,
 };
 use crate::core::types::{ResolvedTypeRef, type_info};
-use crate::schema::ir::ir_types::type_reaches_intern_table;
-use crate::schema::ir::ir_types::{FieldIR, ResolvedSchema};
+use crate::schema::ir::ir_types::{FieldIR, ResolvedSchema, type_reaches_intern_table};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
 use std::collections::HashSet;
@@ -51,9 +50,9 @@ pub fn emit_seek_functions(
     }
 
     emit_seek_all(schema, &targets, infected, w);
+
     if export_pluck {
-        w.blank();
-        emit_pluck(schema, &targets, infected, w);
+        emit_seek_subset(schema, &targets, infected, w);
     }
 }
 
@@ -69,6 +68,15 @@ fn seek_targets(schema: &ResolvedSchema) -> Vec<&FieldIR> {
 
 // the lineage entry feeding a latest-version field, or none when this version
 // predates it (the value then lives in vl.missing)
+fn target_name_of(fl: &FieldLineage) -> Option<&str> {
+    match &fl.mapping {
+        FieldMapping::PassThrough { target_name } | FieldMapping::Cast { target_name, .. } => {
+            Some(target_name)
+        }
+        FieldMapping::Discard => None,
+    }
+}
+
 fn lineage_for<'a>(vl: &'a VersionLineage, target: &str) -> Option<&'a FieldLineage> {
     vl.fields.iter().find(|fl| match &fl.mapping {
         FieldMapping::PassThrough { target_name } | FieldMapping::Cast { target_name, .. } => {
@@ -92,17 +100,17 @@ fn rust_type_of(target: &FieldIR) -> String {
 fn seek_return_type(target: &FieldIR, infected: &HashSet<String>) -> String {
     let ty = rust_type_of(target);
     if target.lazy || field_is_lifetime_infected(&target.ty, target.lazy, infected) {
-        ty.replace("&'buf ", "&").replace("'buf", "'_")
+        ty.replace("'buf", "'_")
     } else {
         ty
     }
 }
 
-// a bare `intern string` resolves one index by walking the table; anything else
-// that reaches the table has to materialize it, since the nested read_* helpers
-// take the &[&str] slice
-fn is_bare_interned(ty: &ResolvedTypeRef) -> bool {
-    matches!(ty, ResolvedTypeRef::Interned(_))
+// An unchanged bare interned field can resolve one index without building
+// the table. Retypes go through the ordinary reader so it applies the cast.
+fn can_read_interned_directly(field: &FieldLineage) -> bool {
+    matches!(field.source_ty, ResolvedTypeRef::Interned(_))
+        && matches!(field.mapping, FieldMapping::PassThrough { .. })
 }
 
 /// emits the cursor, intern-table handling and optional header. leaves `__pos`
@@ -197,7 +205,7 @@ fn emit_seek_vn_field(
             w.line(&format!("Ok({expr})"));
         }
         Some(fl) => {
-            let fast = is_bare_interned(&fl.source_ty);
+            let fast = can_read_interned_directly(fl);
             let needs_table = type_reaches_intern_table(
                 &schema.types,
                 &schema.unions,
@@ -297,9 +305,7 @@ fn emit_tail_walk_to(
     }
 }
 
-// the fast path: the field is a varint index, resolved against the table we
-// skipped rather than one we built. an interned string's only legal retype is to
-// another string shape, which shares its Rust type, so the mapping needs no cast.
+// Resolve the field's varint index against the table we skipped.
 fn emit_bare_interned_read(name: &str, w: &mut CodeWriter) {
     w.line(&format!(
         "let {name} = read_interned_string_at(__buf, __table_start, read_varint64(__buf, __pos)? as usize)?;"
@@ -410,16 +416,25 @@ fn emit_seek_all_vn(
         .filter_map(|t| lineage_for(vl, &t.name).map(|fl| (t, fl)))
         .collect();
 
-    // the whole walk needs the table if any target it binds does
-    let needs_table = present.iter().any(|(_, fl)| {
-        type_reaches_intern_table(
-            &schema.types,
-            &schema.unions,
-            &fl.source_ty,
-            &mut HashSet::new(),
-        )
-    });
-    emit_prologue(schema, vl, needs_table, false, w);
+    // targets that reach the table at all, and whether every one of them is a
+    // bare `intern string`. if so the walk resolves each by index and never
+    // materializes the table, matching what the per-field accessors do; a single
+    // container or named-type target forces the slice for all of them.
+    let table_users: Vec<&FieldLineage> = present
+        .iter()
+        .map(|(_, fl)| *fl)
+        .filter(|fl| {
+            type_reaches_intern_table(
+                &schema.types,
+                &schema.unions,
+                &fl.source_ty,
+                &mut HashSet::new(),
+            )
+        })
+        .collect();
+    let needs_table = !table_users.is_empty();
+    let fast_intern = needs_table && table_users.iter().all(|fl| can_read_interned_directly(fl));
+    emit_prologue(schema, vl, needs_table, fast_intern, w);
 
     let (blast, rest) = blast_split(schema, vl);
 
@@ -445,6 +460,8 @@ fn emit_seek_all_vn(
                 offset + size
             ));
             w.line("if __end > __buf.len() { return Err(Error::UnexpectedEof); }");
+            // the first target sits at the block start; `+ 0` would trip
+            // clippy::identity_op in the consuming crate
             if offset == 0 {
                 w.line("*__pos = __blast_start;");
             } else {
@@ -489,7 +506,10 @@ fn emit_seek_all_vn(
     let mut optional_counter = 0usize;
     for fl in rest.iter().take(last_needed) {
         if tail_ids.contains(&fl.field_id) {
-            if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
+            if fast_intern && can_read_interned_directly(fl) {
+                let name = target_name_of(fl).expect("tail target has a mapping");
+                emit_bare_interned_read(name, w);
+            } else if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
                 let byte_idx = optional_counter / 8;
                 let bit_idx = optional_counter % 8;
                 optional_counter += 1;
@@ -510,7 +530,13 @@ fn emit_seek_all_vn(
         if lineage_for(vl, &t.name).is_some() {
             continue;
         }
-        let expr = missing_default(schema, vl, t);
+        let missing = vl.missing.iter().find(|m| m.target_name == t.name);
+        let expr = match missing {
+            Some(m) if t.lazy => format!("LazyView::Owned({})", type_info(&m.ty).default_expr),
+            Some(m) => get_field_default_expr(m.default.as_ref(), &m.ty, schema),
+            None if t.lazy => format!("LazyView::Owned({})", type_info(&t.ty).default_expr),
+            None => type_info(&t.ty).default_expr,
+        };
         w.line(&format!("let {} = {expr};", t.name));
     }
 
@@ -529,102 +555,136 @@ fn emit_seek_all_vn(
     w.line("}");
 }
 
-fn missing_default(schema: &ResolvedSchema, vl: &VersionLineage, target: &FieldIR) -> String {
-    let missing = vl.missing.iter().find(|m| m.target_name == target.name);
-    match missing {
-        Some(m) if !target.lazy => get_field_default_expr(m.default.as_ref(), &m.ty, schema),
-        _ => {
-            let ty = missing.map_or(&target.ty, |m| &m.ty);
-            let default = type_info(ty).default_expr;
-            if target.lazy {
-                format!("LazyView::Owned({default})")
-            } else {
-                default
-            }
-        }
+// ---- pluck: reading a named subset of the targets in one walk ----
+
+/// mask words this schema needs; the width is sized per schema so the number of
+/// seekable fields is unbounded, rather than capped by one integer's width
+fn mask_words(target_count: usize) -> usize {
+    target_count.div_ceil(128).max(1)
+}
+
+/// shift-free for bit 0, which would otherwise draw clippy::identity_op in the
+/// consuming crate
+fn bit_literal(bit: usize) -> String {
+    if bit == 0 {
+        "1u128".to_string()
+    } else {
+        // parenthesised so the emitted test reads unambiguously next to `&`
+        format!("(1u128 << {bit})")
     }
 }
 
-fn pluck_selected(index: usize) -> String {
-    format!("__M{} & (1u64 << {}) != 0", index / 64, index % 64)
+/// `M{word} & (1 << bit) != 0` for one target, folded away at monomorphisation
+fn bit_test(index: usize) -> String {
+    format!("M{} & {} != 0", index / 128, bit_literal(index % 128))
 }
 
-fn emit_pluck(
+/// true if *none* of these targets is requested — the early-exit condition,
+/// written in its already-minimal form rather than as `!(any)`, which would draw
+/// clippy::nonminimal_bool. Grouped per mask word so a schema spanning several
+/// words still folds to a constant.
+fn no_bit_test(indices: &[usize]) -> String {
+    let mut per_word: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for i in indices {
+        per_word.entry(i / 128).or_default().push(i % 128);
+    }
+    per_word
+        .into_iter()
+        .map(|(word, bits)| {
+            let ors: Vec<String> = bits.iter().map(|b| bit_literal(*b)).collect();
+            // a lone bit is already parenthesised by bit_literal
+            let group = if ors.len() == 1 {
+                ors[0].clone()
+            } else {
+                format!("({})", ors.join(" | "))
+            };
+            format!("M{word} & {group} == 0")
+        })
+        .collect::<Vec<_>>()
+        .join(" && ")
+}
+
+/// The subset walk, plus the `pluck!` macro that is its only intended entry
+/// point. `seek_all` has to reach the *last* seekable field before it can
+/// return, so on a schema with many targets it costs far more than the few a
+/// caller wanted. This reads exactly the named fields: unrequested ones are
+/// skipped rather than read, and the walk returns as soon as the last requested
+/// one is bound.
+///
+/// The mask is a const generic so every test folds at monomorphisation — a
+/// request for fixed-width fields only never enters the variable region at all.
+/// It is `#[doc(hidden)]` and underscore-named because nobody should write one
+/// by hand; `pluck!` builds it from field names.
+fn emit_seek_subset(
     schema: &ResolvedSchema,
     targets: &[&FieldIR],
     infected: &HashSet<String>,
     w: &mut CodeWriter,
 ) {
-    let masks = targets.len().div_ceil(64);
-    let params = (0..masks)
-        .map(|i| format!("const __M{i}: u64"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let args = (0..masks)
-        .map(|i| format!("__M{i}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let has_lifetime = targets
+    let words = mask_words(targets.len());
+    let params: Vec<String> = (0..words).map(|i| format!("const M{i}: u128")).collect();
+    let params = params.join(", ");
+    let needs_lt = targets
         .iter()
-        .any(|f| field_is_lifetime_infected(&f.ty, f.lazy, infected));
-    let (decl, ret) = if has_lifetime {
+        .any(|t| t.lazy || field_is_lifetime_infected(&t.ty, t.lazy, infected));
+    let (struct_lt, ret_lt) = if needs_lt {
         ("<'buf>", "<'_>")
     } else {
         ("", "")
     };
 
     w.line("#[doc(hidden)]");
-    w.line("#[derive(Default)]");
-    w.line(&format!("pub struct __PojocPlucked{decl} {{"));
+    w.line("#[allow(dead_code, non_upper_case_globals)]");
+    w.line("pub mod __pluck_mask {");
     w.indent();
-    for target in targets {
-        w.line(&format!(
-            "pub {}: Option<{}>,",
-            target.name,
-            rust_type_of(target)
-        ));
+    w.line("// each target's global bit index, in latest-version order");
+    for (i, t) in targets.iter().enumerate() {
+        w.line(&format!("pub const {}: usize = {i};", t.name));
+    }
+    w.blank();
+    w.line("/// the bit for `idx` when it lands in `word`, else nothing — lets the");
+    w.line("/// macro OR each field into the right word without naming which one");
+    w.line("pub const fn w(word: usize, idx: usize) -> u128 {");
+    w.indent();
+    w.line("if idx / 128 == word { 1u128 << (idx % 128) } else { 0 }");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line("#[doc(hidden)]");
+    w.line("#[derive(Debug, Clone)]");
+    w.line(&format!("pub struct __PluckOut{struct_lt} {{"));
+    w.indent();
+    for t in targets {
+        w.line(&format!("pub {}: Option<{}>,", t.name, rust_type_of(t)));
     }
     w.dedent();
     w.line("}");
+    w.blank();
 
-    w.line("#[doc(hidden)]");
-    w.line("#[allow(non_camel_case_types)]");
-    w.line("#[derive(Clone, Copy)]");
-    w.line("pub enum __PojocSeekField {");
-    w.indent();
-    for target in targets {
-        w.line(&format!("{},", target.name));
+    for vl in &schema.lineage.versions {
+        emit_seek_subset_vn(schema, vl, targets, &params, ret_lt, w);
+        w.blank();
     }
-    w.dedent();
-    w.line("}");
-    w.line("#[doc(hidden)]");
-    w.line("pub const fn __pluck_mask(fields: &[__PojocSeekField], word: usize) -> u64 {");
-    w.indent();
-    w.line("let mut index = 0;");
-    w.line("let mut mask = 0;");
-    w.line("while index < fields.len() {");
-    w.indent();
-    w.line("let field = fields[index] as usize;");
-    w.line("if field / 64 == word { mask |= 1u64 << (field % 64); }");
-    w.line("index += 1;");
-    w.dedent();
-    w.line("}");
-    w.line("mask");
-    w.dedent();
-    w.line("}");
 
     w.line("#[doc(hidden)]");
+    w.line("#[allow(dead_code)]");
     w.line(&format!(
-        "pub fn __pluck<{params}>(buf: &[u8]) -> PojocResult<__PojocPlucked{ret}> {{"
+        "pub fn __pluck<{params}>(buf: &[u8]) -> PojocResult<__PluckOut{ret_lt}> {{"
     ));
     w.indent();
-    w.line("let envelope = read_envelope(buf, &mut 0)?;");
+    w.line("let mut pos = 0;");
+    w.line("let envelope = read_envelope(buf, &mut pos)?;");
+    let args: Vec<String> = (0..words).map(|i| format!("M{i}")).collect();
+    let args = args.join(", ");
     w.line("match envelope.version {");
     w.indent();
     for vl in &schema.lineage.versions {
-        let version = vl.version;
+        let v = vl.version;
         w.line(&format!(
-            "{version} => __pluck_v{version}::<{args}>(envelope.payload),"
+            "{v} => __pluck_v{v}::<{args}>(envelope.payload, 0),"
         ));
     }
     w.line("v => Err(Error::UnsupportedVersion(v)),");
@@ -632,170 +692,291 @@ fn emit_pluck(
     w.line("}");
     w.dedent();
     w.line("}");
+    w.blank();
 
-    for vl in &schema.lineage.versions {
-        w.blank();
-        let version = vl.version;
-        w.line("#[allow(unused_mut, unused_variables)]");
-        w.line(&format!(
-            "fn __pluck_v{version}<{params}>(__buf: &[u8]) -> PojocResult<__PojocPlucked{ret}> {{"
-        ));
-        w.indent();
-        emit_pluck_walk(schema, vl, targets, w);
-        w.dedent();
-        w.line("}");
-    }
+    emit_pluck_macro(&schema.name_hint, words, w);
+}
 
-    let name = schema.name_hint.to_snake_case();
+/// The ergonomic front door: field names in, values out. Generated per schema
+/// rather than living in the runtime crate because it has to know how many mask
+/// words this schema needs.
+fn emit_pluck_macro(schema_name: &str, words: usize, w: &mut CodeWriter) {
+    // `macro_rules!` only crosses a crate boundary via #[macro_export], which
+    // lands it at the including crate's root. It can't then be re-exported under
+    // a nicer path, because generated code arrives through `include!` and rustc
+    // refuses absolute paths to macro-expanded `macro_export`s — so the name is
+    // qualified by schema instead, which also keeps several schemas in one crate
+    // from colliding. Downstream crates can `use dep::pluck_foo as pluck;`.
+    let exported = format!("pluck_{}", schema_name.to_snake_case());
+    // `$m` is the generated module; macro_rules resolves paths at the call site,
+    // so the caller has to name it once
+    let mask_arg = |rep: bool| -> String {
+        (0..words)
+            .map(|k| {
+                if rep {
+                    format!("{{ 0u128 $(| $m::__pluck_mask::w({k}, $m::__pluck_mask::$f))+ }}")
+                } else {
+                    format!("{{ $m::__pluck_mask::w({k}, $m::__pluck_mask::$f) }}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let bound = "expect(\"pluck: this field was named in the call, so it is always bound\")";
+
+    w.line("/// Read named `seekable` fields out of an encoded payload without decoding it.");
+    w.line("///");
+    w.line("/// One field yields the value, several yield a tuple in the order asked for.");
+    w.line("/// Never `Option`: naming a field guarantees it is bound. A field the");
+    w.line("/// payload's version predates yields that version's default, as `decode` would.");
+    w.line("///");
+    w.line("/// The first argument is this module, which must be a single ident in scope.");
+    w.line("/// The macro itself lives at your crate root, named for the schema.");
+    w.line("///");
+    w.line("/// ```ignore");
+    w.line(&format!("/// let id = {exported}!(edge, &buf, id)?;"));
+    w.line(&format!(
+        "/// let (id, name) = {exported}!(edge, &buf, id, name)?;"
+    ));
+    w.line("/// ```");
     w.line("#[macro_export]");
-    w.line(&format!("macro_rules! pluck_{name} {{"));
+    w.line(&format!("macro_rules! {exported} {{"));
     w.indent();
-    for target in targets {
-        let name = &target.name;
-        w.line(&format!(
-            "($module:ident, $buf:expr, {name} $(,)?) => {{ $module::seek_{name}($buf) }};"
-        ));
-    }
-    w.line("($module:ident, $buf:expr, $first:ident, $($field:ident),+ $(,)?) => {");
+    w.line("// one field: the value itself rather than a one-tuple");
+    w.line("($m:ident, $buf:expr, $f:ident $(,)?) => {{");
     w.indent();
-    w.line("$module::__pluck::<");
-    w.indent();
-    for word in 0..masks {
-        w.line(&format!("{{ $module::__pluck_mask(&[$module::__PojocSeekField::$first, $($module::__PojocSeekField::$field),+], {word}) }},"));
-    }
+    w.line(&format!(
+        "$m::__pluck::<{}>($buf).map(|__r| __r.$f.{bound})",
+        mask_arg(false)
+    ));
     w.dedent();
-    w.line(">($buf).map(|r| (r.$first.unwrap(), $(r.$field.unwrap()),+))");
+    w.line("}};");
+    w.line("($m:ident, $buf:expr, $($f:ident),+ $(,)?) => {{");
+    w.indent();
+    w.line(&format!(
+        "$m::__pluck::<{}>($buf).map(|__r| ($(__r.$f.{bound},)+))",
+        mask_arg(true)
+    ));
     w.dedent();
-    w.line("};");
+    w.line("}};");
     w.dedent();
     w.line("}");
 }
-
-fn emit_pluck_walk(
+fn emit_seek_subset_vn(
     schema: &ResolvedSchema,
     vl: &VersionLineage,
     targets: &[&FieldIR],
+    params: &str,
+    ret_lt: &str,
     w: &mut CodeWriter,
 ) {
-    w.line("let mut __result = __PojocPlucked::default();");
-    let present: Vec<_> = targets
-        .iter()
-        .enumerate()
-        .filter_map(|(i, t)| {
-            if let Some(fl) = lineage_for(vl, &t.name) {
-                return Some((i, *t, fl));
-            }
-            let selected = pluck_selected(i);
-            let value = missing_default(schema, vl, t);
-            w.line(&format!(
-                "if {selected} {{ __result.{} = Some({value}); }}",
-                t.name
-            ));
-            None
-        })
-        .collect();
-    if present.is_empty() {
-        w.line("Ok(__result)");
-        return;
+    let v = vl.version;
+    let index_of = |n: &str| targets.iter().position(|t| t.name == n).expect("target");
+    let requested = |n: &str| bit_test(index_of(n));
+
+    w.line("#[doc(hidden)]");
+    w.line("#[allow(dead_code, clippy::never_loop)]");
+    w.line(&format!(
+        "pub fn __pluck_v{v}<{params}>(__buf: &[u8], __start: usize) \
+         -> PojocResult<__PluckOut{ret_lt}> {{"
+    ));
+    w.indent();
+
+    for t in targets {
+        w.line(&format!("let mut __out_{} = None;", t.name));
     }
 
-    let remaining = present
+    let present: Vec<(&&FieldIR, &FieldLineage)> = targets
         .iter()
-        .map(|(i, _, _)| format!("({}) as usize", pluck_selected(*i)))
-        .collect::<Vec<_>>()
-        .join(" + ");
-    w.line(&format!("let mut __remaining = {remaining};"));
-    w.line("if __remaining == 0 { return Ok(__result); }");
-    w.line("let mut __cursor = 0usize;");
-    w.line("let __pos = &mut __cursor;");
-    if version_uses_intern(schema, &vl.fields) {
-        let table = present
-            .iter()
-            .filter(|(_, _, fl)| {
-                type_reaches_intern_table(
-                    &schema.types,
-                    &schema.unions,
-                    &fl.source_ty,
-                    &mut HashSet::new(),
-                )
-            })
-            .map(|(i, _, _)| pluck_selected(*i))
-            .collect::<Vec<_>>();
-        if table.is_empty() {
-            w.line("skip_intern_table(__buf, __pos)?;");
-        } else {
-            w.line(&format!("let __table_owned = if {} {{", table.join(" || ")));
-            w.indent();
-            w.line("read_intern_table(__buf, __pos)?");
-            w.dedent();
-            w.line("} else {");
-            w.indent();
-            w.line("skip_intern_table(__buf, __pos)?;");
-            w.line("Vec::new()");
-            w.dedent();
-            w.line("};");
-            w.line("let __table = __table_owned.as_slice();");
-        }
+        .filter_map(|t| lineage_for(vl, &t.name).map(|fl| (t, fl)))
+        .collect();
+
+    // the intern strategy can't depend on MASK (it decides the prologue before
+    // any field is read), so it's chosen over every target the way seek_all does
+    let table_users: Vec<&FieldLineage> = present
+        .iter()
+        .map(|(_, fl)| *fl)
+        .filter(|fl| {
+            type_reaches_intern_table(
+                &schema.types,
+                &schema.unions,
+                &fl.source_ty,
+                &mut HashSet::new(),
+            )
+        })
+        .collect();
+    let needs_table = !table_users.is_empty();
+    let fast_intern = needs_table && table_users.iter().all(|fl| can_read_interned_directly(fl));
+    emit_prologue(schema, vl, needs_table, fast_intern, w);
+
+    let (blast, rest) = blast_split(schema, vl);
+    let blast_ids: HashSet<_> = present
+        .iter()
+        .filter(|(_, fl)| wire_rank(schema, fl) == 0)
+        .map(|(_, fl)| fl.field_id)
+        .collect();
+    let tail_ids: HashSet<_> = present
+        .iter()
+        .filter(|(_, fl)| wire_rank(schema, fl) != 0)
+        .map(|(_, fl)| fl.field_id)
+        .collect();
+
+    // `break` is the early exit once nothing further is requested
+    w.line("loop {");
+    w.indent();
+
+    if !blast_ids.is_empty() {
+        w.line("let __blast_start = *__pos;");
     }
-    let optional_count = vl
-        .fields
-        .iter()
-        .filter(|fl| matches!(fl.source_ty, ResolvedTypeRef::Optional(_)))
-        .count();
-    emit_optional_header_read(optional_count, w);
-    let (blast, tail) = blast_split(schema, vl);
-    w.line("let __blast_start = *__pos;");
-    for (i, target, fl) in &present {
-        if wire_rank(schema, fl) == 0 {
-            w.line(&format!("if {} {{", pluck_selected(*i)));
+    let mut offset = 0usize;
+    for fl in &blast {
+        let size = wire_fixed_size(&fl.source_ty).unwrap_or(0);
+        if blast_ids.contains(&fl.field_id) {
+            let (t, _) = present
+                .iter()
+                .find(|(_, f)| f.field_id == fl.field_id)
+                .unwrap();
+            w.line(&format!("if {} {{", requested(&t.name)));
             w.indent();
-            w.line("*__pos = __blast_start;");
-            emit_blastable_target_read(&blast, fl, &target.name, w);
-            emit_pluck_bind(target, w);
+            w.line(&format!(
+                "let __end = __blast_start.checked_add({}).ok_or(Error::UnexpectedEof)?;",
+                offset + size
+            ));
+            w.line("if __end > __buf.len() { return Err(Error::UnexpectedEof); }");
+            if offset == 0 {
+                w.line("*__pos = __blast_start;");
+            } else {
+                w.line(&format!("*__pos = __blast_start + {offset};"));
+            }
+            w.line("// SAFETY: checked directly above.");
+            let rust = type_info(&fl.source_ty).rust_type;
+            let expr = emit_read_expr_unchecked(&fl.source_ty);
+            w.line(&format!("let {}: {rust} = {expr};", t.name));
+            emit_constraint_guard(t, &t.name, w);
+            w.line(&format!("__out_{} = Some({});", t.name, t.name));
             w.dedent();
             w.line("}");
         }
+        offset += size;
     }
-    let last_tail = tail
+
+    // nothing past the fixed block was asked for
+    let tail_bits: Vec<usize> = rest
         .iter()
-        .rposition(|fl| present.iter().any(|(_, _, p)| p.field_id == fl.field_id));
-    if let Some(last_tail) = last_tail {
-        let total = fixed_total(&blast);
-        w.line(&format!("*__pos = __blast_start.checked_add({total}).filter(|&end| end <= __buf.len()).ok_or(Error::UnexpectedEof)?;"));
-        let mut optional = 0;
-        for fl in &tail[..=last_tail] {
-            if let Some((i, target, _)) = present.iter().find(|(_, _, p)| p.field_id == fl.field_id)
-            {
-                w.line(&format!("if {} {{", pluck_selected(*i)));
-                w.indent();
-                if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
-                    let (byte, bit) = (optional / 8, optional % 8);
-                    w.line(&format!(
-                        "let __present = (__header[{byte}] & (1 << {bit})) != 0;"
-                    ));
-                    emit_field_mapping_arm(schema, fl, inner, "__present", w);
-                } else {
-                    emit_field_read(schema, fl, w);
-                }
-                emit_pluck_bind(target, w);
-                w.dedent();
-                w.line("} else {");
-                w.indent();
-                emit_ordered_skip(fl, &mut optional, w);
-                w.dedent();
-                w.line("}");
+        .filter(|fl| tail_ids.contains(&fl.field_id))
+        .filter_map(|fl| target_name_of(fl).map(&index_of))
+        .collect();
+    if tail_bits.is_empty() {
+        w.line("break;");
+    } else {
+        w.line(&format!("if {} {{ break; }}", no_bit_test(&tail_bits)));
+    }
+
+    let total = fixed_total(&blast);
+    if total > 0 && !tail_bits.is_empty() {
+        w.line(&format!(
+            "{{ let __end = {}.checked_add({total}).ok_or(Error::UnexpectedEof)?; \
+             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} *__pos = __end; }}",
+            if blast_ids.is_empty() {
+                "__pos"
             } else {
-                emit_ordered_skip(fl, &mut optional, w);
+                "__blast_start"
             }
+        ));
+    }
+
+    let last_needed = rest
+        .iter()
+        .rposition(|fl| tail_ids.contains(&fl.field_id))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let mut optional_counter = 0usize;
+    for (i, fl) in rest.iter().take(last_needed).enumerate() {
+        if tail_ids.contains(&fl.field_id) {
+            let name = target_name_of(fl).expect("tail target has a mapping");
+            let t = targets.iter().find(|t| t.name == name).unwrap();
+
+            w.line(&format!("if {} {{", requested(name)));
+            w.indent();
+            if fast_intern && can_read_interned_directly(fl) {
+                emit_bare_interned_read(name, w);
+            } else if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
+                let byte_idx = optional_counter / 8;
+                let bit_idx = optional_counter % 8;
+                w.line(&format!(
+                    "let __present = (__header[{byte_idx}] & (1 << {bit_idx})) != 0;"
+                ));
+                emit_field_mapping_arm(schema, fl, inner, "__present", w);
+            } else {
+                emit_field_read(schema, fl, w);
+            }
+            emit_constraint_guard(t, name, w);
+            w.line(&format!("__out_{name} = Some({name});"));
+            w.dedent();
+            w.line("} else {");
+            w.indent();
+            // unrequested: still has to be stepped over for the cursor to stay
+            // aligned for whatever comes after it
+            let mut throwaway = optional_counter;
+            emit_ordered_skip(fl, &mut throwaway, w);
+            w.dedent();
+            w.line("}");
+
+            // the presence-bit index is positional, so it advances the same way
+            // through both branches
+            if matches!(fl.source_ty, ResolvedTypeRef::Optional(_)) {
+                optional_counter += 1;
+            }
+
+            // everything the caller wanted is bound
+            let remaining: Vec<usize> = rest
+                .iter()
+                .skip(i + 1)
+                .filter(|f| tail_ids.contains(&f.field_id))
+                .filter_map(|f| target_name_of(f).map(&index_of))
+                .collect();
+            if remaining.is_empty() {
+                w.line("break;");
+            } else {
+                w.line(&format!("if {} {{ break; }}", no_bit_test(&remaining)));
+            }
+        } else {
+            emit_ordered_skip(fl, &mut optional_counter, w);
         }
     }
-    w.line("Ok(__result)");
-}
 
-fn emit_pluck_bind(target: &FieldIR, w: &mut CodeWriter) {
-    let name = &target.name;
-    emit_constraint_guard(target, name, w);
-    w.line(&format!("__result.{name} = Some({name});"));
-    w.line("__remaining -= 1;");
-    w.line("if __remaining == 0 { return Ok(__result); }");
+    // every path out of the body already breaks: either the tail was skipped
+    // wholesale above, or the last requested field breaks unconditionally
+    w.dedent();
+    w.line("}");
+
+    // requested targets this version predates get its default, matching decode
+    for t in targets {
+        if lineage_for(vl, &t.name).is_some() {
+            continue;
+        }
+        let missing = vl.missing.iter().find(|m| m.target_name == t.name);
+        let expr = match missing {
+            Some(m) if t.lazy => format!("LazyView::Owned({})", type_info(&m.ty).default_expr),
+            Some(m) => get_field_default_expr(m.default.as_ref(), &m.ty, schema),
+            None if t.lazy => format!("LazyView::Owned({})", type_info(&t.ty).default_expr),
+            None => type_info(&t.ty).default_expr,
+        };
+        w.line(&format!(
+            "if {} {{ __out_{} = Some({expr}); }}",
+            requested(&t.name),
+            t.name
+        ));
+    }
+
+    w.line("Ok(__PluckOut {");
+    w.indent();
+    for t in targets {
+        w.line(&format!("{}: __out_{},", t.name, t.name));
+    }
+    w.dedent();
+    w.line("})");
+    w.dedent();
+    w.line("}");
 }

@@ -192,7 +192,11 @@ impl ImportOrchestrator {
 
         let mut analyzer = SchemaAnalyzer::new(&ast, imports);
         analyzer.run()?;
-        Ok(Arc::new(analyzer.finish()?))
+        let mut resolved = analyzer.finish()?;
+        // so a warning raised here still renders against this file once it has
+        // been aggregated up into an importing schema
+        resolved.source_path = Some(canonical.to_path_buf());
+        Ok(Arc::new(resolved))
     }
 }
 
