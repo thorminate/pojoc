@@ -1,7 +1,6 @@
 use super::writer::CodeWriter;
 use crate::codegen::{
-    emit_constraint_guard, emit_union_variant_constraint_guard, get_latest_versions,
-    ordered_wire_fields,
+    emit_constraint_guard, emit_union_variant_constraint_guard, ordered_wire_fields,
 };
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
@@ -65,16 +64,10 @@ fn deref_if_copy(ty: &ResolvedTypeRef, var: &str) -> String {
     }
 }
 
-// max value representable in `width` bytes (1/2/4) — always fits u64
-pub(crate) fn width_max_value(width: u8) -> u64 {
-    (1u128 << (width as u32 * 8)) as u64 - 1
-}
-
 // one writer per resolved union version, frozen at that version's own
 // discriminant width forever — see ResolvedUnion::discriminant_width.
 fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest_by_name =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest_by_name = latest_by_name(&schema.unions.unions);
 
     let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
     entries
@@ -154,11 +147,7 @@ fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_bitset_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(
-        &schema.bitsets.bitsets,
-        |id| id.name.clone(),
-        |id| id.version,
-    );
+    let latest = latest_by_name(&schema.bitsets.bitsets);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
     for name in names {
@@ -176,7 +165,7 @@ fn emit_bitset_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_type_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
     for name in names {
@@ -501,8 +490,20 @@ pub(crate) fn emit_write_expr(
             ));
         }
 
-        ResolvedTypeRef::ImportedSchema { .. } => {
-            w.line(&format!("{}(__buf, &{accessor});", info.write_fn));
+        ResolvedTypeRef::ImportedSchema {
+            alias, root_name, ..
+        } => {
+            let qualified = format!("{}::{root_name}", alias.to_snake_case());
+            let q = if is_constraint_infected(&qualified) {
+                "?"
+            } else {
+                ""
+            };
+            w.line(&format!(
+                "{}(__buf, {}{accessor}){q};",
+                info.write_fn,
+                if is_ref { "" } else { "&" }
+            ));
         }
     }
 }
@@ -1216,7 +1217,7 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
 }
 
 fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
     for name in names {
@@ -1245,8 +1246,7 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 // mirrors emit_union_writers: one size hint per resolved union version.
 fn emit_union_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest_by_name =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest_by_name = latest_by_name(&schema.unions.unions);
 
     let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
     entries

@@ -289,6 +289,17 @@ pub enum AnalysisError {
         line: u32,
     },
 
+    #[error(
+        "version {version}: field '{field}' in type '{type_name}': `seekable` is only allowed on root schema fields, since accessors are generated against the schema's own per-version decoders"
+    )]
+    SeekableOnlyOnRootFields {
+        field: String,
+        type_name: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
     #[error("unknown import alias '{alias}'")]
     UnknownImportAlias {
         alias: String,
@@ -454,6 +465,7 @@ impl IndexableError for AnalysisError {
             AnalysisError::InvalidDeltaElementType { span, .. } => *span,
             AnalysisError::ReservedVariantName { span, .. } => *span,
             AnalysisError::LazyDiffFieldMustBeOptional { span, .. } => *span,
+            AnalysisError::SeekableOnlyOnRootFields { span, .. } => *span,
             AnalysisError::UnknownImportAlias { span, .. } => *span,
             AnalysisError::ImportVersionOutOfRange { span, .. } => *span,
             AnalysisError::ImportNotFound { span, .. } => *span,
@@ -495,6 +507,7 @@ impl IndexableError for AnalysisError {
             AnalysisError::InvalidDeltaElementType { line, .. } => *line,
             AnalysisError::ReservedVariantName { line, .. } => *line,
             AnalysisError::LazyDiffFieldMustBeOptional { line, .. } => *line,
+            AnalysisError::SeekableOnlyOnRootFields { line, .. } => *line,
             AnalysisError::UnknownImportAlias { line, .. } => *line,
             AnalysisError::ImportVersionOutOfRange { line, .. } => *line,
             AnalysisError::ImportNotFound { line, .. } => *line,
@@ -530,22 +543,36 @@ impl AnalysisError {
     /// renders with a file:line:col location and caret, matching pojoc check/build.
     /// reads the source file from disk, so it may diverge if the file changed since
     pub fn render(&self, root: &std::path::Path) -> String {
-        use std::fmt::Write;
+        render_snippet(
+            "error",
+            &self.to_string(),
+            self.line() as usize,
+            self.span(),
+            self.source_path(root),
+        )
+    }
+}
 
-        let line = self.line() as usize;
-        let message = self.to_string();
+/// shared by errors and warnings: a `severity: message` line, then the source
+/// line with a caret under the span
+pub(crate) fn render_snippet(
+    severity: &str,
+    message: &str,
+    line: usize,
+    span: Span,
+    source_path: &std::path::Path,
+) -> String {
+    {
+        use std::fmt::Write;
 
         // line 0 means there's no real source location (file couldn't be
         // loaded at all — not found, unreadable, not UTF-8) — a snippet/caret
         // pointing at nothing is worse than no snippet at all.
         if line == 0 {
-            return format!("error: {message}\n");
+            return format!("{severity}: {message}\n");
         }
 
-        let source_path = self.source_path(root);
         let source = std::fs::read_to_string(source_path).unwrap_or_default();
-
-        let span = self.span();
 
         let display_path = source_path
             .canonicalize()
@@ -579,7 +606,7 @@ impl AnalysisError {
         let pad = " ".repeat(gutter.len());
 
         let mut out = String::new();
-        let _ = writeln!(out, "error: {message}");
+        let _ = writeln!(out, "{severity}: {message}");
         let _ = writeln!(out, " {pad} --> {display_path}:{line}:{col_start}");
         let _ = writeln!(out, " {pad} |");
         let _ = writeln!(out, " {gutter} | {line_text}");
@@ -590,6 +617,59 @@ impl AnalysisError {
             "^".repeat(caret_len)
         );
         out
+    }
+}
+
+/// non-fatal schema diagnostics. unlike AnalysisError these never fail a build —
+/// they flag a schema-level choice whose cost isn't visible from the source.
+#[derive(Debug, Clone, Error)]
+pub enum SchemaWarning {
+    #[error(
+        "version {version}: field '{field}' is `seekable` and reaches the intern table through a container or named type, so seeking it materializes the whole table. a bare `seekable intern string` resolves a single index instead"
+    )]
+    SeekMaterializesInternTable {
+        field: String,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+
+    #[error(
+        "version {version}: field '{field}' was `seekable` in version {was} but this `~` does not restate it, so its accessors will no longer be generated. write `~ {field}: seekable ...` to keep them"
+    )]
+    SeekableDroppedByDiff {
+        field: String,
+        was: i128,
+        version: i128,
+        span: Span,
+        line: u32,
+    },
+}
+
+impl SchemaWarning {
+    pub fn span(&self) -> Span {
+        match self {
+            SchemaWarning::SeekMaterializesInternTable { span, .. } => *span,
+            SchemaWarning::SeekableDroppedByDiff { span, .. } => *span,
+        }
+    }
+
+    pub fn line(&self) -> u32 {
+        match self {
+            SchemaWarning::SeekMaterializesInternTable { line, .. } => *line,
+            SchemaWarning::SeekableDroppedByDiff { line, .. } => *line,
+        }
+    }
+
+    /// same layout as AnalysisError::render, with a `warning:` severity
+    pub fn render(&self, root: &std::path::Path) -> String {
+        render_snippet(
+            "warning",
+            &self.to_string(),
+            self.line() as usize,
+            self.span(),
+            root,
+        )
     }
 }
 

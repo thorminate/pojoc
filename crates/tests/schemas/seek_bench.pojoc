@@ -1,0 +1,32 @@
+/// Isolates what a partial read costs against a full decode. The four seekable
+/// fields cover every path `seek.rs` can emit — blastable constant offset,
+/// hoisted variable-width, and the bare-interned targeted lookup — while the
+/// bulk fields below exist purely to give `decode` the payload a seek skips.
+schema SeekBench {
+
+  version 1 {
+    fields {
+      /// rank 0: fixed width, read at a compile-time constant offset
+      id: seekable u64 = 0
+      /// rank 0, second in the blast region so its offset is non-zero
+      kind: seekable u32 = 0
+
+      /// rank 1: variable width, hoisted to the front of the tail
+      name: seekable string = ""
+      /// rank 1 and bare-interned, so it resolves one table index rather
+      /// than materializing the whole table
+      label: seekable intern string = ""
+
+      // ---- bulk payload: never touched by a seek ----
+      timestamp: u64 = 0
+      flags: u32 = 0
+      score: f64 = 0.0
+      description: string = ""
+      tags: [string] = []
+      samples: [f64] = []
+      history: [u64] = []
+      points: [(f32, f32, f32)] = []
+      notes: [string] = []
+    }
+  }
+}

@@ -221,8 +221,10 @@ fn test_roundtrip_payload_variants() {
     // final_action tracks Payload's latest shape; `action` is frozen at
     // Payload@2 and has its own test below.
     for variant in variants {
-        let mut e = Edge::default();
-        e.final_action = variant;
+        let e = Edge {
+            final_action: variant,
+            ..Default::default()
+        };
         let mut buf = Vec::new();
         encode(&mut buf, &e).expect("encode failed");
         let decoded = decode(&buf).expect("decode failed");
@@ -237,11 +239,13 @@ fn test_roundtrip_payload_variants() {
 // specifically, complementing test_roundtrip_payload_variants's Owned path.
 #[test]
 fn test_rich_payload_lazy_field_raw_reencode_is_byte_identical() {
-    let mut e = Edge::default();
-    e.final_action = Payload::Rich(RichPayload {
-        note: "rich-note",
-        blob: LazyView::Owned(pojvec![9, 8, 7]),
-    });
+    let e = Edge {
+        final_action: Payload::Rich(RichPayload {
+            note: "rich-note",
+            blob: LazyView::Owned(pojvec![9, 8, 7]),
+        }),
+        ..Default::default()
+    };
 
     let mut buf = Vec::new();
     encode(&mut buf, &e).expect("encode failed");
@@ -269,29 +273,30 @@ fn test_rich_payload_lazy_field_raw_reencode_is_byte_identical() {
 // same table as the rest of the message, not just that it compiles.
 #[test]
 fn test_rich_payload_interned_field_dedups_with_root_table() {
-    let make = |note: &'static str| {
-        let mut e = Edge::default();
-        e.interned_label = note;
-        e.final_action = Payload::Rich(RichPayload {
+    let make = |note: &'static str| Edge {
+        interned_label: note,
+        final_action: Payload::Rich(RichPayload {
             note,
             blob: LazyView::Owned(pojvec![]),
-        });
-        e
+        }),
+        ..Default::default()
     };
 
     let mut shared_buf = Vec::new();
     encode(&mut shared_buf, &make("shared-interned-value")).expect("encode failed");
 
     let mut distinct_buf = Vec::new();
-    encode(&mut distinct_buf, &{
-        let mut e = Edge::default();
-        e.interned_label = "aaaaaaaaaaaaaaaaaaaaa";
-        e.final_action = Payload::Rich(RichPayload {
-            note: "bbbbbbbbbbbbbbbbbbbbb",
-            blob: LazyView::Owned(pojvec![]),
-        });
-        e
-    })
+    encode(
+        &mut distinct_buf,
+        &Edge {
+            interned_label: "aaaaaaaaaaaaaaaaaaaaa",
+            final_action: Payload::Rich(RichPayload {
+                note: "bbbbbbbbbbbbbbbbbbbbb",
+                blob: LazyView::Owned(pojvec![]),
+            }),
+            ..Default::default()
+        },
+    )
     .expect("encode failed");
 
     assert!(
@@ -305,8 +310,10 @@ fn test_rich_payload_interned_field_dedups_with_root_table() {
 // re-pinned, so Despawn (added at v5) must decode/encode as Unknown, not the real variant.
 #[test]
 fn test_field_frozen_at_older_union_pin_downgrades_newer_variants_to_unknown() {
-    let mut e = Edge::default();
-    e.action = Payload::Despawn(DespawnPayload { entity_id: 808 });
+    let e = Edge {
+        action: Payload::Despawn(DespawnPayload { entity_id: 808 }),
+        ..Default::default()
+    };
 
     let mut buf = Vec::new();
     encode(&mut buf, &e).expect("encode failed");
@@ -328,14 +335,18 @@ fn test_field_frozen_at_older_union_pin_downgrades_newer_variants_to_unknown() {
 // struct payload that's itself constraint-infected (`BoundedStruct`).
 #[test]
 fn test_encode_rejects_out_of_range_union_payload() {
-    let mut e = Edge::default();
-    e.action = Payload::Bounded(999);
+    let e = Edge {
+        action: Payload::Bounded(999),
+        ..Default::default()
+    };
     let mut buf = Vec::new();
     let err = encode(&mut buf, &e).expect_err("out-of-range union payload must be rejected");
     assert!(matches!(err, Error::ConstraintViolation { .. }));
 
-    let mut e = Edge::default();
-    e.action = Payload::BoundedStruct(BoundedPayload { value: 999 });
+    let e = Edge {
+        action: Payload::BoundedStruct(BoundedPayload { value: 999 }),
+        ..Default::default()
+    };
     let mut buf = Vec::new();
     let err = encode(&mut buf, &e).expect_err("out-of-range struct union payload must be rejected");
     assert!(matches!(err, Error::ConstraintViolation { .. }));
@@ -350,8 +361,10 @@ fn test_roundtrip_control_signal_variants() {
     ];
 
     for variant in variants {
-        let mut e = Edge::default();
-        e.control = variant;
+        let e = Edge {
+            control: variant,
+            ..Default::default()
+        };
         let mut buf = Vec::new();
         encode(&mut buf, &e).expect("encode failed");
         let decoded = decode(&buf).expect("decode failed");
@@ -363,10 +376,12 @@ fn test_roundtrip_control_signal_variants() {
 fn test_roundtrip_unknown_union_variant_is_lossless() {
     // simulates a peer on a newer schema sending an unknown variant; must
     // round-trip as Unknown, not error. 200 fits Payload's u8 wire width.
-    let mut e = Edge::default();
-    e.action = Payload::Unknown {
-        discriminant: 200,
-        data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+    let e = Edge {
+        action: Payload::Unknown {
+            discriminant: 200,
+            data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        },
+        ..Default::default()
     };
 
     let mut buf = Vec::new();

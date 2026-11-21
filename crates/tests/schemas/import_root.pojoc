@@ -1,0 +1,23 @@
+/// Holds an imported root three ways — plain, `seekable`, and `lazy` — so the
+/// import boundary is crossed by each of the newer features. The importer has
+/// an intern table of its own, which must stay distinct from the nested one.
+schema ImportRoot {
+
+  import "import_leaf.pojoc" as Leaf
+
+  version 1 {
+    fields {
+      rid: u32 = 0
+      child: Leaf@1
+      name: intern string = ""
+    }
+  }
+
+  version 2 {
+    diff {
+      ~ child: Leaf@2
+      + seek_child: seekable Leaf@2?
+      + lazy_child: lazy Leaf@2?
+    }
+  }
+}

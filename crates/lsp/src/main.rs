@@ -9,7 +9,7 @@ use pojoc_build::schema::analyzer::SchemaAnalyzer;
 use pojoc_build::schema::ir::ir_types::ResolvedSchema;
 use pojoc_build::schema::{
     AnalysisError, ImportOrchestrator, IndexableError, Lexer, LineIndex, ParseError, Parser,
-    Position as SchemaPosition, SchemaAst, SchemaError, Span,
+    Position as SchemaPosition, SchemaAst, SchemaError, SchemaWarning, Span,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -100,8 +100,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     let result = serde_json::to_value(CompletionResponse::Array(items))?;
                     connection.sender.send(Message::Response(Response {
                         id: req.id,
-                        result: Some(result),
-                        error: None,
+                        response_result: Ok(result),
                     }))?;
                 } else if req.method == "textDocument/hover" {
                     let hover = (|| -> Option<Hover> {
@@ -137,8 +136,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     let result = serde_json::to_value(hover)?;
                     connection.sender.send(Message::Response(Response {
                         id: req.id,
-                        result: Some(result),
-                        error: None,
+                        response_result: Ok(result),
                     }))?;
                 }
             }
@@ -211,6 +209,15 @@ fn error_to_diagnostic(err: &SchemaError, text: &str, line_index: &LineIndex) ->
         range: span_to_range(text, span, line_index),
         severity: Some(DiagnosticSeverity::ERROR),
         message: err.to_string(),
+        ..Default::default()
+    }
+}
+
+fn warning_to_diagnostic(w: &SchemaWarning, text: &str, line_index: &LineIndex) -> Diagnostic {
+    Diagnostic {
+        range: span_to_range(text, w.span(), line_index),
+        severity: Some(DiagnosticSeverity::WARNING),
+        message: w.to_string(),
         ..Default::default()
     }
 }
@@ -305,8 +312,18 @@ fn handle_text_update(
             store.last_good_ast.insert(uri.clone(), ast);
             match analysis_result {
                 Ok(resolved) => {
+                    let line_index = LineIndex::new(&text);
+                    // this document's own warnings only, deliberately not
+                    // warnings_recursive: an import's spans index a different
+                    // file's text, and that file gets its own diagnostics when
+                    // opened
+                    let warnings = resolved
+                        .warnings
+                        .iter()
+                        .map(|w| warning_to_diagnostic(w, &text, &line_index))
+                        .collect();
                     store.last_resolved.insert(uri.clone(), resolved);
-                    Vec::new()
+                    warnings
                 }
                 Err(err) => {
                     let line_index = LineIndex::new(&text);

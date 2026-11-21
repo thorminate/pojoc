@@ -183,6 +183,34 @@ pub enum ResolvedTypeRef {
 }
 
 impl ResolvedTypeRef {
+    pub(crate) fn any_node(&self, predicate: &mut impl FnMut(&Self) -> bool) -> bool {
+        if predicate(self) {
+            return true;
+        }
+        match self {
+            Self::Array(inner)
+            | Self::FixedArray(inner, _)
+            | Self::DeltaArray(inner)
+            | Self::FixedDeltaArray(inner, _)
+            | Self::Optional(inner)
+            | Self::Boxed(inner)
+            | Self::Constrained { inner, .. }
+            | Self::Interned(inner) => inner.any_node(predicate),
+            Self::Map(key, value) | Self::FixedMap(key, value, _) => {
+                key.any_node(predicate) || value.any_node(predicate)
+            }
+            Self::Tuple(elements) => elements.iter().any(|item| item.any_node(predicate)),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn for_each_node(&self, visit: &mut impl FnMut(&Self)) {
+        self.any_node(&mut |node| {
+            visit(node);
+            false
+        });
+    }
+
     pub fn type_id(&self) -> Option<&TypeId> {
         match self {
             ResolvedTypeRef::Scalar(id) => Option::from(id),

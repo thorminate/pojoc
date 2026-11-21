@@ -477,4 +477,34 @@ schema Edge {
       + linked_list: box<LinkedNode>?
     }
   }
+
+  // Partial reads. `seekable` generates seek_<field> accessors that pull one
+  // field without decoding the rest, and reorders that version's wire layout to
+  // put those fields where they're cheap to reach (wire_rank, codegen/mod.rs).
+  // Marked here in a new version rather than on an existing one, since adding it
+  // to an already-declared version would relayout that version's bytes.
+  version 6 {
+    diff {
+      // Fixed-width: lands in the blastable prefix, read at a constant offset.
+      + seek_tag: seekable u32 = 0
+
+      // Variable-width: hoisted to the front of the tail, so reaching it skips
+      // only other seekable fields.
+      + seek_name: seekable string = ""
+
+      // Optional, to exercise presence-bit accounting on the seek path.
+      + seek_note: seekable string?
+
+      // `seekable lazy` — hands back the raw slice without decoding it.
+      + seek_blob: seekable lazy [u8]?
+
+      // Retyping an existing field into a seekable one. Older versions still
+      // decode it through their own cast, and seek must reproduce that.
+      ~ heal_radius: seekable f32
+
+      // The intern fast path: a bare `seekable intern string` resolves a single
+      // table index rather than materializing the table.
+      + seek_label: seekable intern string = ""
+    }
+  }
 }

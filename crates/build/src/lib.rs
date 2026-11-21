@@ -70,6 +70,11 @@ pub fn compile(schema: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<Pa
             source: Box::new(source),
         })?;
 
+    // surfaces during `cargo build` of the consuming crate
+    for w in &resolved.warnings {
+        println!("cargo::warning={}", w);
+    }
+
     let code = codegen::generate(&resolved);
 
     let stem = schema_path

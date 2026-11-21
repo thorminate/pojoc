@@ -1,6 +1,7 @@
 pub mod builder;
 mod decode;
 mod encode;
+mod seek;
 mod structs;
 pub mod writer;
 
@@ -10,10 +11,13 @@ use crate::core::types::{
     set_infected, set_intern_infected, set_union_intern_infected, set_union_write_intern_infected,
     type_info,
 };
-use crate::schema::ir::ir_types::{DefaultValue, FieldIR, ResolvedSchema};
+use crate::schema::ir::ir_types::{
+    DefaultValue, FieldIR, ResolvedSchema, latest_by_name, type_reaches_intern_table,
+    width_max_value,
+};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use writer::CodeWriter;
 
 // wire byte size if ty is fixed-width, none if variable
@@ -51,17 +55,43 @@ pub(crate) fn is_blastable(schema: &ResolvedSchema, fl: &FieldLineage) -> bool {
     }
 }
 
-// reorders fields so blastable fixed-width ones lead, everything else keeps declaration order; encode/decode/skip all use this same order so the wire format is unaffected
+// blastable fixed-width fields lead (each then sits at a constant offset), then
+// seekable variable-width ones (so a seek's skip chain crosses only other
+// seekable fields), then the rest. `seekable` is read from this version's own
+// declaration, never the latest — sourcing it from the latest would relayout
+// every historical version the moment a field is marked.
+//
+// rank 0 is exactly the blastable set, which decode/skip still split on with
+// partition_point(is_blastable). Optional is WireSize::Variable and so never
+// rank 0; encode assigns presence-bit indices over all of `ordered` while
+// decode/skip assign them over the non-blastable tail, and those agree only
+// because of that. Keep it that way.
+pub(crate) fn wire_rank(schema: &ResolvedSchema, fl: &FieldLineage) -> u8 {
+    if is_blastable(schema, fl) {
+        0
+    } else if fl.seekable {
+        1
+    } else {
+        2
+    }
+}
+
+// encode/decode/skip all use this same order, so the wire format stays consistent
 pub(crate) fn ordered_wire_fields<'a>(
     schema: &ResolvedSchema,
     vl: &'a VersionLineage,
 ) -> Vec<&'a FieldLineage> {
     let mut fields: Vec<&FieldLineage> = vl.fields.iter().collect();
-    fields.sort_by_key(|fl| u8::from(!is_blastable(schema, fl)));
+    // stable, so declaration order survives within each rank
+    fields.sort_by_key(|fl| wire_rank(schema, fl));
     fields
 }
 
 pub fn generate(schema: &ResolvedSchema) -> String {
+    generate_module(schema, true)
+}
+
+fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
     let mut w = CodeWriter::default();
 
     w.line("// @generated — do not edit");
@@ -79,16 +109,10 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     w.blank();
 
     // types needing <'buf>: hold a lazy field or borrowed &'buf str, directly or transitively; type_info renders these via the thread-local set installed below
+    // includes imported roots under their module-qualified names
     let infected = compute_lifetime_infected(schema);
-    let mut infected_types = infected.clone();
-    for (alias, imported) in &schema.imports {
-        let imp_inf = compute_lifetime_infected(imported);
-        if imp_inf.contains(imported.name_hint.as_str()) {
-            infected_types.insert(format!("{}::{}", alias.to_snake_case(), imported.name_hint));
-        }
-    }
     // nested generate calls for imports swap in their own set and restore ours on return
-    let prev = set_infected(infected_types);
+    let prev = set_infected(infected.clone());
 
     // types whose write_*/encode_vN must return PojocResult<()> because they carry a min:/max: constraint, same thread-local pattern as lifetime infection
     let constraint_infected = compute_constraint_infected(schema);
@@ -114,6 +138,8 @@ pub fn generate(schema: &ResolvedSchema) -> String {
     structs::emit_bitsets(schema, &mut w);
     structs::emit_unions(schema, &infected, &mut w);
     decode::emit_decode_functions(schema, &infected, &mut w);
+    // after decode: reuses its read_*/skip_*/lazy_* helpers
+    seek::emit_seek_functions(schema, &infected, export_pluck, &mut w);
     emit_dispatcher(
         schema,
         &infected,
@@ -150,10 +176,14 @@ fn compute_union_version_intern_infected(schema: &ResolvedSchema) -> HashSet<Typ
         .unions
         .iter()
         .filter(|(_, resolved)| {
-            resolved
-                .variants
-                .iter()
-                .any(|v| type_ref_uses_intern(schema, &v.payload, &mut HashSet::new()))
+            resolved.variants.iter().any(|v| {
+                type_reaches_intern_table(
+                    &schema.types,
+                    &schema.unions,
+                    &v.payload,
+                    &mut HashSet::new(),
+                )
+            })
         })
         .map(|(id, _)| id.clone())
         .collect()
@@ -164,21 +194,27 @@ fn compute_union_version_intern_infected(schema: &ResolvedSchema) -> HashSet<Typ
 // the one Rust enum shape), width-filtered the same way emit_union_writers
 // filters which variants get a real write arm vs. a DiscriminantOverflow one.
 fn compute_union_write_intern_infected(schema: &ResolvedSchema) -> HashSet<TypeId> {
-    let latest_by_name =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest_by_name = latest_by_name(&schema.unions.unions);
 
     schema
         .unions
         .unions
         .iter()
         .filter(|(id, resolved)| {
-            let max_value = encode::width_max_value(resolved.discriminant_width());
+            let max_value = width_max_value(resolved.discriminant_width());
             let (_, latest) = latest_by_name[&id.name];
             latest
                 .variants
                 .iter()
                 .filter(|v| v.discriminant <= max_value)
-                .any(|v| type_ref_uses_intern(schema, &v.payload, &mut HashSet::new()))
+                .any(|v| {
+                    type_reaches_intern_table(
+                        &schema.types,
+                        &schema.unions,
+                        &v.payload,
+                        &mut HashSet::new(),
+                    )
+                })
         })
         .map(|(id, _)| id.clone())
         .collect()
@@ -398,62 +434,58 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
     }
 }
 
-fn get_latest_versions<K, V>(
-    items: &HashMap<K, V>,
-    get_key_name: impl Fn(&K) -> String,
-    get_version: impl Fn(&K) -> i128,
-) -> HashMap<String, (i128, &V)>
-where
-    K: std::hash::Hash + Eq,
-{
-    let mut latest = HashMap::new();
-    for (id, value) in items {
-        let version = get_version(id);
-        let name = get_key_name(id);
-        let entry = latest.entry(name).or_insert((version, value));
-        if version > entry.0 {
-            *entry = (version, value);
-        }
-    }
-    latest
-}
-
 /// A field that (directly or nested) carries a borrowed `&'buf str` forces its
 /// container to carry the `'buf` lifetime — exactly like a `lazy` field does.
 /// Only meaningful under [`borrow_strings`]; named-type nesting is handled by
 /// the propagation loop below via [`field_type_name`].
 pub(crate) fn field_carries_borrowed_string(ty: &ResolvedTypeRef) -> bool {
-    match ty {
-        ResolvedTypeRef::Scalar(id) => normalize_type(&id.name) == "string",
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. }
-        | ResolvedTypeRef::Interned(inner) => field_carries_borrowed_string(inner),
-        ResolvedTypeRef::Tuple(elems) => elems.iter().any(field_carries_borrowed_string),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            field_carries_borrowed_string(k) || field_carries_borrowed_string(v)
-        }
-        _ => false,
+    ty.any_node(
+        &mut |t| matches!(t, ResolvedTypeRef::Scalar(id) if normalize_type(&id.name) == "string"),
+    )
+}
+
+// whether a value of this type must borrow the input buffer, either directly or
+// through a named type already known to. seek accessors need this per field,
+// since a `seekable string` getter is <'buf> even when its root type is not.
+pub(crate) fn field_is_lifetime_infected(
+    ty: &ResolvedTypeRef,
+    lazy: bool,
+    infected: &HashSet<String>,
+) -> bool {
+    if lazy || field_carries_borrowed_string(ty) {
+        return true;
     }
+    let mut names = Vec::new();
+    field_type_names(ty, &mut names);
+    names.iter().any(|n| infected.contains(n))
 }
 
 fn compute_lifetime_infected(schema: &ResolvedSchema) -> HashSet<String> {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
-    let latest_unions =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
+    let latest_unions = latest_by_name(&schema.unions.unions);
 
-    let mut infected: HashSet<String> = latest
+    // imported roots first, so a field typed as one propagates infection through
+    // the fixpoint below exactly like a locally declared type would
+    let mut infected: HashSet<String> = schema
+        .imports
         .iter()
-        .filter(|(_, (_, resolved))| {
-            resolved
-                .fields
-                .iter()
-                .any(|f| f.lazy || field_carries_borrowed_string(&f.ty))
+        .filter(|(_, imported)| {
+            compute_lifetime_infected(imported).contains(imported.name_hint.as_str())
         })
-        .map(|(name, _)| name.clone())
+        .map(|(alias, imported)| format!("{}::{}", alias.to_snake_case(), imported.name_hint))
         .collect();
+
+    infected.extend(
+        latest
+            .iter()
+            .filter(|(_, (_, resolved))| {
+                resolved
+                    .fields
+                    .iter()
+                    .any(|f| f.lazy || field_carries_borrowed_string(&f.ty))
+            })
+            .map(|(name, _)| name.clone()),
+    );
 
     infected.extend(
         latest_unions
@@ -548,15 +580,28 @@ fn field_is_constrained(ty: &ResolvedTypeRef) -> bool {
 
 // names of types whose write_*/encode_vN must return PojocResult<()>, so the ? propagates from constrained fields up through containers
 fn compute_constraint_infected(schema: &ResolvedSchema) -> HashSet<String> {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
-    let latest_unions =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
+    let latest_unions = latest_by_name(&schema.unions.unions);
 
-    let mut infected: HashSet<String> = latest
+    // imported roots first, same as compute_lifetime_infected: an imported
+    // schema whose own encode is fallible makes every holder of it fallible too
+    let mut infected: HashSet<String> = schema
+        .imports
         .iter()
-        .filter(|(_, (_, resolved))| resolved.fields.iter().any(|f| field_is_constrained(&f.ty)))
-        .map(|(name, _)| name.clone())
+        .filter(|(_, imported)| {
+            compute_constraint_infected(imported).contains(imported.name_hint.as_str())
+        })
+        .map(|(alias, imported)| format!("{}::{}", alias.to_snake_case(), imported.name_hint))
         .collect();
+
+    infected.extend(
+        latest
+            .iter()
+            .filter(|(_, (_, resolved))| {
+                resolved.fields.iter().any(|f| field_is_constrained(&f.ty))
+            })
+            .map(|(name, _)| name.clone()),
+    );
 
     // every union writer is unconditionally fallible: Unknown's discriminant
     // can always overflow this version's fixed width.
@@ -705,9 +750,8 @@ fn emit_bound_check(
 
 // names of types whose write_*/read_* must thread the shared intern table, same fixpoint shape as compute_constraint_infected
 fn compute_intern_infected(schema: &ResolvedSchema) -> HashSet<String> {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
-    let latest_unions =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
+    let latest_unions = latest_by_name(&schema.unions.unions);
 
     let mut infected: HashSet<String> = latest
         .iter()
@@ -793,103 +837,22 @@ fn compute_intern_infected(schema: &ResolvedSchema) -> HashSet<String> {
 // whether version N's own historical fields ever touch interned data; gates the intern-table header per version so adding `intern` later doesn't retroactively break old wire bytes
 pub(crate) fn version_uses_intern(schema: &ResolvedSchema, fields: &[FieldLineage]) -> bool {
     let mut visited = HashSet::new();
-    fields
-        .iter()
-        .any(|f| type_ref_uses_intern(schema, &f.source_ty, &mut visited))
-}
-
-fn type_ref_uses_intern(
-    schema: &ResolvedSchema,
-    ty: &ResolvedTypeRef,
-    visited: &mut HashSet<TypeId>,
-) -> bool {
-    match ty {
-        ResolvedTypeRef::Interned(_) => true,
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::DeltaArray(inner)
-        | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. } => {
-            type_ref_uses_intern(schema, inner, visited)
-        }
-        ResolvedTypeRef::Tuple(elems) => elems
-            .iter()
-            .any(|e| type_ref_uses_intern(schema, e, visited)),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            type_ref_uses_intern(schema, k, visited) || type_ref_uses_intern(schema, v, visited)
-        }
-        // TypeId carries the version, so recurse into that exact historical shape, not the latest one
-        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
-            if !visited.insert(id.clone()) {
-                return false;
-            }
-            schema.types.types.get(id).is_some_and(|resolved| {
-                resolved
-                    .fields
-                    .iter()
-                    .any(|f| type_ref_uses_intern(schema, &f.ty, visited))
-            })
-        }
-        // NOT the same reasoning as Scalar above: unlike a struct field (whose
-        // decode/encode is pinned to one exact historical shape), a union
-        // field's *Rust value* can be any variant of the union's *latest*
-        // shape regardless of which version it's pinned to — write_foo_vN's
-        // match is exhaustive over latest.variants (width-permitting), so an
-        // old-pinned encoder can still be asked to write a variant only the
-        // latest version declared. The root's intern-table-on-the-wire
-        // decision must therefore agree with that write-side possibility
-        // (this is the same criterion as UNION_WRITE_INTERN_INFECTED/
-        // compute_union_write_intern_infected — recomputed here directly
-        // rather than read from that not-yet-populated thread-local, since
-        // this function is itself part of computing it).
-        ResolvedTypeRef::Union(id) => {
-            if !visited.insert(id.clone()) {
-                return false;
-            }
-            let Some(resolved) = schema.unions.unions.get(id) else {
-                return false;
-            };
-            let latest_by_name = get_latest_versions(
-                &schema.unions.unions,
-                |uid| uid.name.clone(),
-                |uid| uid.version,
-            );
-            let Some((_, latest)) = latest_by_name.get(&id.name) else {
-                return false;
-            };
-            let max_value = encode::width_max_value(resolved.discriminant_width());
-            latest
-                .variants
-                .iter()
-                .filter(|v| v.discriminant <= max_value)
-                .any(|v| type_ref_uses_intern(schema, &v.payload, visited))
-        }
-        _ => false,
-    }
+    fields.iter().any(|f| {
+        type_reaches_intern_table(&schema.types, &schema.unions, &f.source_ty, &mut visited)
+    })
 }
 
 // names of infected named types this field transitively references; direct borrowed strings are handled separately by field_carries_borrowed_string
 fn field_type_names(ty: &ResolvedTypeRef, out: &mut Vec<String>) {
-    match ty {
+    ty.for_each_node(&mut |t| match t {
         ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => out.push(id.name.clone()),
         ResolvedTypeRef::Union(id) => out.push(id.name.clone()),
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::DeltaArray(inner)
-        | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. }
-        | ResolvedTypeRef::Interned(inner) => field_type_names(inner, out),
-        ResolvedTypeRef::Tuple(elems) => elems.iter().for_each(|e| field_type_names(e, out)),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            field_type_names(k, out);
-            field_type_names(v, out);
-        }
+        // an imported root is tracked under the module-qualified name type_info renders it as
+        ResolvedTypeRef::ImportedSchema {
+            alias, root_name, ..
+        } => out.push(format!("{}::{root_name}", alias.to_snake_case())),
         _ => {}
-    }
+    });
 }
 
 fn emit_imported_submodules(schema: &ResolvedSchema, w: &mut CodeWriter) {
@@ -899,7 +862,7 @@ fn emit_imported_submodules(schema: &ResolvedSchema, w: &mut CodeWriter) {
     for alias in aliases {
         let imported = &schema.imports[alias];
         let module = alias.to_snake_case();
-        let body = generate(imported);
+        let body = generate_module(imported, false);
 
         w.line(&format!("pub mod {module} {{"));
         w.indent();

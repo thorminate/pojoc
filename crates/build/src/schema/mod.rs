@@ -4,6 +4,7 @@ pub mod import_orchestrator;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
+pub mod render;
 pub mod span;
 
 pub use ast::*;

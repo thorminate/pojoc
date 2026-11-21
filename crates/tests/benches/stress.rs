@@ -675,7 +675,10 @@ fn make_bebop_buf(n: usize) -> Vec<u8> {
     buf
 }
 
-const SIZES: &[usize] = &[100, 2_500, 5_000, 7_500, 10_000];
+const SIZES: &[usize] = &[
+    //100, 2_500, 5_000, 7_500,
+    10_000,
+];
 
 fn stress_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress/encode");

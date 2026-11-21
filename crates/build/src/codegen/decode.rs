@@ -1,7 +1,6 @@
 use super::writer::CodeWriter;
 use crate::codegen::{
-    emit_constraint_guard, emit_default, get_latest_versions, is_blastable, ordered_wire_fields,
-    wire_fixed_size,
+    emit_constraint_guard, emit_default, is_blastable, ordered_wire_fields, wire_fixed_size,
 };
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
@@ -30,7 +29,7 @@ pub fn emit_decode_functions(
 }
 
 fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -132,7 +131,7 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -196,8 +195,7 @@ fn latest_variant_name(latest: &ResolvedUnion, discriminant: u64) -> &str {
 }
 
 fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
-    let latest_by_name =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest_by_name = latest_by_name(&schema.unions.unions);
 
     let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
     entries
@@ -292,11 +290,7 @@ fn emit_union_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(
-        &schema.bitsets.bitsets,
-        |id| id.name.clone(),
-        |id| id.version,
-    );
+    let latest = latest_by_name(&schema.bitsets.bitsets);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -335,7 +329,7 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
-fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
+pub(crate) fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
     let info = type_info(ty);
     if let WireSize::Fixed(n) = info.wire_size
         && n > 0
@@ -477,7 +471,7 @@ fn emit_decode_fn(
     w.line("}");
 }
 
-fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
+pub(crate) fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
     match &fl.mapping {
         FieldMapping::Discard => {
             if let ResolvedTypeRef::Array(inner) = &fl.source_ty
@@ -547,7 +541,7 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
     }
 }
 
-fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
+pub(crate) fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) => {
@@ -704,7 +698,7 @@ fn emit_blastable_field_read(
 
 // reads via *_unchecked accessors under the blastable block's single upfront
 // bounds check. Enum still needs its fallible TryFrom, `?`-propagated normally.
-fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
+pub(crate) fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(_) => {
@@ -767,7 +761,7 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     }
 }
 
-fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
+pub(crate) fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
     let header_bytes = optional_count.div_ceil(8);
     if header_bytes > 0 {
         w.line(&format!(
@@ -776,7 +770,7 @@ fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
     }
 }
 
-fn emit_field_mapping_arm(
+pub(crate) fn emit_field_mapping_arm(
     schema: &ResolvedSchema,
     fl: &FieldLineage,
     inner: &ResolvedTypeRef,
@@ -968,12 +962,12 @@ fn compute_bitset_literal_value(
     value
 }
 
-enum CastExpr {
+pub(crate) enum CastExpr {
     Inline(String),
     Block(String),
 }
 
-fn emit_cast_value(
+pub(crate) fn emit_cast_value(
     schema: &ResolvedSchema,
     from: &ResolvedTypeRef,
     to: &ResolvedTypeRef,
@@ -1250,7 +1244,7 @@ pub(crate) fn lazy_field_helper_name(type_name: &str, field_name: &str) -> Strin
 // elsewhere (e.g. a union payload struct) — read via emit_type_readers'
 // `read_foo`, not the root's per-version decode_vN.
 fn emit_type_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
 
@@ -1297,6 +1291,12 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
     ));
     w.indent();
 
+    // decode_vN reads the table before anything else, so skipping the payload
+    // has to step over it too
+    if crate::codegen::version_uses_intern(schema, &vl.fields) {
+        w.line("skip_intern_table(__buf, __pos)?;");
+    }
+
     let optional_count = vl
         .fields
         .iter()
@@ -1321,27 +1321,42 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
 
     let mut optional_counter = 0;
     for &fl in rest {
-        if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
-            if let Some(stmt) = emit_skip_stmt(inner) {
-                let byte_idx = optional_counter / 8;
-                let bit_idx = optional_counter % 8;
-                optional_counter += 1;
-                w.line(&format!(
-                    "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
-                ));
-                w.indent();
-                w.line(&stmt);
-                w.dedent();
-                w.line("}");
-            }
-        } else {
-            if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
-                w.line(&stmt);
-            }
-        }
+        emit_ordered_skip(fl, &mut optional_counter, w);
     }
 
     w.line("Ok(())");
     w.dedent();
     w.line("}");
+}
+
+// skips one field of the non-blastable tail, gating an Optional on its presence
+// bit. `optional_counter` must be advanced across the tail in wire order, since
+// that is how encode assigns the bits — seek walks the same tail, so it shares
+// this rather than reimplementing the bit arithmetic.
+//
+// every Optional consumes a bit, including one whose inner type is zero-size and
+// so emits no skip at all: encode still writes that bit and decode_vN still
+// counts it, so bailing out early here would read every later optional's
+// presence from the wrong bit.
+pub(crate) fn emit_ordered_skip(
+    fl: &FieldLineage,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
+        let byte_idx = *optional_counter / 8;
+        let bit_idx = *optional_counter % 8;
+        *optional_counter += 1;
+        if let Some(stmt) = emit_skip_stmt(inner) {
+            w.line(&format!(
+                "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
+            ));
+            w.indent();
+            w.line(&stmt);
+            w.dedent();
+            w.line("}");
+        }
+    } else if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
+        w.line(&stmt);
+    }
 }

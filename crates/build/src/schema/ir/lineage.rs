@@ -20,6 +20,9 @@ pub struct FieldLineage {
     pub source_ty: ResolvedTypeRef,
     pub mapping: FieldMapping,
     pub lazy: bool,
+    /// this version's own declaration, never the latest — wire_rank uses it, so
+    /// reading it from the latest version would relayout historical versions
+    pub seekable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +117,7 @@ fn build_version_lineage(ver: &ResolvedVersion, latest: &ResolvedVersion) -> Ver
                 source_ty: src.ty.clone(),
                 mapping,
                 lazy: src.lazy,
+                seekable: src.seekable,
             }
         })
         .collect();

@@ -1,0 +1,29 @@
+/// The imported half of the import-boundary pair. Deliberately uses every
+/// feature that has to survive being nested inside another schema: its own
+/// intern table, a lazy field, seekable fields, a union, and a constraint whose
+/// violation must reach the importing root's caller.
+schema ImportLeaf {
+
+  version 1 {
+    union Sig {
+      Num: i32,
+      Text: string,
+    }
+
+    fields {
+      id: u32 = 0
+      count: u8(min: 1, max: 10) = 5
+      label: intern string = ""
+      blob: lazy [u8] = []
+      tag: seekable u32 = 0
+      sig: Sig
+    }
+  }
+
+  version 2 {
+    diff {
+      + extra: intern string = ""
+      + note: seekable string = ""
+    }
+  }
+}

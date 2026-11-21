@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "intern_speed"
 harness = false
+
+[[bench]]
+name = "seek"
+harness = false

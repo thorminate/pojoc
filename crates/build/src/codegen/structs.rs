@@ -1,10 +1,10 @@
 use super::writer::CodeWriter;
 use crate::codegen::decode::{get_field_default_expr, lazy_field_helper_name};
 use crate::codegen::encode::emit_write_expr;
-use crate::codegen::get_latest_versions;
 use crate::core::types::{
     TypeId, emit_serde, is_union_intern_infected, type_info, width_prim_names,
 };
+use crate::schema::ir::ir_types::latest_by_name;
 use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use std::collections::{HashMap, HashSet};
@@ -59,7 +59,7 @@ pub fn emit_structs(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut
 }
 
 pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.enums.enums, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.enums.enums);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -125,7 +125,7 @@ fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
 }
 
 pub fn emit_unions(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.unions.unions);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
 
@@ -307,11 +307,7 @@ fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
 }
 
 pub fn emit_bitsets(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(
-        &schema.bitsets.bitsets,
-        |id| id.name.clone(),
-        |id| id.version,
-    );
+    let latest = latest_by_name(&schema.bitsets.bitsets);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
