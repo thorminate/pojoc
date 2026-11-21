@@ -114,6 +114,24 @@ fn main() {
 }
 ```
 
+To build a standalone helper for a schema, run:
+
+```sh
+pojoc build schemas/player.pojoc --bin
+./out/player serve --stdio
+```
+
+`--bin` needs Cargo and a Rust toolchain. It emits the executable (`player.exe`
+on Windows) alongside `out/player.rs`. The helper accepts consecutive native
+Pojoc envelopes on stdin and flushes one envelope in the latest schema version
+to stdout per request. The existing version varint and little-endian payload
+length provide framing. EOF between messages exits successfully. A malformed
+request or a payload over 16 MiB exits with an error on stderr.
+
+The generated Rust module exposes the same loop as
+`serve(&mut input, &mut output, max_payload_bytes)`, with a buffered reader as
+input and a caller-supplied request limit.
+
 ## Building n' Testing
 
 The compiler itself (`pojoc`, `pojoc-build`, `pojoc-cli`) is plain cargo, nothing special:

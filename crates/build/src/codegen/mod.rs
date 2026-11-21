@@ -147,6 +147,10 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
         &mut w,
     );
     w.blank();
+    for line in include_str!("stream.rs.in").lines() {
+        w.line(line);
+    }
+    w.blank();
     encode::emit_size_hint_helpers(schema, &mut w);
     encode::emit_size_hint_vn_functions(schema, &infected, &mut w);
     encode::emit_encode_helpers(schema, &mut w);

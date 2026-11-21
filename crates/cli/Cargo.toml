@@ -17,3 +17,4 @@ path = "src/main.rs"
 [dependencies]
 pojoc-build = { path = "../build", version = "0.6.0" }
 clap = { workspace = true, features = ["derive"] }
+tempfile = "3"
