@@ -4,7 +4,6 @@ use crate::codegen::encode::emit_write_expr;
 use crate::core::types::{
     TypeId, emit_serde, is_union_intern_infected, type_info, width_prim_names,
 };
-use crate::schema::ir::ir_types::latest_by_name;
 use crate::schema::ir::ir_types::*;
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use std::collections::{HashMap, HashSet};

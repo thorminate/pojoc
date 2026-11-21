@@ -1,34 +1,12 @@
+//! Renders resolved IR back into `.pojoc` source syntax.
+//!
+//! Shared by the LSP (hover signatures) and `pojoc show`, so the two never
+//! describe the same schema differently.
+
 use crate::core::types::ResolvedTypeRef;
 use crate::schema::ir::ir_types::{DefaultValue, FieldIR};
 
-pub fn render_modifiers(field: &FieldIR) -> &'static str {
-    match (field.seekable, field.lazy) {
-        (true, true) => "seekable lazy ",
-        (true, false) => "seekable ",
-        (false, true) => "lazy ",
-        (false, false) => "",
-    }
-}
-
-pub fn render_default_value(value: &DefaultValue) -> String {
-    match value {
-        DefaultValue::Bool(b) => b.to_string(),
-        DefaultValue::Int(n) => n.to_string(),
-        DefaultValue::Float(n) if n.fract() == 0.0 => format!("{n:.1}"),
-        DefaultValue::Float(n) => n.to_string(),
-        DefaultValue::Str(s) => format!("{s:?}"),
-        DefaultValue::EnumVariant { ty_name, variant } => format!("{ty_name}::{variant}"),
-        _ => String::new(),
-    }
-}
-
-pub fn rust_type_to_schema(rust_type: &str) -> &str {
-    match rust_type {
-        "&'static str" => "string",
-        other => other,
-    }
-}
-
+/// a resolved type as it would be written in a schema
 pub fn render_type_ref(ty: &ResolvedTypeRef) -> String {
     match ty {
         ResolvedTypeRef::Scalar(id) | ResolvedTypeRef::Union(id) => id.name.clone(),
@@ -70,5 +48,44 @@ pub fn render_type_ref(ty: &ResolvedTypeRef) -> String {
         }
         ResolvedTypeRef::Interned(inner) => format!("intern {}", render_type_ref(inner)),
         ResolvedTypeRef::ImportedSchema { alias, version, .. } => format!("{alias}@{version}"),
+    }
+}
+
+/// a field's modifier keywords in canonical order, with a trailing space when
+/// non-empty, so a signature reads as it would be written
+pub fn render_modifiers(f: &FieldIR) -> String {
+    let mut out = String::new();
+    if f.seekable {
+        out.push_str("seekable ");
+    }
+    if f.lazy {
+        out.push_str("lazy ");
+    }
+    out
+}
+
+/// const fields carry a Rust type rather than a ResolvedTypeRef
+pub fn rust_type_to_schema(rust_type: &str) -> &str {
+    match rust_type {
+        "&'static str" => "string",
+        other => other,
+    }
+}
+
+/// a literal as it would appear after `=`. non-primitive defaults have no single
+/// literal form, so they render empty and callers omit the `=`.
+pub fn render_default_value(value: &DefaultValue) -> String {
+    match value {
+        DefaultValue::Bool(b) => b.to_string(),
+        DefaultValue::Int(i) => i.to_string(),
+        DefaultValue::Float(f) => {
+            if f.fract() == 0.0 {
+                format!("{f:.1}")
+            } else {
+                f.to_string()
+            }
+        }
+        DefaultValue::Str(s) => format!("\"{s}\""),
+        _ => String::new(),
     }
 }

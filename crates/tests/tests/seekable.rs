@@ -14,6 +14,27 @@ fn latest() -> u64 {
 }
 
 #[test]
+fn seeking_a_retyped_interned_string_applies_the_same_cast_as_decode() {
+    use pojoc_tests::{pluck_seek_retype as pluck, pojoc_seek_retype as retype};
+
+    for (version, label) in [(1, Some("saved")), (2, Some("saved")), (2, None)] {
+        let value = retype::SeekRetype { id: 42, label };
+        let mut buf = Vec::new();
+        retype::encode_for_version(&mut buf, &value, version).unwrap();
+
+        let decoded = retype::decode(&buf).unwrap();
+        assert_eq!(decoded.label, label);
+        assert_eq!(retype::seek_label(&buf).unwrap(), decoded.label);
+        assert_eq!(retype::seek_all(&buf).unwrap().label, decoded.label);
+        assert_eq!(pluck!(retype, &buf, label).unwrap(), decoded.label);
+        assert_eq!(
+            pluck!(retype, &buf, id, label).unwrap(),
+            (decoded.id, decoded.label)
+        );
+    }
+}
+
+#[test]
 fn seek_returns_the_encoded_values() {
     let buf = encoded_at(latest());
     let e = make_populated_edge();

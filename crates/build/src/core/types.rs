@@ -183,32 +183,59 @@ pub enum ResolvedTypeRef {
 }
 
 impl ResolvedTypeRef {
-    pub(crate) fn any_node(&self, predicate: &mut impl FnMut(&Self) -> bool) -> bool {
-        if predicate(self) {
-            return true;
-        }
-        match self {
-            Self::Array(inner)
-            | Self::FixedArray(inner, _)
-            | Self::DeltaArray(inner)
-            | Self::FixedDeltaArray(inner, _)
-            | Self::Optional(inner)
-            | Self::Boxed(inner)
-            | Self::Constrained { inner, .. }
-            | Self::Interned(inner) => inner.any_node(predicate),
-            Self::Map(key, value) | Self::FixedMap(key, value, _) => {
-                key.any_node(predicate) || value.any_node(predicate)
-            }
-            Self::Tuple(elements) => elements.iter().any(|item| item.any_node(predicate)),
-            _ => false,
-        }
+    /// the directly nested type refs, in declaration order (key before value for
+    /// the map kinds). The single place the shape of the recursion is written
+    /// down: predicates over a type tree describe what they contribute at one
+    /// node and lean on `children`/[`any_node`]/[`for_each_node`] to walk,
+    /// rather than each re-deriving the wrapper arms and silently treating a
+    /// variant added later as a leaf.
+    ///
+    /// Leaf variants (`Scalar`, `Enum`, `Bitset`, `Union`, `FixedString`,
+    /// `VFloat`, `ImportedSchema`) yield nothing — a named type's *fields* are
+    /// not children here, since resolving those needs a registry. Walkers that
+    /// cross into a named type do so explicitly.
+    pub fn children(&self) -> impl Iterator<Item = &ResolvedTypeRef> {
+        use ResolvedTypeRef::*;
+
+        // a fixed-size array covers the one-inner and two-inner cases without
+        // allocating; Tuple is the only variadic arm
+        let (pair, list): ([Option<&ResolvedTypeRef>; 2], &[ResolvedTypeRef]) = match self {
+            Array(inner)
+            | FixedArray(inner, _)
+            | DeltaArray(inner)
+            | FixedDeltaArray(inner, _)
+            | Optional(inner)
+            | Boxed(inner)
+            | Constrained { inner, .. }
+            | Interned(inner) => ([Some(inner), None], &[]),
+
+            Map(k, v) | FixedMap(k, v, _) => ([Some(k), Some(v)], &[]),
+
+            Tuple(elems) => ([None, None], elems.as_slice()),
+
+            Scalar(_)
+            | Enum(..)
+            | Bitset(..)
+            | Union(_)
+            | FixedString(_)
+            | VFloat { .. }
+            | ImportedSchema { .. } => ([None, None], &[]),
+        };
+
+        pair.into_iter().flatten().chain(list.iter())
     }
 
-    pub(crate) fn for_each_node(&self, visit: &mut impl FnMut(&Self)) {
-        self.any_node(&mut |node| {
-            visit(node);
-            false
-        });
+    /// true if `f` holds at this node or anywhere beneath it
+    pub fn any_node(&self, f: &mut impl FnMut(&ResolvedTypeRef) -> bool) -> bool {
+        f(self) || self.children().any(|c| c.any_node(f))
+    }
+
+    /// visits this node then every node beneath it, parents before children
+    pub fn for_each_node(&self, f: &mut impl FnMut(&ResolvedTypeRef)) {
+        f(self);
+        for c in self.children() {
+            c.for_each_node(f);
+        }
     }
 
     pub fn type_id(&self) -> Option<&TypeId> {
@@ -774,21 +801,7 @@ pub fn contains_enum_under_closure(ty: &ResolvedTypeRef) -> bool {
 }
 
 pub fn contains_interned(ty: &ResolvedTypeRef) -> bool {
-    match ty {
-        ResolvedTypeRef::Interned(_) => true,
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::DeltaArray(inner)
-        | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. } => contains_interned(inner),
-        ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_interned),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            contains_interned(k) || contains_interned(v)
-        }
-        _ => false,
-    }
+    ty.any_node(&mut |t| matches!(t, ResolvedTypeRef::Interned(_)))
 }
 
 pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {

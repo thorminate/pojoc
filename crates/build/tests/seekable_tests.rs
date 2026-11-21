@@ -259,17 +259,25 @@ fn a_seekable_string_getter_is_lifetime_infected_independently_of_the_root() {
         schema S {
           version 1 {
             fields {
-              n: u32 = 0
+              n: seekable u32 = 0
               s: seekable string = ""
             }
           }
         }
         "#,
     );
+    // the root type is not itself infected here, but the getter still borrows
+    // the buffer. `__start: usize` leaves one input lifetime, so it elides.
     let seek = extract_fn(&code, "pub fn seek_v1_s");
     assert!(
-        seek.contains("-> PojocResult<&str>"),
-        "the getter must borrow the string from the input buffer:\n{seek}"
+        seek.contains("PojocResult<&'_ str>"),
+        "a borrowed-string getter must tie its result to the buffer:\n{seek}"
+    );
+    let plain = extract_fn(&code, "pub fn seek_v1_n");
+    let sig = plain.lines().next().unwrap();
+    assert!(
+        !sig.contains('\''),
+        "a plain u32 getter needs no lifetime at all:\n{sig}"
     );
 }
 
@@ -454,6 +462,106 @@ fn marking_a_field_seekable_later_leaves_earlier_versions_laid_out_as_before() {
     );
 }
 
+/// regression test: an imported schema's warnings used to be dropped on the
+/// floor, so a shared schema could carry a hidden per-seek cost that no root
+/// ever reported. They now aggregate, each still rendering against its own file.
+#[test]
+fn warnings_from_imported_schemas_reach_the_root() {
+    use pojoc_build::schema::ImportOrchestrator;
+
+    let dir = std::env::temp_dir().join("pojoc_import_warning_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("inner.pojoc"),
+        "schema Inner {\n  version 1 {\n    fields { tags: seekable [intern string] = [] }\n  }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("outer.pojoc"),
+        "schema Outer {\n  import \"inner.pojoc\" as Inner\n  version 1 {\n    fields { child: Inner@1 }\n  }\n}\n",
+    )
+    .unwrap();
+
+    let outer = dir.join("outer.pojoc");
+    let resolved = ImportOrchestrator::new()
+        .resolve_root(&outer)
+        .expect("resolve failed");
+
+    assert!(
+        resolved.warnings.is_empty(),
+        "the root itself declares nothing warnable"
+    );
+
+    let all = resolved.warnings_recursive(&outer);
+    assert_eq!(all.len(), 1, "expected the import's warning, got {all:?}");
+
+    let (w, path) = all[0];
+    assert!(
+        matches!(w, SchemaWarning::SeekMaterializesInternTable { field, .. } if field == "tags"),
+        "unexpected warning: {w:?}"
+    );
+    assert!(
+        path.ends_with("inner.pojoc"),
+        "must render against the file that declared it, got {}",
+        path.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// regression test: an imported root that borrows the buffer used to infect only
+/// the *rendered* type (`inner::Inner<'buf>`) and not the types holding it, so a
+/// root whose sole borrow came through an import declared no `'buf` to bind it.
+/// Nothing caught it because every schema in the suite already borrows on its own.
+#[test]
+fn an_imported_root_that_borrows_infects_the_types_holding_it() {
+    use pojoc_build::codegen::generate;
+    use pojoc_build::schema::ImportOrchestrator;
+
+    let dir = std::env::temp_dir().join("pojoc_import_lifetime_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Inner borrows (a bare `string`); Outer has no borrow of its own, so the
+    // only path to `'buf` is through the imported field
+    std::fs::write(
+        dir.join("inner.pojoc"),
+        "schema Inner {\n  version 1 {\n    fields { name: string = \"\" }\n  }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("outer.pojoc"),
+        "schema Outer {\n  import \"inner.pojoc\" as Sub\n  version 1 {\n    fields {\n      id: u32 = 0\n      child: seekable Sub@1\n    }\n  }\n}\n",
+    )
+    .unwrap();
+
+    let outer = dir.join("outer.pojoc");
+    let resolved = ImportOrchestrator::new()
+        .resolve_root(&outer)
+        .expect("resolve failed");
+    let code = generate(&resolved);
+
+    assert!(
+        code.contains("pub struct Outer<'buf> {"),
+        "root struct holding an imported borrowing root must declare 'buf"
+    );
+    assert!(
+        code.contains("pub struct OuterSeek<'buf> {"),
+        "seek struct holding an imported borrowing root must declare 'buf"
+    );
+    // the accessors elide rather than name it, but they must still be lifetimed
+    assert!(
+        code.contains(
+            "pub fn seek_v1_child(__buf: &[u8], __start: usize) -> PojocResult<sub::Inner<'_>>"
+        ),
+        "seek accessor must borrow the buffer, got:\n{}",
+        extract_fn(&code, "pub fn seek_v1_child")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// slices one top-level fn's source by signature, to the closing brace at column 0
 fn extract_fn<'a>(code: &'a str, signature_prefix: &str) -> &'a str {
     let start = code
@@ -465,4 +573,119 @@ fn extract_fn<'a>(code: &'a str, signature_prefix: &str) -> &'a str {
         .map(|i| i + 3)
         .unwrap_or(after_start.len());
     &after_start[..end]
+}
+
+/// generated code lands in a consuming crate's lint scope, so a target at the
+/// very start of the blast region must not emit `__blast_start + 0`
+#[test]
+fn a_zero_offset_blast_target_emits_no_identity_add() {
+    let code = generate(
+        r#"
+        schema S {
+          version 1 {
+            fields {
+              tag: seekable u32 = 0
+              other: u32 = 0
+            }
+          }
+        }
+        "#,
+    );
+    assert!(
+        !code.contains("__blast_start + 0"),
+        "identity add reached the generated output:\n{}",
+        extract_fn(&code, "pub fn seek_all_v1")
+    );
+    assert!(
+        code.contains("*__pos = __blast_start;"),
+        "expected the bare assignment for a zero offset:\n{}",
+        extract_fn(&code, "pub fn seek_all_v1")
+    );
+}
+
+// ---- subset reader ----
+
+#[test]
+fn the_subset_walk_guards_every_target_and_exits_after_the_last_requested() {
+    let code = generate(
+        r#"
+        schema S {
+          version 1 {
+            fields {
+              n: seekable u32 = 0
+              a: seekable string = ""
+              b: seekable string = ""
+              c: seekable string = ""
+              bulk: [u8] = []
+            }
+          }
+        }
+        "#,
+    );
+
+    // one index per target, in latest-version declaration order
+    for (i, f) in ["n", "a", "b", "c"].iter().enumerate() {
+        assert!(
+            code.contains(&format!("pub const {f}: usize = {i};")),
+            "missing mask index for {f}:\n{code}"
+        );
+    }
+    // the mask API is an implementation detail of the macro
+    assert!(code.contains("#[doc(hidden)]"));
+    assert!(
+        !code.contains("pub fn seek_subset"),
+        "the subset walk should not be part of the public surface:\n{code}"
+    );
+    assert!(
+        code.contains("macro_rules! pluck_s"),
+        "the schema-qualified pluck macro should be emitted:\n{code}"
+    );
+
+    let f = extract_fn(&code, "pub fn __pluck_v1");
+    // an unrequested tail field is stepped over, not read
+    assert!(
+        f.contains("if M0 & (1u128 << 1) != 0 {") && f.contains("skip_string(__buf, __pos)?;"),
+        "each tail target needs a read/skip pair:\n{f}"
+    );
+    // the walk gives up as soon as nothing later is wanted
+    assert!(
+        f.contains("if M0 & ((1u128 << 2) | (1u128 << 3)) == 0 { break; }"),
+        "expected an early exit keyed on the remaining targets:\n{f}"
+    );
+    // unrequested fields stay None rather than picking up a default
+    assert!(
+        f.contains("let mut __out_a = None;"),
+        "targets start unbound:\n{f}"
+    );
+}
+
+#[test]
+fn a_requested_field_the_version_predates_still_gets_its_default() {
+    let code = generate(
+        r#"
+        schema S {
+          version 1 { fields { a: seekable u32 = 0 } }
+          version 2 { diff { + b: seekable u32 = 9 } }
+        }
+        "#,
+    );
+    let v1 = extract_fn(&code, "pub fn __pluck_v1");
+    // None must mean "not requested", never "missing in this version"
+    assert!(
+        v1.contains("if M0 & (1u128 << 1) != 0 { __out_b = Some(9"),
+        "a requested-but-absent field should carry the version default:\n{v1}"
+    );
+}
+
+#[test]
+fn a_schema_without_seekable_emits_no_subset_reader() {
+    let code = generate(
+        r#"
+        schema Plain {
+          version 1 { fields { a: u32 = 0 } }
+        }
+        "#,
+    );
+    assert!(!code.contains("__pluck"));
+    assert!(!code.contains("macro_rules! pluck"));
 }
