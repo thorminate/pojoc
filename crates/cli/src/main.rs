@@ -44,6 +44,10 @@ enum Command {
         /// Also compile a standalone, schema-specific executable using Cargo.
         #[arg(long = "bin")]
         emit_bin: bool,
+
+        /// Use a specific Pojoc runtime crate for the standalone executable.
+        #[arg(long, requires = "emit_bin", value_name = "DIR")]
+        runtime_path: Option<PathBuf>,
     },
 
     /// Check a schema without writing output
@@ -77,7 +81,15 @@ fn main() {
             verbose,
             no_serde,
             emit_bin,
-        } => build(input, out_dir, verbose, no_serde, emit_bin),
+            runtime_path,
+        } => build(
+            input,
+            out_dir,
+            verbose,
+            no_serde,
+            emit_bin,
+            runtime_path.as_deref(),
+        ),
         Command::Check { input, verbose } => check(input, verbose),
         Command::Show { input, fields_only } => show(input, fields_only),
     };
@@ -103,7 +115,14 @@ fn log(verbose: bool, msg: &str) {
     }
 }
 
-fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool, emit_bin: bool) -> i32 {
+fn build(
+    input: PathBuf,
+    out_dir: PathBuf,
+    verbose: bool,
+    no_serde: bool,
+    emit_bin: bool,
+    runtime_path: Option<&Path>,
+) -> i32 {
     pojoc_build::set_emit_serde(!no_serde);
 
     let mut orchestrator = ImportOrchestrator::new();
@@ -163,7 +182,7 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool, emit_b
         ),
     );
 
-    if emit_bin && let Err(e) = binary::build(&out_dir, stem, &code, no_serde) {
+    if emit_bin && let Err(e) = binary::build(&out_dir, stem, &code, no_serde, runtime_path) {
         eprintln!("error: could not build standalone executable: {e}");
         return 1;
     }

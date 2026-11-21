@@ -122,7 +122,12 @@ pojoc build schemas/player.pojoc --bin
 ```
 
 `--bin` needs Cargo and a Rust toolchain. It emits the executable (`player.exe`
-on Windows) alongside `out/player.rs`. The helper accepts consecutive native
+on Windows) alongside `out/player.rs`. A compiler built from a checkout uses
+that checkout's runtime while it is available. Released binaries use the
+matching published runtime version. Pass `--runtime-path <dir>` to point
+Cargo at another checkout's `crates/runtime` directory.
+
+The helper accepts consecutive native
 Pojoc envelopes on stdin and flushes one envelope in the latest schema version
 to stdout per request. The existing version varint and little-endian payload
 length provide framing. EOF between messages exits successfully. A malformed
