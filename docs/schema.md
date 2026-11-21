@@ -13,7 +13,7 @@ This is a reference for the schema language itself. For benchmarks and setup see
 - [Declared types](#declared-types)
 - [Generics](#generics)
 - [Defaults](#defaults)
-- [Modifiers: `const`, `lazy`, and `intern`](#modifiers-const-lazy-and-intern)
+- [Modifiers: `const`, `lazy`, `seekable`, and `intern`](#modifiers-const-lazy-seekable-and-intern)
 - [Schema evolution](#schema-evolution)
 - [Imports](#imports)
 - [Comments](#comments)
@@ -361,7 +361,7 @@ perks:     Perks         = 0
 
 ---
 
-## Modifiers: `const`, `lazy`, and `intern`
+## Modifiers: `const`, `lazy`, `seekable`, and `intern`
 
 ### `const`
 
@@ -388,6 +388,74 @@ decoding.
 > A `lazy` field **added in a `diff`** must be optional (`?`), so that older
 > messages lacking it decode to `None`.
 
+### `seekable`
+
+```pojoc
+tag:  seekable u32     = 0
+name: seekable string  = ""
+blob: seekable lazy [u8] = []
+```
+
+Generates accessors that pull this one field out of an encoded message without
+decoding the rest:
+
+```rust
+let tag = seek_tag(&buf)?;                    // one field, dispatched on the envelope version
+let (tag, name) = pluck!(schema, &buf, tag, name)?;   // several, in one walk
+let all = seek_all(&buf)?;                    // every seekable field
+```
+
+`seek_<field>` returns exactly what `decode(&buf)?.<field>` would — including a
+version's cast and, for a message predating the field, its declared default. A
+per-version `seek_v<N>_<field>` is also generated, taking the payload and a start
+offset.
+
+#### Plucking a subset
+
+`seek_all` has to reach the *last* seekable field before it can return, so on a
+schema with many of them it costs far more than the few you wanted. Each schema
+generates a `pluck_<schema>!` macro that reads exactly the fields you name:
+
+```rust
+use my_crate::schemas::edge;
+use my_crate::pluck_edge as pluck;   // the macro lands at your crate root
+
+let id = pluck!(edge, &buf, id)?;               // the value itself
+let (id, name) = pluck!(edge, &buf, id, name)?; // a tuple, in the order asked for
+```
+
+The first argument is the generated module, which must be a single ident in
+scope — `macro_rules!` resolves paths at the call site, so it has to be named.
+Fields may be listed in any order, and the result is never `Option`: naming a
+field guarantees it is bound. A field the payload's version predates yields that
+version's default, exactly as `decode` would.
+
+The macro expands to a const-generic walk that skips unrequested fields instead of
+reading them and returns as soon as the last requested one is bound. Because the
+selection is a constant, every test folds away at monomorphisation — naming only
+fixed-width fields never enters the variable region at all. Reading one field
+costs the same as its dedicated accessor; reading several costs one walk. The
+walk and its bit constants are `#[doc(hidden)]`; the macro is the intended entry
+point. The selection is sized per schema, so the number of seekable fields is
+unbounded.
+
+It is opt-in because it changes the field's position on the wire. A fixed-width
+seekable field is read at a constant offset; a variable-width one is hoisted to
+the front of the variable region so reaching it crosses only other seekable
+fields. Marking every field would make the generated code grow quadratically.
+
+- Only valid on **root schema fields** — not inside a `type` body or a union
+  payload, which have no per-version decoders to seek against.
+- Combines with `lazy`, in that order (`seekable lazy T`): you get the raw slice
+  without decoding it.
+- Toggling it in a later version relayouts **only that version**; messages
+  already written under earlier versions are unaffected.
+- `~ field: T` in a diff **clears** it, like `lazy` — restate `seekable` to keep
+  it. The compiler warns when a `~` drops it.
+- A seekable field that reaches the intern table as anything other than a bare
+  `seekable intern string` makes the seek materialize the whole table; the
+  compiler warns about it.
+
 ### `intern`
 
 ```pojoc
@@ -396,7 +464,7 @@ tags:    [intern string]         = []
 wrapped: Mono<intern string>     // composes as a generic argument too
 ```
 
-Unlike `const`/`lazy` (field-level modifiers), `intern` is a **type-level**
+Unlike `const`/`lazy`/`seekable` (field-level modifiers), `intern` is a **type-level**
 wrapper — it can wrap a bare `string` anywhere a type can appear: a plain
 field, inside an array/map, or as a generic argument.
 
@@ -542,8 +610,15 @@ variant) and appear as `///` docs in the generated code.
 ```sh
 pojoc build <input.pojoc> --out-dir out/   # generate <stem>.rs (default out dir: out/)
 pojoc check <input.pojoc>                  # validate without writing output
+pojoc show  <input.pojoc>                  # print the latest version, all diffs applied
 ```
 
-Both accept `--verbose`. In a build script, prefer
+`show` resolves the schema and prints what the newest version actually looks
+like — renames, retypes, removals and additions from every `diff` already
+folded in, so you can read the current shape without replaying the history by
+hand. It prints declared enums, bitsets, unions and types followed by the root
+`fields` block; pass `--fields-only` to skip the declared types.
+
+`build` and `check` accept `--verbose`. In a build script, prefer
 `pojoc_build::compile_dir("schemas", &out_dir)` (see the README's
 [setup section](../README.md#using-it-in-your-project)).

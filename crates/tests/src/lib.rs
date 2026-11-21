@@ -25,6 +25,9 @@ generated_strict!(pub pojoc_recursive, "/pojoc_recursive.rs");
 generated_strict!(pub pojoc_constraints, "/pojoc_constraints.rs");
 generated_strict!(pub pojoc_interning, "/pojoc_interning.rs");
 generated_strict!(pub pojoc_union_width, "/pojoc_union_width.rs");
+generated_strict!(pub pojoc_seek_bench, "/pojoc_seek_bench.rs");
+generated_strict!(pub pojoc_seek_many, "/pojoc_seek_many.rs");
+generated_strict!(pub pojoc_import_root, "/pojoc_import_root.rs");
 
 pub use flatbuf::fb_player;
 

@@ -1403,6 +1403,14 @@ fn type_position_items(
         ..Default::default()
     });
     items.push(CompletionItem {
+        label: "seekable".into(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        detail: Some(
+            "seekable T — generates seek_<field> accessors that read this field alone".into(),
+        ),
+        ..Default::default()
+    });
+    items.push(CompletionItem {
         label: "intern".into(),
         kind: Some(CompletionItemKind::KEYWORD),
         detail: Some("intern string — dedups repeated values into a shared table".into()),
@@ -1556,7 +1564,7 @@ fn classify_default_type(
 ) -> Option<DefaultKind> {
     let mut tokens = tokens;
     while let Some(Tok::Ident(k)) = tokens.first() {
-        if k == "const" || k == "lazy" {
+        if k == "const" || k == "lazy" || k == "seekable" {
             tokens = &tokens[1..];
         } else {
             break;

@@ -130,7 +130,7 @@
     },
     "modifiers": {
       "name": "storage.modifier.pojoc",
-      "match": "\\b(lazy|const|delta|intern)\\b"
+      "match": "\\b(lazy|const|delta|intern|seekable)\\b"
     },
     "keywords": {
       "name": "keyword.control.pojoc",

@@ -1,0 +1,40 @@
+/// A schema with many seekable fields, to measure what `seek_all` costs when
+/// you only wanted a few of them. Twelve variable-width targets means the
+/// batch walk has to traverse all twelve before it can return, while a single
+/// accessor stops at its own.
+schema SeekMany {
+
+  version 1 {
+    fields {
+      // eight fixed-width targets: one blast region, constant offsets
+      f0: seekable u64 = 0
+      f1: seekable u64 = 0
+      f2: seekable u32 = 0
+      f3: seekable u32 = 0
+      f4: seekable i64 = 0
+      f5: seekable i32 = 0
+      f6: seekable f64 = 0.0
+      f7: seekable f32 = 0.0
+
+      // twelve variable-width targets, hoisted to the front of the tail in
+      // this order — s0 is reached immediately, s11 only after eleven skips
+      s0: seekable string = ""
+      s1: seekable string = ""
+      s2: seekable string = ""
+      s3: seekable string = ""
+      s4: seekable string = ""
+      s5: seekable string = ""
+      s6: seekable string = ""
+      s7: seekable string = ""
+      s8: seekable string = ""
+      s9: seekable string = ""
+      s10: seekable string = ""
+      s11: seekable string = ""
+
+      // bulk tail neither a seek nor seek_all should ever touch
+      blob: [u8] = []
+      samples: [f64] = []
+      notes: [string] = []
+    }
+  }
+}
