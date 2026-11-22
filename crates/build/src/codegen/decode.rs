@@ -1,7 +1,7 @@
-use super::writer::CodeWriter;
+use super::writer::{CodeWriter, VersionBodies};
 use crate::codegen::{
-    emit_constraint_guard, emit_default, get_latest_versions, is_blastable, ordered_wire_fields,
-    wire_fixed_size,
+    can_read_unchecked, emit_constraint_guard, emit_default, is_fixed_wire_field,
+    ordered_wire_fields, wire_fixed_size,
 };
 use crate::core::types::*;
 use crate::schema::ir::ir_types::*;
@@ -13,7 +13,7 @@ pub fn emit_decode_functions(
     schema: &ResolvedSchema,
     infected: &HashSet<String>,
     w: &mut CodeWriter,
-) {
+) -> Vec<Vec<i128>> {
     emit_type_readers(schema, w);
     emit_type_lazy_helpers(schema, w);
     emit_type_skippers(schema, w);
@@ -23,14 +23,31 @@ pub fn emit_decode_functions(
     emit_lazy_helpers(schema, w);
     emit_skip_vn_functions(schema, w);
 
-    for vl in &schema.lineage.versions {
-        emit_decode_fn(schema, vl, infected, w);
-        w.blank();
+    // Compare complete bodies so defaults, casts and validation are part of
+    // the identity. A matching wire layout alone is insufficient.
+    let mut decoders = VersionBodies::default();
+    for version in &schema.lineage.versions {
+        let mut body = CodeWriter::default();
+        body.indent = w.indent + 1;
+        emit_decode_body(schema, version, &mut body);
+        decoders.insert(version.version, body);
     }
+    let mut dispatch = Vec::new();
+    for (body, versions) in decoders.into_groups() {
+        let first = versions[0];
+        emit_decode_fn(schema, first, infected, &body, w);
+        for v in &versions[1..] {
+            w.line("#[allow(unused_imports)]");
+            w.line(&format!("pub use self::decode_v{first} as decode_v{v};"));
+        }
+        w.blank();
+        dispatch.push(versions);
+    }
+    dispatch
 }
 
 fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -64,54 +81,7 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
         let mut optional_counter = 0;
         for field in &resolved.fields {
-            match &field.ty {
-                ResolvedTypeRef::Optional(inner) => {
-                    let byte_idx = optional_counter / 8;
-                    let bit_idx = optional_counter % 8;
-                    optional_counter += 1;
-                    if field.lazy {
-                        let fname = &field.name;
-                        let helper_name = lazy_field_helper_name(name, fname);
-                        let default_expr = type_info(&field.ty).default_expr;
-                        w.line(&format!("let __{fname}_start = *__pos;"));
-                        if let Some(stmt) = emit_skip_stmt(inner) {
-                            w.line(&format!(
-                                "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
-                            ));
-                            w.indent();
-                            w.line(&stmt);
-                            w.dedent();
-                            w.line("}");
-                        }
-                        w.line(&format!(
-                            "let {fname} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ \
-                             LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name}) \
-                             }} else {{ LazyView::Owned({default_expr}) }};"
-                        ));
-                    } else {
-                        let inner_expr = emit_read_expr(inner);
-                        w.line(&format!(
-                            "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
-                            field.name
-                        ));
-                    }
-                }
-                _ if field.lazy => {
-                    let fname = &field.name;
-                    let helper_name = lazy_field_helper_name(name, fname);
-                    w.line(&format!("let __{fname}_start = *__pos;"));
-                    if let Some(stmt) = emit_skip_stmt(&field.ty) {
-                        w.line(&stmt);
-                    }
-                    w.line(&format!(
-                        "let {fname} = LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name});"
-                    ));
-                }
-                _ => {
-                    let expr = emit_read_expr(&field.ty);
-                    w.line(&format!("let {} = {expr};", field.name));
-                }
-            }
+            emit_type_field_read(name, field, &mut optional_counter, w);
         }
 
         for field in &resolved.fields {
@@ -131,8 +101,64 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     }
 }
 
+pub(crate) fn emit_type_field_read(
+    name: &str,
+    field: &FieldIR,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    match &field.ty {
+        ResolvedTypeRef::Optional(inner) => {
+            let byte_idx = *optional_counter / 8;
+            let bit_idx = *optional_counter % 8;
+            *optional_counter += 1;
+            if field.lazy {
+                let fname = &field.name;
+                let helper_name = lazy_field_helper_name(name, fname);
+                let default_expr = type_info(&field.ty).default_expr;
+                w.line(&format!("let __{fname}_start = *__pos;"));
+                if let Some(stmt) = emit_skip_stmt(inner) {
+                    w.line(&format!(
+                        "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
+                    ));
+                    w.indent();
+                    w.line(&stmt);
+                    w.dedent();
+                    w.line("}");
+                }
+                w.line(&format!(
+                    "let {fname} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ \
+                     LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name}) \
+                     }} else {{ LazyView::Owned({default_expr}) }};"
+                ));
+            } else {
+                let inner_expr = emit_read_expr(inner);
+                w.line(&format!(
+                    "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
+                    field.name
+                ));
+            }
+        }
+        _ if field.lazy => {
+            let fname = &field.name;
+            let helper_name = lazy_field_helper_name(name, fname);
+            w.line(&format!("let __{fname}_start = *__pos;"));
+            if let Some(stmt) = emit_skip_stmt(&field.ty) {
+                w.line(&stmt);
+            }
+            w.line(&format!(
+                "let {fname} = LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name});"
+            ));
+        }
+        _ => {
+            let expr = emit_read_expr(&field.ty);
+            w.line(&format!("let {} = {expr};", field.name));
+        }
+    }
+}
+
 fn emit_type_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
 
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
@@ -196,8 +222,7 @@ fn latest_variant_name(latest: &ResolvedUnion, discriminant: u64) -> &str {
 }
 
 fn emit_union_readers(schema: &ResolvedSchema, infected: &HashSet<String>, w: &mut CodeWriter) {
-    let latest_by_name =
-        get_latest_versions(&schema.unions.unions, |id| id.name.clone(), |id| id.version);
+    let latest_by_name = latest_by_name(&schema.unions.unions);
 
     let mut entries: Vec<(&TypeId, &ResolvedUnion)> = schema.unions.unions.iter().collect();
     entries
@@ -292,19 +317,15 @@ fn emit_union_skippers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 }
 
 fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(
-        &schema.bitsets.bitsets,
-        |id| id.name.clone(),
-        |id| id.version,
-    );
+    let latest = latest_by_name(&schema.bitsets.bitsets);
 
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
-
-    for name in names {
-        let (_, bs) = latest[name];
-        let computed_len = bs.variants.len().div_ceil(8);
-        let fn_name = format!("read_{}", name.to_snake_case());
+    let mut versions: Vec<_> = schema.bitsets.bitsets.iter().collect();
+    versions.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+    for (id, bitset) in versions {
+        let name = &id.name;
+        let computed_len = bitset.byte_width();
+        let latest_len = latest[name].1.byte_width();
+        let fn_name = format!("read_{}_v{}", name.to_snake_case(), id.version);
         w.line("#[allow(dead_code)]");
         w.line(&format!(
             "fn {fn_name}(__buf: &[u8], __pos: &mut usize) -> PojocResult<{name}> {{"
@@ -313,7 +334,7 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line(&format!(
             "let bytes = read_fixed_bytes::<{computed_len}>(__buf, __pos)?;"
         ));
-        w.line(&format!("Ok({name}(bytes))"));
+        emit_bitset_value(name, computed_len, latest_len, true, w);
         w.dedent();
         w.line("}");
         w.blank();
@@ -328,14 +349,38 @@ fn emit_bitset_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.line(&format!(
             "let bytes = unsafe {{ read_fixed_bytes_unchecked::<{computed_len}>(__buf, __pos) }};"
         ));
-        w.line(&format!("{name}(bytes)"));
+        emit_bitset_value(name, computed_len, latest_len, false, w);
         w.dedent();
         w.line("}");
         w.blank();
     }
 }
 
-fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
+fn emit_bitset_value(
+    name: &str,
+    width: usize,
+    latest_width: usize,
+    checked: bool,
+    w: &mut CodeWriter,
+) {
+    let bytes = if width == latest_width {
+        "bytes"
+    } else {
+        let count = width.min(latest_width);
+        w.line(&format!("let mut flags = [0; {latest_width}];"));
+        w.line(&format!(
+            "flags[..{count}].copy_from_slice(&bytes[..{count}]);"
+        ));
+        "flags"
+    };
+    if checked {
+        w.line(&format!("Ok({name}({bytes}))"));
+    } else {
+        w.line(&format!("{name}({bytes})"));
+    }
+}
+
+pub(crate) fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
     let info = type_info(ty);
     if let WireSize::Fixed(n) = info.wire_size
         && n > 0
@@ -372,12 +417,12 @@ fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
 
 fn emit_decode_fn(
     schema: &ResolvedSchema,
-    vl: &VersionLineage,
+    v: i128,
     infected: &HashSet<String>,
+    body: &str,
     w: &mut CodeWriter,
 ) {
     let name = &schema.name_hint;
-    let v = vl.version;
     let needs_lifetime = infected.contains(name.as_str());
     let lifetime = if needs_lifetime { "<'buf>" } else { "" };
     let buf_ty = if needs_lifetime {
@@ -385,15 +430,16 @@ fn emit_decode_fn(
     } else {
         "&[u8]"
     };
-    // checks this version specifically, see version_uses_intern
-    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
-
     w.line(&format!(
         "pub fn decode_v{v}{lifetime}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
     ));
+    w.append(body);
+    w.line("}");
+}
 
-    w.indent();
-
+fn emit_decode_body(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+    let name = &schema.name_hint;
+    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
     if interning {
         // table precedes every field on the wire, read once up front then threaded through nested read_* calls
         w.line("let __table_owned = read_intern_table(__buf, __pos)?;");
@@ -408,8 +454,8 @@ fn emit_decode_fn(
     emit_optional_header_read(optional_count, w);
 
     // blastable fixed-width fields form a leading block read behind one bounds check; the rest follows the normal checked path
-    let ordered = ordered_wire_fields(schema, vl);
-    let fixed_prefix = ordered.partition_point(|fl| is_blastable(schema, fl));
+    let ordered = ordered_wire_fields(vl);
+    let fixed_prefix = ordered.partition_point(|fl| is_fixed_wire_field(fl));
     let (blast, rest) = ordered.split_at(fixed_prefix);
 
     let fixed_total: usize = blast
@@ -424,7 +470,7 @@ fn emit_decode_fn(
         w.line("// SAFETY: the check above validated __pos..__fixed_end; every read below stays within it.");
     }
     for &fl in blast {
-        emit_blastable_field_read(&fl.source_ty, &fl.mapping, w);
+        emit_fixed_field_read(schema, fl, w);
     }
 
     let mut optional_counter = 0;
@@ -473,19 +519,18 @@ fn emit_decode_fn(
     }
     w.dedent();
     w.line("})");
-    w.dedent();
-    w.line("}");
 }
 
-fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
+pub(crate) fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
     match &fl.mapping {
         FieldMapping::Discard => {
             if let ResolvedTypeRef::Array(inner) = &fl.source_ty
                 && let WireSize::Fixed(stride) = type_info(inner).wire_size
             {
                 w.line(&format!(
-                    "{{ let __n = read_array_len(__buf, __pos)? as usize; \
-                     let __end = __pos.checked_add(__n * {stride}).ok_or(Error::UnexpectedEof)?; \
+                    "{{ let __n = read_array_len(__buf, __pos)?; \
+                     let __bytes = __n.checked_mul({stride}).ok_or(Error::InvalidLength)?; \
+                     let __end = __pos.checked_add(__bytes).ok_or(Error::UnexpectedEof)?; \
                      if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
                      *__pos = __end; }}"
                 ));
@@ -547,7 +592,7 @@ fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWrite
     }
 }
 
-fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
+pub(crate) fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(id) => {
@@ -573,8 +618,8 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
             };
             format!("{}(__buf, __pos{extra})?", info.read_fn)
         }
-        ResolvedTypeRef::Bitset(id, _) => {
-            format!("read_{}(__buf, __pos)?", id.name.to_snake_case())
+        ResolvedTypeRef::Bitset(_, _) => {
+            format!("{}(__buf, __pos)?", info.read_fn)
         }
         ResolvedTypeRef::FixedString(n) => {
             if *n == 0 {
@@ -681,12 +726,17 @@ fn emit_read_expr(ty: &ResolvedTypeRef) -> String {
 }
 
 // region is already bounds-validated here, so pass-throughs use unchecked accessors and discards just advance the cursor
-fn emit_blastable_field_read(
-    source_ty: &ResolvedTypeRef,
-    mapping: &FieldMapping,
+pub(crate) fn emit_fixed_field_read(
+    schema: &ResolvedSchema,
+    fl: &FieldLineage,
     w: &mut CodeWriter,
 ) {
-    match mapping {
+    if !can_read_unchecked(schema, fl) {
+        emit_field_read(schema, fl, w);
+        return;
+    }
+    let source_ty = &fl.source_ty;
+    match &fl.mapping {
         FieldMapping::Discard => {
             let size = wire_fixed_size(source_ty).unwrap_or(0);
             if size > 0 {
@@ -704,7 +754,7 @@ fn emit_blastable_field_read(
 
 // reads via *_unchecked accessors under the blastable block's single upfront
 // bounds check. Enum still needs its fallible TryFrom, `?`-propagated normally.
-fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
+pub(crate) fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     let info = type_info(ty);
     match ty {
         ResolvedTypeRef::Scalar(_) => {
@@ -717,11 +767,8 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
                 id.name
             )
         }
-        ResolvedTypeRef::Bitset(id, _) => {
-            format!(
-                "unsafe {{ read_{}_unchecked(__buf, __pos) }}",
-                id.name.to_snake_case()
-            )
+        ResolvedTypeRef::Bitset(_, _) => {
+            format!("unsafe {{ {}_unchecked(__buf, __pos) }}", info.read_fn)
         }
         ResolvedTypeRef::FixedString(n) => {
             if *n == 0 {
@@ -767,7 +814,7 @@ fn emit_read_expr_unchecked(ty: &ResolvedTypeRef) -> String {
     }
 }
 
-fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
+pub(crate) fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
     let header_bytes = optional_count.div_ceil(8);
     if header_bytes > 0 {
         w.line(&format!(
@@ -776,7 +823,7 @@ fn emit_optional_header_read(optional_count: usize, w: &mut CodeWriter) {
     }
 }
 
-fn emit_field_mapping_arm(
+pub(crate) fn emit_field_mapping_arm(
     schema: &ResolvedSchema,
     fl: &FieldLineage,
     inner: &ResolvedTypeRef,
@@ -968,12 +1015,12 @@ fn compute_bitset_literal_value(
     value
 }
 
-enum CastExpr {
+pub(crate) enum CastExpr {
     Inline(String),
     Block(String),
 }
 
-fn emit_cast_value(
+pub(crate) fn emit_cast_value(
     schema: &ResolvedSchema,
     from: &ResolvedTypeRef,
     to: &ResolvedTypeRef,
@@ -1037,13 +1084,21 @@ fn emit_cast_value(
             ))
         }
 
-        (Bitset(id, width), Scalar(t)) if is_primitive(&t.name) => {
+        (Bitset(_, width), Scalar(t)) if is_primitive(&t.name) => {
             let to_rust = type_info(to).rust_type;
-            let read_fn = format!("read_{}", id.name.to_snake_case());
-            let expr = match width {
-                1 => format!("{read_fn}(__buf, __pos)?.0[0] as {to_rust}"),
-                2 => format!("u16::from_le_bytes({read_fn}(__buf, __pos)?.0) as {to_rust}"),
-                _ => format!("u32::from_le_bytes({read_fn}(__buf, __pos)?.0) as {to_rust}"),
+            let expr = match *width {
+                0 => format!("0u8 as {to_rust}"),
+                1 => format!("read_u8(__buf, __pos)? as {to_rust}"),
+                2 => format!("read_u16(__buf, __pos)? as {to_rust}"),
+                4 => format!("read_u32(__buf, __pos)? as {to_rust}"),
+                n => {
+                    let copy = n.min(16);
+                    format!(
+                        "{{ let bytes = read_fixed_bytes::<{n}>(__buf, __pos)?; \
+                              let mut packed = [0u8; 16]; packed[..{copy}].copy_from_slice(&bytes[..{copy}]); \
+                              u128::from_le_bytes(packed) as {to_rust} }}"
+                    )
+                }
             };
             CastExpr::Inline(expr)
         }
@@ -1250,7 +1305,7 @@ pub(crate) fn lazy_field_helper_name(type_name: &str, field_name: &str) -> Strin
 // elsewhere (e.g. a union payload struct) — read via emit_type_readers'
 // `read_foo`, not the root's per-version decode_vN.
 fn emit_type_lazy_helpers(schema: &ResolvedSchema, w: &mut CodeWriter) {
-    let latest = get_latest_versions(&schema.types.types, |id| id.name.clone(), |id| id.version);
+    let latest = latest_by_name(&schema.types.types);
     let mut names: Vec<&String> = latest.keys().collect();
     names.sort();
 
@@ -1297,6 +1352,12 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
     ));
     w.indent();
 
+    // decode_vN reads the table before anything else, so skipping the payload
+    // has to step over it too
+    if crate::codegen::version_uses_intern(schema, &vl.fields) {
+        w.line("skip_intern_table(__buf, __pos)?;");
+    }
+
     let optional_count = vl
         .fields
         .iter()
@@ -1305,8 +1366,8 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
     emit_optional_header_read(optional_count, w);
 
     // mirrors the reordered wire layout: one bounds-checked advance over the blastable prefix, then skip the rest field-by-field
-    let ordered = ordered_wire_fields(schema, vl);
-    let split = ordered.partition_point(|fl| is_blastable(schema, fl));
+    let ordered = ordered_wire_fields(vl);
+    let split = ordered.partition_point(|fl| is_fixed_wire_field(fl));
     let (blast, rest) = ordered.split_at(split);
     let fixed_total: usize = blast
         .iter()
@@ -1321,27 +1382,50 @@ fn emit_skip_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWri
 
     let mut optional_counter = 0;
     for &fl in rest {
-        if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
-            if let Some(stmt) = emit_skip_stmt(inner) {
-                let byte_idx = optional_counter / 8;
-                let bit_idx = optional_counter % 8;
-                optional_counter += 1;
-                w.line(&format!(
-                    "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
-                ));
-                w.indent();
-                w.line(&stmt);
-                w.dedent();
-                w.line("}");
-            }
-        } else {
-            if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
-                w.line(&stmt);
-            }
-        }
+        emit_ordered_skip(fl, &mut optional_counter, w);
     }
 
     w.line("Ok(())");
     w.dedent();
     w.line("}");
+}
+
+// skips one field of the non-blastable tail, gating an Optional on its presence
+// bit. `optional_counter` must be advanced across the tail in wire order, since
+// that is how encode assigns the bits — seek walks the same tail, so it shares
+// this rather than reimplementing the bit arithmetic.
+//
+// every Optional consumes a bit, including one whose inner type is zero-size and
+// so emits no skip at all: encode still writes that bit and decode_vN still
+// counts it, so bailing out early here would read every later optional's
+// presence from the wrong bit.
+pub(crate) fn emit_ordered_skip(
+    fl: &FieldLineage,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    emit_field_type_skip(&fl.source_ty, optional_counter, w);
+}
+
+pub(crate) fn emit_field_type_skip(
+    ty: &ResolvedTypeRef,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    if let ResolvedTypeRef::Optional(inner) = ty {
+        let byte_idx = *optional_counter / 8;
+        let bit_idx = *optional_counter % 8;
+        *optional_counter += 1;
+        if let Some(stmt) = emit_skip_stmt(inner) {
+            w.line(&format!(
+                "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
+            ));
+            w.indent();
+            w.line(&stmt);
+            w.dedent();
+            w.line("}");
+        }
+    } else if let Some(stmt) = emit_skip_stmt(ty) {
+        w.line(&stmt);
+    }
 }

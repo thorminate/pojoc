@@ -74,6 +74,7 @@ validation, etc.)? Install the CLI:
 ```sh
 cargo install pojoc-cli
 pojoc build schemas/player.pojoc   # writes out/player.rs
+pojoc build schemas/player.pojoc --target typescript   # writes out/player.ts
 pojoc build schemas/player.pojoc --no-serde   # omit Serialize/Deserialize (must match your `pojoc` dependency's own serde feature)
 pojoc check schemas/player.pojoc   # validate without writing output
 ```
@@ -114,6 +115,123 @@ fn main() {
 }
 ```
 
+Historical envelopes use the field order and packed bitset widths of their
+declared version. If an affected generator wrote a historical version using a
+newer layout, those records need regeneration from source or a migration that
+uses the writer's layout. The envelope version alone cannot distinguish the
+two layouts.
+
+### TypeScript target
+
+The TypeScript target emits an ES module that uses the shared `pojoc` runtime.
+Install the npm package at the compiler's release version, then import the
+generated types and codec in a browser bundle, Node, or Bun.
+
+```sh
+npm install pojoc
+pojoc build schemas/player.pojoc --target typescript -o generated
+```
+
+Pass `--standalone` to embed the runtime and generate a self-contained module.
+See the [npm runtime package](packages/runtime/README.md) for release details.
+
+```ts
+import { create, encode, decode, decodeFrom } from "./generated/player.ts";
+
+const player = create({ callsign: "Northwind" });
+const bytes = encode(player);
+const received = decode(bytes);
+const { value, version, offset } = decodeFrom(bytes);
+```
+
+`decode` returns the latest schema shape. `encodeForVersion(value, version)`
+writes a historical envelope from that shape, and `decodeFrom` returns the
+offset of the next envelope. `version` is a `bigint`. Use `seek(bytes, path)`
+for fields marked `seekable`, including dotted paths through seekable structs.
+Current-version seeks skip unrelated fields. Historical seeks use the version
+decoder before looking up the result.
+
+The generated types use `bigint` for 64-bit integers, `null` for absent
+optionals, numeric typed arrays for packed numeric arrays, and `Map` for
+variable-length maps. Fixed maps are arrays of pairs. Tagged unions use
+`{ kind, value }`, with a byte payload and discriminant for unknown variants.
+Lazy fields are materialized as ordinary TypeScript values. Aligned packed
+arrays may share the input buffer on a little-endian host, so keep that buffer
+alive and unchanged while using the decoded views.
+
+See the [TypeScript tests and benchmarks](crates/tests/typescript/README.md) for
+Rust interoperability and the protobuf.js comparison on Node and Bun.
+
+To build a standalone helper for a schema, run:
+
+```sh
+pojoc build schemas/player.pojoc --bin
+./out/player serve --stdio
+./out/player serve --stdio encode < players.jsonl > players.bin
+./out/player serve --stdio decode < players.bin > players.jsonl
+```
+
+`--bin` needs Cargo and a Rust toolchain. It emits the executable (`player.exe`
+on Windows) alongside `out/player.rs`. A compiler built from a checkout uses
+that checkout's runtime while it is available. Released binaries use the
+matching published runtime version. Pass `--runtime-path <dir>` to point
+Cargo at another checkout's `crates/runtime` directory.
+
+`serve --stdio` accepts consecutive Pojoc envelopes and emits one
+latest-version envelope per request. The version varint and little-endian
+payload length provide framing.
+
+`serve --stdio encode` accepts one JSON value per line and writes one
+latest-version Pojoc envelope per value. `serve --stdio decode` accepts Pojoc
+envelopes from supported schema versions and writes one JSON line per envelope
+using the latest schema fields. JSON uses the generated Serde representation,
+including decoded values for lazy fields. Both JSON modes require a
+Serde-enabled build.
+
+The helper flushes each reply. EOF between messages exits successfully, and
+encode also accepts a valid final JSON value without a newline. Invalid input
+exits with an error on stderr. Pojoc requests and JSON encode replies are
+limited to 16 MiB of binary payload. JSON input records are limited to 64 MiB.
+
+The generated Rust module exposes the same loop as
+`serve(&mut input, &mut output, max_payload_bytes)`, with a buffered reader as
+input and a caller-supplied request limit. `serve_decode` visits the decoded
+value from each frame.
+
+When both versions have a fixed-width prefix followed by the same byte array,
+`serve` decodes the prefix first and reads the array directly into its reusable
+reply buffer. For mixed payloads of at least 32 KiB, `serve` can also stream
+unchanged length-prefixed numeric arrays whose positions can be found from
+preceding field lengths. Surrounding fields use the regular codec, including
+seekable metadata and version upgrades. Other layouts use buffered decoding.
+
+Applications with the generated codec can send native Pojoc bytes and call
+`encode` and `decode` directly at the endpoints. The standalone helper is useful
+for exercising the codec from a shell or another process.
+
+### Benchmarking stdio
+
+From the repo root:
+
+```sh
+cargo bench -p pojoc-tests --bench stdio
+```
+
+Cargo builds the helper automatically from the benchmark schema and the same
+stdio entry point used by `--bin`. Set `POJOC_STDIO_BIN` to an absolute path
+to benchmark a different build of the same helper. Criterion reports messages
+per second and time per message. Each
+request is a v1 envelope that decodes and re-encodes as v2, with 256 B, 4 KiB,
+64 KiB, and 1 MiB of data. Labels show the total request size on the wire.
+
+The benchmarks compare the codec alone, spawning per message for the smallest
+payload, a persistent process with one request in flight, and a persistent
+process that sends up to 64 requests at a time while draining stdout. The
+round-trip case measures request/reply latency. The pipelined time is elapsed
+time divided by completed messages, so it measures throughput per message.
+The `stdio_rkyv` group runs the same version upgrade over pipes using checked
+rkyv archive access and a length-and-version header that keeps the archive aligned.
+
 ## Building n' Testing
 
 The compiler itself (`pojoc`, `pojoc-build`, `pojoc-cli`) is plain cargo, nothing special:
@@ -124,8 +242,8 @@ cargo test -p pojoc -p pojoc-build
 ```
 
 `cargo build`/`cargo test` at the workspace root also pulls in `crates/tests`,
-which round-trip-tests and benchmarks Pojoc against Protobuf, Cap'n Proto,
-FlatBuffers, and Bebop from equivalent schemas — that requires `protoc`,
+which round-trip-tests Pojoc and benchmarks it against Protobuf, Cap'n Proto,
+FlatBuffers, Bebop, and rkyv using equivalent data — that requires `protoc`,
 `capnp`, and the `flatc` CLI on `PATH`. Skip it by scoping to the crates above
 if you don't need those comparisons.
 
@@ -133,12 +251,18 @@ if you don't need those comparisons.
 
 Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo bench` to see these results yourself. The schema definitions are in `/crates/tests/schemas` and benches themselves are in `/crates/tests/benches` if you want to review them.
 
+The player and stress suites report checked rkyv archive access and owned
+deserialization separately. The seek suite also measures field reads from a prevalidated
+archive. The interning suites compare plain strings and shared `Arc<str>`
+references drawn from the same string pool.
+
 **Serialized size** (identical populated message, bytes. Smaller is better):
 
 | Format      | Bytes   |
 | ----------- | ------- |
 | **Pojoc**   | **429** |
 | Protobuf    | 463     |
+| rkyv        | 608     |
 | Bebop       | 634     |
 | FlatBuffers | 944     |
 | Cap'n Proto | 1,008   |

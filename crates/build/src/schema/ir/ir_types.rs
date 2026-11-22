@@ -1,6 +1,7 @@
 use super::lineage::SchemaLineage;
 use crate::core::types::*;
 use crate::schema::ast::DefaultValueAst;
+use crate::schema::error::SchemaWarning;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -10,6 +11,94 @@ pub struct FieldId(pub u64);
 #[derive(Debug, Default)]
 pub struct TypeRegistry {
     pub types: HashMap<TypeId, ResolvedType>,
+}
+
+/// highest-versioned entry per type name. `type Foo extends Foo@N` mints a new
+/// TypeId per version rather than mutating the old one, so "the current shape of
+/// Foo" is always a max-by-version lookup.
+pub fn latest_by_name<V>(items: &HashMap<TypeId, V>) -> HashMap<String, (i128, &V)> {
+    let mut latest: HashMap<String, (i128, &V)> = HashMap::new();
+    for (id, value) in items {
+        let entry = latest.entry(id.name.clone()).or_insert((id.version, value));
+        if id.version > entry.0 {
+            *entry = (id.version, value);
+        }
+    }
+    latest
+}
+
+/// widest discriminant value a union of this byte width can carry
+pub fn width_max_value(width: u8) -> u64 {
+    (1u128 << (width as u32 * 8)) as u64 - 1
+}
+
+/// whether a value of this type reaches the message's shared intern table,
+/// following named struct and union types into their members.
+///
+/// Deliberately the *write-broadened* criterion: the Union arm walks the union's
+/// latest variant set (filtered by the pinned version's discriminant width), not
+/// just the pinned version's own variants. `write_foo_vN`'s match is exhaustive
+/// over the one Rust enum shape, so an old-pinned encoder can be handed a
+/// variant only a later version declared. Anything deciding "does the table need
+/// to exist here" must agree with that possibility.
+///
+/// Shared by the analyzer (rejecting `lazy` + interned, which would defer to a
+/// decode helper that has nowhere to receive the table) and codegen (threading
+/// `__table`, and picking a seek's intern strategy). One implementation so the
+/// two cannot drift.
+pub fn type_reaches_intern_table(
+    types: &TypeRegistry,
+    unions: &UnionRegistry,
+    ty: &ResolvedTypeRef,
+    visited: &mut std::collections::HashSet<TypeId>,
+) -> bool {
+    let recurse = |t: &ResolvedTypeRef, v: &mut std::collections::HashSet<TypeId>| {
+        type_reaches_intern_table(types, unions, t, v)
+    };
+
+    // the wrapper/container arms are just the generic descent; only the two
+    // registry-crossing leaves need their own reasoning
+    let here = match ty {
+        ResolvedTypeRef::Interned(_) => true,
+
+        // TypeId carries the version, so recurse into that exact historical
+        // shape, not the latest one
+        ResolvedTypeRef::Scalar(id) if !is_primitive(&id.name) => {
+            if !visited.insert(id.clone()) {
+                return false;
+            }
+            types
+                .types
+                .get(id)
+                .is_some_and(|r| r.fields.iter().any(|f| recurse(&f.ty, visited)))
+        }
+
+        // see the write-broadened note above: NOT the same reasoning as Scalar
+        ResolvedTypeRef::Union(id) => {
+            if !visited.insert(id.clone()) {
+                return false;
+            }
+            let Some(pinned) = unions.unions.get(id) else {
+                return false;
+            };
+            let latest = latest_by_name(&unions.unions);
+            let Some((_, latest)) = latest.get(&id.name) else {
+                return false;
+            };
+            let max_value = width_max_value(pinned.discriminant_width());
+            latest
+                .variants
+                .iter()
+                .filter(|v| v.discriminant <= max_value)
+                .any(|v| recurse(&v.payload, visited))
+        }
+
+        // an imported root writes its own intern table inline into its own
+        // nested body, so it never reaches the enclosing message's table
+        _ => false,
+    };
+
+    here || ty.children().any(|c| recurse(c, visited))
 }
 
 impl TypeRegistry {
@@ -39,6 +128,8 @@ pub struct FieldIR {
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
     pub lazy: bool,
+    /// enables a root accessor or a hop in a nested pluck path
+    pub seekable: bool,
     /// doc lines carried through unchanged across renames/retypes, like default
     pub doc: Vec<String>,
 }
@@ -117,12 +208,8 @@ pub struct ResolvedBitset {
 }
 
 impl ResolvedBitset {
-    pub fn byte_width(&self) -> u8 {
-        match self.variants.len() {
-            n if n <= 8 => 1,
-            n if n <= 16 => 2,
-            _ => 4,
-        }
+    pub fn byte_width(&self) -> usize {
+        self.variants.len().div_ceil(8)
     }
     pub fn backing_type(&self) -> &'static str {
         match self.byte_width() {
@@ -224,6 +311,44 @@ pub struct ResolvedSchema {
     pub imports: HashMap<String, Arc<ResolvedSchema>>,
     /// doc comments above the `schema` header, emitted on the generated root struct
     pub doc: Vec<String>,
+    /// non-fatal diagnostics for the caller (CLI, build script, LSP) to surface
+    pub warnings: Vec<SchemaWarning>,
+    /// the file this schema was loaded from, when it came through the import
+    /// orchestrator. Needed so an imported schema's warnings still render
+    /// against their own source rather than the root's.
+    pub source_path: Option<std::path::PathBuf>,
+}
+
+impl ResolvedSchema {
+    /// this schema's warnings plus every imported schema's, each paired with the
+    /// file it should be rendered against. Imports form a DAG (diamonds share an
+    /// Arc), so each file is visited once.
+    pub fn warnings_recursive<'a>(
+        &'a self,
+        root: &'a std::path::Path,
+    ) -> Vec<(&'a SchemaWarning, &'a std::path::Path)> {
+        let mut out = Vec::new();
+        let mut seen: std::collections::HashSet<*const ResolvedSchema> =
+            std::collections::HashSet::new();
+        self.collect_warnings(root, &mut seen, &mut out);
+        out
+    }
+
+    fn collect_warnings<'a>(
+        &'a self,
+        path: &'a std::path::Path,
+        seen: &mut std::collections::HashSet<*const ResolvedSchema>,
+        out: &mut Vec<(&'a SchemaWarning, &'a std::path::Path)>,
+    ) {
+        if !seen.insert(self as *const ResolvedSchema) {
+            return;
+        }
+        out.extend(self.warnings.iter().map(|w| (w, path)));
+        for imported in self.imports.values() {
+            let own = imported.source_path.as_deref().unwrap_or(path);
+            imported.collect_warnings(own, seen, out);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

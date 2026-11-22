@@ -143,7 +143,7 @@ pub enum ResolvedTypeRef {
     Scalar(TypeId),
     // wire discriminant width in bytes (1/2/4), see ResolvedEnum::byte_width
     Enum(TypeId, u8),
-    Bitset(TypeId, u8),
+    Bitset(TypeId, usize),
     Union(TypeId),
     Array(Box<ResolvedTypeRef>),
     FixedArray(Box<ResolvedTypeRef>, usize),
@@ -183,6 +183,61 @@ pub enum ResolvedTypeRef {
 }
 
 impl ResolvedTypeRef {
+    /// the directly nested type refs, in declaration order (key before value for
+    /// the map kinds). The single place the shape of the recursion is written
+    /// down: predicates over a type tree describe what they contribute at one
+    /// node and lean on `children`/[`any_node`]/[`for_each_node`] to walk,
+    /// rather than each re-deriving the wrapper arms and silently treating a
+    /// variant added later as a leaf.
+    ///
+    /// Leaf variants (`Scalar`, `Enum`, `Bitset`, `Union`, `FixedString`,
+    /// `VFloat`, `ImportedSchema`) yield nothing — a named type's *fields* are
+    /// not children here, since resolving those needs a registry. Walkers that
+    /// cross into a named type do so explicitly.
+    pub fn children(&self) -> impl Iterator<Item = &ResolvedTypeRef> {
+        use ResolvedTypeRef::*;
+
+        // a fixed-size array covers the one-inner and two-inner cases without
+        // allocating; Tuple is the only variadic arm
+        let (pair, list): ([Option<&ResolvedTypeRef>; 2], &[ResolvedTypeRef]) = match self {
+            Array(inner)
+            | FixedArray(inner, _)
+            | DeltaArray(inner)
+            | FixedDeltaArray(inner, _)
+            | Optional(inner)
+            | Boxed(inner)
+            | Constrained { inner, .. }
+            | Interned(inner) => ([Some(inner), None], &[]),
+
+            Map(k, v) | FixedMap(k, v, _) => ([Some(k), Some(v)], &[]),
+
+            Tuple(elems) => ([None, None], elems.as_slice()),
+
+            Scalar(_)
+            | Enum(..)
+            | Bitset(..)
+            | Union(_)
+            | FixedString(_)
+            | VFloat { .. }
+            | ImportedSchema { .. } => ([None, None], &[]),
+        };
+
+        pair.into_iter().flatten().chain(list.iter())
+    }
+
+    /// true if `f` holds at this node or anywhere beneath it
+    pub fn any_node(&self, f: &mut impl FnMut(&ResolvedTypeRef) -> bool) -> bool {
+        f(self) || self.children().any(|c| c.any_node(f))
+    }
+
+    /// visits this node then every node beneath it, parents before children
+    pub fn for_each_node(&self, f: &mut impl FnMut(&ResolvedTypeRef)) {
+        f(self);
+        for c in self.children() {
+            c.for_each_node(f);
+        }
+    }
+
     pub fn type_id(&self) -> Option<&TypeId> {
         match self {
             ResolvedTypeRef::Scalar(id) => Option::from(id),
@@ -279,7 +334,8 @@ impl TypeInfo {
                 if self.rust_type == "PojocString" || self.rust_type == "&'buf str" {
                     format!("varint_size({accessor}.len()) + {accessor}.len()")
                 } else if let Some(ref f) = self.size_fn {
-                    format!("{f}({accessor} as usize)")
+                    let deref = if is_ref { "*" } else { "" };
+                    format!("{f}({deref}{accessor} as usize)")
                 } else {
                     let borrow_symbol = if is_ref { "" } else { "&" };
                     // strip <'buf> so an infected NestedLeaf<'buf> maps to size_hint_nested_leaf
@@ -341,16 +397,19 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         }
 
         ResolvedTypeRef::Bitset(id, width) => {
-            let lower = id.name.to_snake_case();
-            let (skip, wire) = match width {
-                1 => ("let _ = read_u8(__buf, __pos)?;", WireSize::Fixed(1)),
-                2 => ("let _ = read_u16(__buf, __pos)?;", WireSize::Fixed(2)),
-                _ => ("let _ = read_u32(__buf, __pos)?;", WireSize::Fixed(4)),
-            };
+            let lower = format!("{}_v{}", id.name.to_snake_case(), id.version);
             TypeInfo {
-                wire_size: wire,
+                wire_size: WireSize::Fixed(*width),
                 rust_type: id.name.clone(),
-                skip_stmt: skip.into(),
+                skip_stmt: if *width == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "{{ let __end = __pos.checked_add({width}).ok_or(Error::UnexpectedEof)?; \
+                             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                             *__pos = __end; }}"
+                    )
+                },
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: format!("{}::default()", id.name),
@@ -389,13 +448,32 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Array(inner) => {
             let i = type_info(inner);
+            let skip_stmt = if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+                && let WireSize::Fixed(width) = i.wire_size
+            {
+                let (to_elements, to_bytes) = if width > 1 {
+                    (format!(" / {width}"), format!(" * {width}"))
+                } else {
+                    (String::new(), String::new())
+                };
+                // Advance by complete elements on EOF, just as the scalar reads do.
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; \
+                     let __available = __buf.len().saturating_sub(*__pos){to_elements}; \
+                     *__pos += __n.min(__available){to_bytes}; \
+                     if __n > __available {{ return Err(Error::UnexpectedEof); }} }}"
+                )
+            } else {
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
+                    i.skip_stmt
+                )
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocVec<{}>", i.rust_type),
-                skip_stmt: format!(
-                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
-                    i.skip_stmt
-                ),
+                skip_stmt,
                 read_fn: "read_array".into(),
                 write_fn: "write_array".into(),
                 default_expr: "PojocVec::new()".into(),
@@ -453,7 +531,9 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: if let WireSize::Fixed(k) = ki.wire_size {
                     if let WireSize::Fixed(v) = vi.wire_size {
-                        WireSize::Fixed(k * v * n)
+                        k.checked_add(v)
+                            .and_then(|width| width.checked_mul(*n))
+                            .map_or(WireSize::Variable, WireSize::Fixed)
                     } else {
                         WireSize::Variable
                     }
@@ -725,6 +805,7 @@ pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
         ResolvedTypeRef::FixedMap(..) => true,
         ResolvedTypeRef::Boxed(..) => true,
         ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
+        ResolvedTypeRef::Constrained { inner, .. } => contains_fixed_map(inner),
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
         _ => false,
     }
@@ -746,21 +827,7 @@ pub fn contains_enum_under_closure(ty: &ResolvedTypeRef) -> bool {
 }
 
 pub fn contains_interned(ty: &ResolvedTypeRef) -> bool {
-    match ty {
-        ResolvedTypeRef::Interned(_) => true,
-        ResolvedTypeRef::Array(inner)
-        | ResolvedTypeRef::FixedArray(inner, _)
-        | ResolvedTypeRef::DeltaArray(inner)
-        | ResolvedTypeRef::FixedDeltaArray(inner, _)
-        | ResolvedTypeRef::Optional(inner)
-        | ResolvedTypeRef::Boxed(inner)
-        | ResolvedTypeRef::Constrained { inner, .. } => contains_interned(inner),
-        ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_interned),
-        ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-            contains_interned(k) || contains_interned(v)
-        }
-        _ => false,
-    }
+    ty.any_node(&mut |t| matches!(t, ResolvedTypeRef::Interned(_)))
 }
 
 pub fn is_delta_eligible(ty: &ResolvedTypeRef) -> bool {

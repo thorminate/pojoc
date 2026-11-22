@@ -1,0 +1,11 @@
+schema StdioBench {
+  version 1 {
+    fields {
+      id: u64 = 0
+      payload: [u8] = []
+    }
+  }
+  version 2 {
+    diff { + flags: u32 = 0 }
+  }
+}

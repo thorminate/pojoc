@@ -857,6 +857,34 @@ impl Parser {
         Ok(fields)
     }
 
+    /// consumes a field's modifier prefix, which is canonically `seekable lazy`.
+    /// the reverse order is rejected so a field's modifiers always render one way.
+    fn parse_field_modifiers(&mut self) -> Result<(bool, bool), ParseError> {
+        let seekable = matches!(self.peek(), Token::Keyword(Keyword::Seekable));
+        if seekable {
+            self.advance();
+        }
+        let lazy = matches!(self.peek(), Token::Keyword(Keyword::Lazy));
+        if lazy {
+            self.advance();
+        }
+        if matches!(self.peek(), Token::Keyword(Keyword::Seekable)) {
+            return Err(self.err_invalid("`seekable` must come before `lazy`"));
+        }
+        Ok((seekable, lazy))
+    }
+
+    /// called just after consuming `const`, which admits no other modifier
+    fn reject_const_modifiers(&mut self) -> Result<(), ParseError> {
+        match self.peek() {
+            Token::Keyword(k @ (Keyword::Lazy | Keyword::Seekable)) => {
+                let k = k.to_string();
+                Err(self.err_invalid(format!("a field cannot be both `const` and `{k}`")))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn parse_field_list(&mut self) -> Result<FieldsAst, ParseError> {
         let mut fields = Vec::new();
         let mut const_fields = Vec::new();
@@ -872,13 +900,10 @@ impl Parser {
             self.expect(Token::Colon, "':'")?;
 
             let is_const = matches!(self.peek(), Token::Keyword(Keyword::Const));
-            let is_lazy = matches!(self.peek(), Token::Keyword(Keyword::Lazy));
-            if is_const && is_lazy {
-                return Err(self.err_invalid("a field cannot be both `const` and `lazy`"));
-            }
 
             if is_const {
                 self.advance();
+                self.reject_const_modifiers()?;
                 let ty = self.parse_type()?;
                 self.expect(Token::Equals, "'='")?;
                 let value = self.parse_default()?;
@@ -892,12 +917,7 @@ impl Parser {
                     line: start_line,
                 });
             } else {
-                let lazy = if is_lazy {
-                    self.advance();
-                    true
-                } else {
-                    false
-                };
+                let (seekable, lazy) = self.parse_field_modifiers()?;
                 let ty = self.parse_type()?;
                 let default = if matches!(self.peek(), Token::Equals) {
                     self.advance();
@@ -911,6 +931,7 @@ impl Parser {
                     ty,
                     default,
                     lazy,
+                    seekable,
                     doc,
                     span,
                     line: start_line,
@@ -1123,9 +1144,12 @@ impl Parser {
                 Token::Tilde => {
                     let op = self.parse_diff_tilde()?;
                     let name = match &op {
-                        DiffAst::Rename { from, .. } => from,
-                        DiffAst::UpdateType { name, .. } => name,
-                        DiffAst::Transform { from, .. } => from,
+                        DiffAst::Rename { from, .. }
+                        | DiffAst::Transform { from, .. }
+                        | DiffAst::TransformConst { from, .. } => from,
+                        DiffAst::UpdateType { name, .. } | DiffAst::UpdateConst { name, .. } => {
+                            name
+                        }
                         _ => unreachable!(),
                     };
                     if !seen.insert(name.clone()) {
@@ -1150,14 +1174,10 @@ impl Parser {
         self.expect(Token::Colon, "':'")?;
 
         let is_const = matches!(self.peek(), Token::Keyword(Keyword::Const));
-        let is_lazy = matches!(self.peek(), Token::Keyword(Keyword::Lazy));
-
-        if is_const && is_lazy {
-            return Err(self.err_invalid("a field cannot be both `const` and `lazy`"));
-        }
 
         if is_const {
             self.advance();
+            self.reject_const_modifiers()?;
             let ty = self.parse_type()?;
             self.expect(Token::Equals, "'='")?;
             let value = self.parse_default()?;
@@ -1172,12 +1192,7 @@ impl Parser {
                 },
             })
         } else {
-            let lazy = if is_lazy {
-                self.advance();
-                true
-            } else {
-                false
-            };
+            let (seekable, lazy) = self.parse_field_modifiers()?;
             let ty = self.parse_type()?;
             let default = if matches!(self.peek(), Token::Equals) {
                 self.advance();
@@ -1191,6 +1206,7 @@ impl Parser {
                     ty,
                     default,
                     lazy,
+                    seekable,
                     doc,
                     span: start_span.join(self.last_consumed_span()),
                     line: start_line,
@@ -1219,6 +1235,7 @@ impl Parser {
         let mut rename_to: Option<String> = None;
         let mut ty: Option<TypeAst> = None;
         let mut lazy = false;
+        let mut seekable = false;
 
         if matches!(self.peek(), Token::Arrow) {
             self.advance();
@@ -1252,10 +1269,7 @@ impl Parser {
                 });
             }
 
-            if matches!(self.peek(), Token::Keyword(Keyword::Lazy)) {
-                self.advance();
-                lazy = true;
-            }
+            (seekable, lazy) = self.parse_field_modifiers()?;
             ty = Some(self.parse_type()?);
         }
 
@@ -1265,6 +1279,7 @@ impl Parser {
                 to,
                 ty: Some(ty),
                 lazy,
+                seekable,
                 span: start_span.join(self.last_consumed_span()),
                 line: start_line,
             }),
@@ -1278,6 +1293,7 @@ impl Parser {
                 name: from,
                 ty,
                 lazy,
+                seekable,
                 span: start_span.join(self.last_consumed_span()),
                 line: start_line,
             }),

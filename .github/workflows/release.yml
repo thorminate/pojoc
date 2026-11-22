@@ -190,6 +190,46 @@ jobs:
             --generate-notes \
             ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
 
+  publish-npm:
+    name: Publish TypeScript runtime to npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/runtime
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Install package build dependencies
+        run: npm ci
+
+      - name: Build the npm tarball for this tag
+        id: npm-pack
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --allow-same-version --no-git-tag-version
+          archive=$(npm pack --silent)
+          dist_tag=latest
+          if [[ "$version" == *-* ]]; then dist_tag=next; fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm
+        env:
+          ARCHIVE: ${{ steps.npm-pack.outputs.archive }}
+          DIST_TAG: ${{ steps.npm-pack.outputs.dist-tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "./$ARCHIVE" --tag "$DIST_TAG"
+
   publish-crates:
     name: Publish to crates.io
     needs: release

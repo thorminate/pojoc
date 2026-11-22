@@ -1,5 +1,14 @@
+// shared across test binaries; each uses a different subset
+#![allow(dead_code)]
+
 use pojoc_tests::pojoc_edge::{runtime::*, *};
 
+// these fixtures interleave plain field assignments with pushes, inserts, and
+// nested-field writes, grouped by what they exercise (numerics, then strings,
+// then arrays, then generics, ...). Hoisting just the assignable fields into a
+// struct literal would scatter each group across two places for no gain — the
+// redundant default write the lint targets costs nothing in a test fixture.
+#[allow(clippy::field_reassign_with_default)]
 pub fn make_version_probe_edge() -> Edge<'static> {
     let mut e = Edge::default();
     e.u8_to_i64 = 100;
@@ -36,7 +45,7 @@ pub fn make_version_probe_edge() -> Edge<'static> {
     e
 }
 
-#[allow(clippy::approx_constant)]
+#[allow(clippy::approx_constant, clippy::field_reassign_with_default)]
 pub fn make_populated_edge() -> Edge<'static> {
     let mut e = Edge::default();
 
@@ -189,9 +198,53 @@ pub fn make_populated_edge() -> Edge<'static> {
         })),
     }));
 
+    // v6 seekable fields, see crates/tests/tests/seekable.rs
+    e.seek_tag = 0xABCD_1234;
+    e.seek_name = "seek-me";
+    e.seek_note = Some("a note");
+    e.seek_blob = LazyView::Owned(Some(vec![9, 8, 7].into()));
+    e.seek_label = "shared-tag";
+
+    e.transform = EdgeSeekTransform {
+        description: "transform",
+        position: EdgeSeekPoint {
+            x: 0x1234_5678,
+            label: "shared-tag",
+            prefix: Some("point"),
+        },
+        tail: pojvec![1, 2, 3],
+    };
+    e.tree = Some(EdgeTree {
+        value: 1,
+        left: Some(Box::new(EdgeTree {
+            value: 2,
+            ..Default::default()
+        })),
+        right: Some(Box::new(EdgeTree {
+            value: 3,
+            ..Default::default()
+        })),
+    });
+    e.ping = Some(EdgePing {
+        count: 10,
+        other: Some(Box::new(EdgePong {
+            count: 20,
+            other: Some(Box::new(EdgePing {
+                count: 30,
+                other: None,
+            })),
+        })),
+    });
+    e.interned_generic.value = "shared-tag";
+    e.packed_varints = pojvec![0, 127, 128, 16_384, 2_097_152, 268_435_456, u32::MAX];
+    e.union_width_probe = Some(union_width::UnionWidth {
+        x: union_width::Big::V1(42),
+    });
+
     e
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn make_player_value() -> player::Player<'static> {
     let mut p = player::Player::default();
 
@@ -563,6 +616,25 @@ pub fn assert_edge_eq<'buf>(a: &Edge<'buf>, b: &Edge<'buf>) {
         (None, None) => {}
         _ => panic!("Mismatch in optional presence for field 'linked_list'"),
     }
+
+    assert_eq!(a.seek_tag, b.seek_tag);
+    assert_eq!(a.seek_name, b.seek_name);
+    assert_eq!(a.seek_note, b.seek_note);
+    assert_eq!(a.seek_label, b.seek_label);
+    assert_eq!(a.heal_radius, b.heal_radius);
+
+    // lazy, so compare decoded values rather than the raw slices
+    let a_blob = a
+        .seek_blob
+        .clone()
+        .get()
+        .expect("a.seek_blob decode failed");
+    let b_blob = b
+        .seek_blob
+        .clone()
+        .get()
+        .expect("b.seek_blob decode failed");
+    assert_eq!(a_blob, b_blob, "seek_blob mismatch");
 }
 
 pub fn assert_vector3_eq(a: &player::Vector3, b: &player::Vector3) {

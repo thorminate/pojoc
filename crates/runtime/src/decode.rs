@@ -83,7 +83,7 @@ pub fn read_i64(buf: &[u8], pos: &mut usize) -> PojocResult<i64> {
 
 #[inline]
 pub fn read_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a [u8]> {
-    let len = read_varint64(buf, pos)? as usize;
+    let len = read_array_len(buf, pos)?;
     let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
     let slice = buf.get(*pos..end).ok_or(Error::InvalidLength)?;
     *pos = end;
@@ -186,7 +186,7 @@ pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
 
 #[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
-    Ok(read_varint64(buf, pos)? as usize)
+    usize::try_from(read_varint64(buf, pos)?).map_err(|_| Error::InvalidLength)
 }
 
 // lets whole arrays of these scalars be bulk-cast via bytemuck instead of
@@ -235,7 +235,25 @@ pub fn read_pod_array<T: WireScalar>(
     let end = pos.checked_add(byte_len).ok_or(Error::InvalidLength)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
     *pos = end;
-    let mut v: crate::PojocVec<T> = crate::PojocVec::from_vec(bytemuck::pod_collect_to_vec(bytes));
+    let mut v = match bytemuck::try_cast_slice::<u8, T>(bytes) {
+        Ok(values) => crate::PojocVec::from_slice(values),
+        Err(_) if bytes.is_empty() => crate::PojocVec::new(),
+        Err(_) => {
+            let mut values = crate::PojocVec::<T>::with_capacity(n);
+            // SAFETY: the bounds check supplied exactly n * size_of::<T>()
+            // bytes. The destination has space for n values and cannot alias
+            // the input. T is Pod, so every copied bit pattern is valid.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    values.as_mut_ptr().cast::<u8>(),
+                    byte_len,
+                );
+                values.set_len(n);
+            }
+            values
+        }
+    };
     if !cfg!(target_endian = "little") {
         for x in v.iter_mut() {
             *x = x.to_wire_le();
@@ -315,9 +333,6 @@ where
 
 // skips without UTF-8 validation, unlike read_string
 pub fn skip_string(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
-    let len = read_varint64(buf, pos)? as usize;
-    let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
-    buf.get(*pos..end).ok_or(Error::InvalidLength)?;
-    *pos = end;
+    read_bytes(buf, pos)?;
     Ok(())
 }

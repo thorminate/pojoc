@@ -19,16 +19,26 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-sed -i '' "s/^version = \".*\"/version = \"$new_version\"/" Cargo.toml
-sed -i '' "s/\"version\": \".*\"/\"version\": \"$new_version\"/" vscode-extension/package.json
-sed -i '' "s/\"version\": \".*\"/\"version\": \"$new_version\"/" jetbrains-plugin/src/main/resources/textmate/pojoc/package.json
-sed -i '' "s/^pluginVersion=.*/pluginVersion=$new_version/" jetbrains-plugin/gradle.properties
+# BSD sed requires a separate empty backup extension; GNU sed does not.
+if sed --version >/dev/null 2>&1; then
+    sed_in_place=(-i)
+else
+    sed_in_place=(-i '')
+fi
+
+sed "${sed_in_place[@]}" "s/^version = \".*\"/version = \"$new_version\"/" Cargo.toml
+sed "${sed_in_place[@]}" "s/\"version\": \".*\"/\"version\": \"$new_version\"/" vscode-extension/package.json
+sed "${sed_in_place[@]}" "s/\"version\": \".*\"/\"version\": \"$new_version\"/" jetbrains-plugin/src/main/resources/textmate/pojoc/package.json
+sed "${sed_in_place[@]}" "s/^pluginVersion=.*/pluginVersion=$new_version/" jetbrains-plugin/gradle.properties
 
 # pojoc-cli pins its pojoc-build path dependency to an exact published
 # version (needed for `cargo publish`, which can't resolve bare path deps) —
 # version.workspace = true doesn't reach into this string, so it goes stale
 # on every bump unless updated here too.
-sed -i '' -E "s/(pojoc-build = \{ path = \"\.\.\/build\", version = \")[^\"]*(\" \})/\1$new_version\2/" crates/cli/Cargo.toml
+sed "${sed_in_place[@]}" -E "s/(pojoc-build = \{ path = \"\.\.\/build\", version = \")[^\"]*(\" \})/\1$new_version\2/" crates/cli/Cargo.toml
+
+# Update the npm package and its lockfile together.
+npm --prefix packages/runtime version "$new_version" --allow-same-version --no-git-tag-version --ignore-scripts
 
 # Refresh Cargo.lock so it doesn't go stale against the new workspace version.
 cargo check --workspace --quiet

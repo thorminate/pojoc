@@ -3,6 +3,10 @@ pub mod delta;
 pub mod encode;
 pub mod error;
 pub mod intern;
+#[doc(hidden)]
+pub mod sidecar;
+#[doc(hidden)]
+pub mod stream;
 pub mod varint;
 
 pub use decode::*;
@@ -242,6 +246,25 @@ impl<'buf, T: Clone> Clone for LazyView<'buf, T> {
             },
             Self::Owned(val) => Self::Owned(val.clone()),
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<T: Serialize> Serialize for LazyView<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Raw { buf, decode_fn } => decode_fn(buf, &mut 0)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
+            Self::Owned(value) => value.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de: 'buf, 'buf, T: Deserialize<'de>> Deserialize<'de> for LazyView<'buf, T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::Owned)
     }
 }
 

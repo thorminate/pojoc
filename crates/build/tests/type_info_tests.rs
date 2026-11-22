@@ -188,7 +188,7 @@ fn type_info_map_and_fixed_map() {
         Box::new(ResolvedTypeRef::Scalar(id("f32"))),
         3,
     ));
-    assert_eq!(fixed_map.wire_size, WireSize::Fixed(4 * 4 * 3));
+    assert_eq!(fixed_map.wire_size, WireSize::Fixed((4 + 4) * 3));
 }
 
 #[test]
@@ -253,9 +253,10 @@ fn size_expr_variable_string_uses_len_plus_varint_size() {
 fn size_expr_with_size_fn_calls_it_directly() {
     let info = type_info(&ResolvedTypeRef::Scalar(id("varint32")));
     assert_eq!(
-        info.size_expr(true, "self.x"),
+        info.size_expr(false, "self.x"),
         "varint_size(self.x as usize)"
     );
+    assert_eq!(info.size_expr(true, "item"), "varint_size(*item as usize)");
 }
 
 #[test]
@@ -314,4 +315,123 @@ fn enum_byte_width_thresholds() {
     assert_eq!(enum_with_variants(257).byte_width(), 2);
     assert_eq!(enum_with_variants(65536).byte_width(), 2);
     assert_eq!(enum_with_variants(65537).byte_width(), 4);
+}
+
+// ---- traversal ----
+
+/// one value of every variant, so a variant added later fails these tests rather
+/// than silently becoming a leaf in every walker built on `children`
+fn one_of_each() -> Vec<ResolvedTypeRef> {
+    use ResolvedTypeRef::*;
+    let leaf = || Box::new(Scalar(id("u32")));
+    vec![
+        Scalar(id("u32")),
+        Enum(id("E"), 1),
+        Bitset(id("B"), 1),
+        Union(id("U")),
+        Array(leaf()),
+        FixedArray(leaf(), 3),
+        DeltaArray(leaf()),
+        FixedDeltaArray(leaf(), 3),
+        FixedString(8),
+        Map(leaf(), leaf()),
+        FixedMap(leaf(), leaf(), 3),
+        Tuple(vec![Scalar(id("u32")), Scalar(id("f32"))]),
+        VFloat {
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            backing: VFloatBacking::U16,
+        },
+        Optional(leaf()),
+        Boxed(leaf()),
+        Constrained {
+            inner: leaf(),
+            min: Some(0.0),
+            max: None,
+        },
+        Interned(Box::new(Scalar(id("string")))),
+        ImportedSchema {
+            alias: "Sub".into(),
+            root_name: "Inner".into(),
+            version: 1,
+        },
+    ]
+}
+
+#[test]
+fn children_yields_every_nested_ref_exactly_once() {
+    use ResolvedTypeRef::*;
+    for ty in one_of_each() {
+        let n = ty.children().count();
+        let expected = match &ty {
+            Scalar(_)
+            | Enum(..)
+            | Bitset(..)
+            | Union(_)
+            | FixedString(_)
+            | VFloat { .. }
+            | ImportedSchema { .. } => 0,
+            Map(..) | FixedMap(..) => 2,
+            Tuple(elems) => elems.len(),
+            // exhaustive on purpose: a new variant must be classified here, not
+            // absorbed by a fallthrough that would hide it becoming a leaf
+            Array(_)
+            | FixedArray(..)
+            | DeltaArray(_)
+            | FixedDeltaArray(..)
+            | Optional(_)
+            | Boxed(_)
+            | Constrained { .. }
+            | Interned(_) => 1,
+        };
+        assert_eq!(n, expected, "wrong child count for {ty:?}");
+    }
+}
+
+#[test]
+fn map_children_are_key_then_value() {
+    let ty = ResolvedTypeRef::Map(
+        Box::new(ResolvedTypeRef::Scalar(id("string"))),
+        Box::new(ResolvedTypeRef::Scalar(id("u32"))),
+    );
+    let kids: Vec<_> = ty.children().collect();
+    assert_eq!(kids[0], &ResolvedTypeRef::Scalar(id("string")));
+    assert_eq!(kids[1], &ResolvedTypeRef::Scalar(id("u32")));
+}
+
+#[test]
+fn any_node_and_for_each_node_include_the_root_itself() {
+    let leaf = ResolvedTypeRef::Scalar(id("u32"));
+    assert!(leaf.any_node(&mut |t| matches!(t, ResolvedTypeRef::Scalar(_))));
+
+    let mut seen = 0;
+    leaf.for_each_node(&mut |_| seen += 1);
+    assert_eq!(seen, 1, "a leaf must still visit itself");
+}
+
+#[test]
+fn traversal_reaches_arbitrarily_deep_nesting() {
+    // [ (string, {u32: box<T?>}) ] — every wrapper kind on one path
+    let deep = ResolvedTypeRef::Array(Box::new(ResolvedTypeRef::Tuple(vec![
+        ResolvedTypeRef::Scalar(id("string")),
+        ResolvedTypeRef::Map(
+            Box::new(ResolvedTypeRef::Scalar(id("u32"))),
+            Box::new(ResolvedTypeRef::Boxed(Box::new(ResolvedTypeRef::Optional(
+                Box::new(ResolvedTypeRef::Interned(Box::new(
+                    ResolvedTypeRef::Scalar(id("string")),
+                ))),
+            )))),
+        ),
+    ])));
+
+    assert!(contains_interned(&deep), "must find the buried Interned");
+
+    let mut names = Vec::new();
+    deep.for_each_node(&mut |t| {
+        if let ResolvedTypeRef::Scalar(i) = t {
+            names.push(i.name.clone());
+        }
+    });
+    assert_eq!(names, vec!["string", "u32", "string"]);
 }

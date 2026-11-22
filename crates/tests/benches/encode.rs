@@ -2,6 +2,11 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
 
+#[path = "support/rkyv_player.rs"]
+mod rkyv_player;
+use rkyv::rancor::Error as ArchiveError;
+use rkyv_player::RkyvPlayer;
+
 use bebop::{Record, SliceWrapper};
 use flatbuffers::FlatBufferBuilder;
 use pojoc_tests::fb_player::StatsArgs;
@@ -687,6 +692,13 @@ fn encode_benchmarks(c: &mut Criterion) {
             let mut buf = Vec::new();
             player.serialize(&mut buf).unwrap();
             black_box(buf);
+        })
+    });
+
+    group.bench_function("rkyv", |b| {
+        b.iter(|| {
+            let player = RkyvPlayer::default();
+            black_box(rkyv::to_bytes::<ArchiveError>(black_box(&player)).unwrap())
         })
     });
 

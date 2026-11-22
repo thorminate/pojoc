@@ -4,9 +4,9 @@ use super::lineage::SchemaLineage;
 use super::resolver::*;
 use crate::core::types::*;
 use crate::schema::ast::*;
-use crate::schema::error::AnalysisError;
+use crate::schema::error::{AnalysisError, SchemaWarning};
 use crate::schema::span::Span;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// where a TemplateField's default came from, determines classification
@@ -31,6 +31,7 @@ struct TemplateField {
     ty: TypeAst,
     default: TemplateDefault,
     lazy: bool,
+    seekable: bool,
     doc: Vec<String>,
     span: Span,
     line: u32,
@@ -86,12 +87,68 @@ pub struct SchemaAnalyzer<'a> {
     /// different (template, args) is rejected instead of silently misaliasing
     generic_identities: HashMap<TypeId, String>,
     pending_generics: Vec<PendingGeneric>,
+    /// accumulated as versions are walked; the `seekable`-dropped case can only
+    /// be seen at the diff op, where the field's prior state is still known
+    warnings: Vec<SchemaWarning>,
+    /// version at which each field was last seen `seekable`, for that same check
+    seekable_since: HashMap<String, i128>,
     /// memoizes build_shape by (name, version) so repeated lookups get the same
     /// FieldIds every time instead of fresh ones per call
     shape_cache: HashMap<(String, i128), TemplateShape>,
 }
 
 impl<'a> SchemaAnalyzer<'a> {
+    /// a seekable field reaching the intern table any way other than as a bare
+    /// `intern string` forces the seek to materialize the whole table, since the
+    /// nested read_* helpers take the &[&str] slice
+    fn warn_if_seek_materializes_table(
+        &mut self,
+        seekable: bool,
+        name: &str,
+        ty: &ResolvedTypeRef,
+        version: i128,
+        span: Span,
+        line: u32,
+    ) {
+        if !seekable || matches!(ty, ResolvedTypeRef::Interned(_)) || !self.reaches_interned(ty) {
+            return;
+        }
+        self.warnings
+            .push(SchemaWarning::SeekMaterializesInternTable {
+                field: name.to_string(),
+                version,
+                span,
+                line,
+            });
+    }
+
+    fn warn_seekable_dropped(&mut self, field: &str, version: i128, span: Span, line: u32) {
+        let was = self
+            .seekable_since
+            .get(field)
+            .copied()
+            .unwrap_or(version - 1);
+        self.warnings.push(SchemaWarning::SeekableDroppedByDiff {
+            field: field.to_string(),
+            was,
+            version,
+            span,
+            line,
+        });
+    }
+
+    /// see type_reaches_intern_table: a `lazy` field defers to a decode helper
+    /// with no table parameter, and re-encodes through a writer that may need
+    /// one, so anything reaching the table is rejected
+    fn reaches_interned(&self, ty: &ResolvedTypeRef) -> bool {
+        type_reaches_intern_table(
+            &self.type_registry,
+            &self.union_registry,
+            ty,
+            &mut HashSet::new(),
+        )
+    }
+
     pub fn new(ast: &'a SchemaAst, imports: HashMap<String, Arc<ResolvedSchema>>) -> Self {
         Self {
             resolver: Resolver { ast },
@@ -106,6 +163,8 @@ impl<'a> SchemaAnalyzer<'a> {
             imports,
             generic_identities: HashMap::new(),
             pending_generics: Vec::new(),
+            warnings: Vec::new(),
+            seekable_since: HashMap::new(),
             shape_cache: HashMap::new(),
         }
     }
@@ -136,21 +195,14 @@ impl<'a> SchemaAnalyzer<'a> {
         // struct-typed refs reachable from ty without crossing a box<>, Boxed not unwrapped
         // since it's the one thing that legitimately breaks a cycle
         fn collect_struct_refs(ty: &ResolvedTypeRef, out: &mut Vec<TypeId>) {
-            match ty {
-                ResolvedTypeRef::Scalar(id) => out.push(id.clone()),
-                ResolvedTypeRef::Array(inner)
-                | ResolvedTypeRef::FixedArray(inner, _)
-                | ResolvedTypeRef::DeltaArray(inner)
-                | ResolvedTypeRef::FixedDeltaArray(inner, _)
-                | ResolvedTypeRef::Optional(inner) => collect_struct_refs(inner, out),
-                ResolvedTypeRef::Tuple(elems) => {
-                    elems.iter().for_each(|e| collect_struct_refs(e, out))
-                }
-                ResolvedTypeRef::Map(k, v) | ResolvedTypeRef::FixedMap(k, v, _) => {
-                    collect_struct_refs(k, out);
-                    collect_struct_refs(v, out);
-                }
-                _ => {}
+            if matches!(ty, ResolvedTypeRef::Boxed(_)) {
+                return;
+            }
+            if let ResolvedTypeRef::Scalar(id) = ty {
+                out.push(id.clone());
+            }
+            for c in ty.children() {
+                collect_struct_refs(c, out);
             }
         }
 
@@ -794,6 +846,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: fa.ty.clone(),
                         default: TemplateDefault::Literal(fa.default.clone()),
                         lazy: fa.lazy,
+                        seekable: fa.seekable,
                         doc: fa.doc.clone(),
                         span: fa.span,
                         line: fa.line,
@@ -869,6 +922,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: substitute_ast(&f.ty, &rename),
                         default: f.default.clone(),
                         lazy: f.lazy,
+                        seekable: f.seekable,
                         doc: f.doc.clone(),
                         span: f.span,
                         line: f.line,
@@ -1019,7 +1073,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     }
                 };
 
-                if f.lazy && contains_interned(&ty) {
+                if f.lazy && self.reaches_interned(&ty) {
                     return Err(AnalysisError::InvalidIntern {
                         reason: format!(
                             "field '{}' cannot be both `lazy` and (transitively) interned",
@@ -1037,6 +1091,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     ty,
                     default,
                     lazy: f.lazy,
+                    seekable: f.seekable,
                     doc: f.doc.clone(),
                 })
             })
@@ -1071,6 +1126,14 @@ impl<'a> SchemaAnalyzer<'a> {
 
         let snapshot = self.snapshot(&ctx, v.version);
         self.version_states.push(snapshot);
+
+        // earliest version each field has been seekable in, so a later `~` that
+        // drops it can say what it is losing
+        for f in ctx.fields.iter().filter(|f| f.seekable) {
+            self.seekable_since
+                .entry(f.name.clone())
+                .or_insert(v.version);
+        }
         self.current = Some(ctx);
 
         Ok(())
@@ -1093,7 +1156,7 @@ impl<'a> SchemaAnalyzer<'a> {
                 field.span,
                 field.line,
             )?;
-            if field.lazy && contains_interned(&ty) {
+            if field.lazy && self.reaches_interned(&ty) {
                 return Err(AnalysisError::InvalidIntern {
                     reason: format!(
                         "field '{}' cannot be both `lazy` and (transitively) interned",
@@ -1105,12 +1168,22 @@ impl<'a> SchemaAnalyzer<'a> {
                 });
             }
 
+            self.warn_if_seek_materializes_table(
+                field.seekable,
+                &field.name,
+                &ty,
+                version,
+                field.span,
+                field.line,
+            );
+
             ctx.fields.push(FieldIR {
                 id: self.id_gen.next_id(),
                 name: field.name.clone(),
                 ty,
                 default,
                 lazy: field.lazy,
+                seekable: field.seekable,
                 doc: field.doc.clone(),
             });
         }
@@ -1181,7 +1254,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         }
                     };
 
-                    if field.lazy && contains_interned(&ty) {
+                    if field.lazy && self.reaches_interned(&ty) {
                         return Err(AnalysisError::InvalidIntern {
                             reason: format!(
                                 "field '{}' cannot be both `lazy` and (transitively) interned",
@@ -1193,12 +1266,22 @@ impl<'a> SchemaAnalyzer<'a> {
                         });
                     }
 
+                    self.warn_if_seek_materializes_table(
+                        field.seekable,
+                        &field.name,
+                        &ty,
+                        version,
+                        field.span,
+                        field.line,
+                    );
+
                     ctx.fields.push(FieldIR {
                         id: self.id_gen.next_id(),
                         name: field.name.clone(),
                         ty,
                         default,
                         lazy: field.lazy,
+                        seekable: field.seekable,
                         doc: field.doc.clone(),
                     });
                 }
@@ -1263,6 +1346,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     name,
                     ty,
                     lazy,
+                    seekable,
                     span,
                     line,
                 } => {
@@ -1274,8 +1358,28 @@ impl<'a> SchemaAnalyzer<'a> {
                         }
                         f.ty = new_ty;
                         f.lazy = *lazy;
+                        // absolute, not additive: omitting the keyword clears it
+                        let dropped = f.seekable && !*seekable;
+                        f.seekable = *seekable;
+                        let new_ty = f.ty.clone();
+                        if dropped {
+                            self.warn_seekable_dropped(name, version, *span, *line);
+                        }
+                        self.warn_if_seek_materializes_table(
+                            *seekable, name, &new_ty, version, *span, *line,
+                        );
                         // no syntax to supply a new default on retype, so fall back to the type's zero value.
                         f.default = None;
+                        if f.lazy && self.reaches_interned(&f.ty) {
+                            return Err(AnalysisError::InvalidIntern {
+                                reason: format!(
+                                    "field '{name}' cannot be both `lazy` and (transitively) interned"
+                                ),
+                                version,
+                                span: *span,
+                                line: *line,
+                            });
+                        }
                     }
                 }
 
@@ -1284,6 +1388,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     to,
                     ty,
                     lazy,
+                    seekable,
                     span,
                     line,
                 } => {
@@ -1300,6 +1405,26 @@ impl<'a> SchemaAnalyzer<'a> {
                             f.default = None;
                         }
                         f.lazy = *lazy;
+                        // see UpdateType above
+                        let dropped = f.seekable && !*seekable;
+                        f.seekable = *seekable;
+                        let new_ty = f.ty.clone();
+                        if dropped {
+                            self.warn_seekable_dropped(from, version, *span, *line);
+                        }
+                        self.warn_if_seek_materializes_table(
+                            *seekable, to, &new_ty, version, *span, *line,
+                        );
+                        if f.lazy && self.reaches_interned(&f.ty) {
+                            return Err(AnalysisError::InvalidIntern {
+                                reason: format!(
+                                    "field '{to}' cannot be both `lazy` and (transitively) interned"
+                                ),
+                                version,
+                                span: *span,
+                                line: *line,
+                            });
+                        }
                     } else if let Some(c) = ctx.const_fields.iter_mut().find(|c| c.name == *from) {
                         c.name = to.clone();
                     } else {
@@ -2137,6 +2262,9 @@ impl<'a> SchemaAnalyzer<'a> {
             imports: self.imports,
             lineage,
             doc: self.ast.doc.clone(),
+            warnings: self.warnings,
+            // set by the import orchestrator, which knows the file
+            source_path: None,
         })
     }
 }
@@ -2427,13 +2555,13 @@ fn apply_template_diff_ops(
                         line: field.line,
                     });
                 }
-
                 fields.push(TemplateField {
                     id: id_gen.next_id(),
                     name: field.name.clone(),
                     ty: field.ty.clone(),
                     default: TemplateDefault::AddedViaDiff(field.default.clone()),
                     lazy: field.lazy,
+                    seekable: field.seekable,
                     doc: field.doc.clone(),
                     span: field.span,
                     line: field.line,
@@ -2506,12 +2634,14 @@ fn apply_template_diff_ops(
                 name,
                 ty,
                 lazy,
+                seekable,
                 span,
                 line,
             } => {
                 if let Some(f) = fields.iter_mut().find(|f| f.name == *name) {
                     f.ty = ty.clone();
                     f.lazy = *lazy;
+                    f.seekable = *seekable;
                     f.span = *span;
                     f.line = *line;
                     // see the root-fields UpdateType handling above: a retype
@@ -2535,6 +2665,7 @@ fn apply_template_diff_ops(
                 to,
                 ty,
                 lazy,
+                seekable,
                 span,
                 line,
             } => {
@@ -2548,6 +2679,7 @@ fn apply_template_diff_ops(
                         f.default = TemplateDefault::Literal(None);
                     }
                     f.lazy = *lazy;
+                    f.seekable = *seekable;
                 } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
                     c.name = to.clone();
                 } else {
