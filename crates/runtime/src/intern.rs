@@ -1,4 +1,4 @@
-use crate::decode::{read_string, skip_string};
+use crate::decode::{read_array_len, read_string, skip_string};
 use crate::encode::write_string;
 use crate::error::{Error, PojocResult};
 use crate::varint::{read_varint64, write_varint64};
@@ -52,7 +52,11 @@ pub fn write_intern_table(buf: &mut Vec<u8>, table: &[&str]) {
 
 /// reads the table written by [`write_intern_table`]
 pub fn read_intern_table<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<Vec<&'a str>> {
-    let count = read_varint64(buf, pos)? as usize;
+    let count = read_array_len(buf, pos)?;
+    // Every table entry has at least a one-byte string length prefix.
+    if count > buf.len().saturating_sub(*pos) {
+        return Err(Error::InvalidLength);
+    }
     let mut table = Vec::with_capacity(count);
     for _ in 0..count {
         table.push(read_string(buf, pos)?);
@@ -63,7 +67,7 @@ pub fn read_intern_table<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<Vec<
 /// advances past a table written by [`write_intern_table`] without materializing
 /// it, for readers that don't resolve any interned string
 pub fn skip_intern_table(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
-    let count = read_varint64(buf, pos)? as usize;
+    let count = read_array_len(buf, pos)?;
     for _ in 0..count {
         skip_string(buf, pos)?;
     }
@@ -75,7 +79,7 @@ pub fn skip_intern_table(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
 /// table's count prefix, so this is independent of the caller's cursor.
 pub fn read_interned_string_at(buf: &[u8], table_start: usize, idx: usize) -> PojocResult<&str> {
     let mut pos = table_start;
-    let count = read_varint64(buf, &mut pos)? as usize;
+    let count = read_array_len(buf, &mut pos)?;
     if idx >= count {
         return Err(Error::InvalidInternIndex);
     }
@@ -91,6 +95,6 @@ pub fn read_interned_string_ref<'a>(
     buf: &[u8],
     pos: &mut usize,
 ) -> PojocResult<&'a str> {
-    let idx = read_varint64(buf, pos)? as usize;
+    let idx = usize::try_from(read_varint64(buf, pos)?).map_err(|_| Error::InvalidInternIndex)?;
     table.get(idx).copied().ok_or(Error::InvalidInternIndex)
 }

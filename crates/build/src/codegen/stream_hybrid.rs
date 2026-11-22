@@ -1,5 +1,5 @@
 use super::writer::CodeWriter;
-use super::{is_blastable, ordered_wire_fields, version_uses_intern, wire_fixed_size};
+use super::{is_fixed_wire_field, ordered_wire_fields, version_uses_intern, wire_fixed_size};
 use crate::core::types::{ResolvedTypeRef, is_bulk_castable_scalar, normalize_type};
 use crate::schema::ir::ir_types::{FieldId, ResolvedSchema};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
@@ -63,12 +63,8 @@ fn can_forward(source: &FieldStep<'_>, target: &FieldStep<'_>) -> bool {
     }
 }
 
-fn span(
-    schema: &ResolvedSchema,
-    field: &FieldLineage,
-    ty: &ResolvedTypeRef,
-) -> Option<(Span, bool)> {
-    if is_blastable(schema, field) {
+fn span(field: &FieldLineage, ty: &ResolvedTypeRef) -> Option<(Span, bool)> {
+    if is_fixed_wire_field(field) {
         return Some((Span::Fixed(wire_fixed_size(ty)?), false));
     }
     match ty {
@@ -89,7 +85,7 @@ impl<'a> Layout<'a> {
     fn new(schema: &ResolvedSchema, version: &'a VersionLineage) -> Self {
         let mut next_bit = 0;
         let mut fields = Vec::new();
-        for field in ordered_wire_fields(schema, version) {
+        for field in ordered_wire_fields(version) {
             let (ty, presence_bit) = if let ResolvedTypeRef::Optional(inner) = &field.source_ty {
                 let bit = next_bit;
                 next_bit += 1;
@@ -97,7 +93,7 @@ impl<'a> Layout<'a> {
             } else {
                 (&field.source_ty, None)
             };
-            let Some((span, array)) = span(schema, field, ty) else {
+            let Some((span, array)) = span(field, ty) else {
                 break;
             };
             fields.push(FieldStep {

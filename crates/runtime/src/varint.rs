@@ -23,6 +23,9 @@ fn read_varint64_slow(first: u8, buf: &[u8], pos: &mut usize) -> PojocResult<u64
     for _ in 1..MAX_VARINT64_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
         *pos += 1;
+        if shift == 63 && byte > 1 {
+            return Err(Error::VarIntOverflow);
+        }
         result |= ((byte & 0x7F) as u64) << shift;
         if byte & 0x80 == 0 {
             return Ok(result);
@@ -44,9 +47,12 @@ pub fn read_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<u64> {
 
 #[inline]
 pub fn skip_varint64(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
-    for _ in 0..MAX_VARINT64_LEN {
+    for i in 0..MAX_VARINT64_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
         *pos += 1;
+        if i == MAX_VARINT64_LEN - 1 && byte > 1 {
+            return Err(Error::VarIntOverflow);
+        }
         if byte & 0x80 == 0 {
             return Ok(());
         }
@@ -88,9 +94,12 @@ pub fn read_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<u32> {
 
 #[inline]
 pub fn skip_varint32(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
-    for _ in 0..MAX_VARINT32_LEN {
+    for i in 0..MAX_VARINT32_LEN {
         let byte = *buf.get(*pos).ok_or(Error::UnexpectedEof)?;
         *pos += 1;
+        if i == MAX_VARINT32_LEN - 1 && byte > 0x0f {
+            return Err(Error::VarIntOverflow);
+        }
         if byte & 0x80 == 0 {
             return Ok(());
         }

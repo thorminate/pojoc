@@ -83,7 +83,7 @@ pub fn read_i64(buf: &[u8], pos: &mut usize) -> PojocResult<i64> {
 
 #[inline]
 pub fn read_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a [u8]> {
-    let len = read_varint64(buf, pos)? as usize;
+    let len = read_array_len(buf, pos)?;
     let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
     let slice = buf.get(*pos..end).ok_or(Error::InvalidLength)?;
     *pos = end;
@@ -186,7 +186,7 @@ pub fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<&'a str> {
 
 #[inline]
 pub fn read_array_len(buf: &[u8], pos: &mut usize) -> PojocResult<usize> {
-    Ok(read_varint64(buf, pos)? as usize)
+    usize::try_from(read_varint64(buf, pos)?).map_err(|_| Error::InvalidLength)
 }
 
 // lets whole arrays of these scalars be bulk-cast via bytemuck instead of
@@ -318,9 +318,6 @@ where
 
 // skips without UTF-8 validation, unlike read_string
 pub fn skip_string(buf: &[u8], pos: &mut usize) -> PojocResult<()> {
-    let len = read_varint64(buf, pos)? as usize;
-    let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
-    buf.get(*pos..end).ok_or(Error::InvalidLength)?;
-    *pos = end;
+    read_bytes(buf, pos)?;
     Ok(())
 }

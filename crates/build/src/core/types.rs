@@ -143,7 +143,7 @@ pub enum ResolvedTypeRef {
     Scalar(TypeId),
     // wire discriminant width in bytes (1/2/4), see ResolvedEnum::byte_width
     Enum(TypeId, u8),
-    Bitset(TypeId, u8),
+    Bitset(TypeId, usize),
     Union(TypeId),
     Array(Box<ResolvedTypeRef>),
     FixedArray(Box<ResolvedTypeRef>, usize),
@@ -396,16 +396,19 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         }
 
         ResolvedTypeRef::Bitset(id, width) => {
-            let lower = id.name.to_snake_case();
-            let (skip, wire) = match width {
-                1 => ("let _ = read_u8(__buf, __pos)?;", WireSize::Fixed(1)),
-                2 => ("let _ = read_u16(__buf, __pos)?;", WireSize::Fixed(2)),
-                _ => ("let _ = read_u32(__buf, __pos)?;", WireSize::Fixed(4)),
-            };
+            let lower = format!("{}_v{}", id.name.to_snake_case(), id.version);
             TypeInfo {
-                wire_size: wire,
+                wire_size: WireSize::Fixed(*width),
                 rust_type: id.name.clone(),
-                skip_stmt: skip.into(),
+                skip_stmt: if *width == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "{{ let __end = __pos.checked_add({width}).ok_or(Error::UnexpectedEof)?; \
+                             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                             *__pos = __end; }}"
+                    )
+                },
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: format!("{}::default()", id.name),
@@ -527,7 +530,9 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: if let WireSize::Fixed(k) = ki.wire_size {
                     if let WireSize::Fixed(v) = vi.wire_size {
-                        WireSize::Fixed(k * v * n)
+                        k.checked_add(v)
+                            .and_then(|width| width.checked_mul(*n))
+                            .map_or(WireSize::Variable, WireSize::Fixed)
                     } else {
                         WireSize::Variable
                     }
@@ -799,6 +804,7 @@ pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
         ResolvedTypeRef::FixedMap(..) => true,
         ResolvedTypeRef::Boxed(..) => true,
         ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
+        ResolvedTypeRef::Constrained { inner, .. } => contains_fixed_map(inner),
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
         _ => false,
     }

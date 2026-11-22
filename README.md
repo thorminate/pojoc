@@ -114,6 +114,12 @@ fn main() {
 }
 ```
 
+Historical envelopes use the field order and packed bitset widths of their
+declared version. If an affected generator wrote a historical version using a
+newer layout, those records need regeneration from source or a migration that
+uses the writer's layout. The envelope version alone cannot distinguish the
+two layouts.
+
 To build a standalone helper for a schema, run:
 
 ```sh

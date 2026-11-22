@@ -78,3 +78,10 @@ fn lookup_honors_a_nonzero_table_start() {
 
     assert_eq!(read_interned_string_at(&buf, start, 1).unwrap(), "second");
 }
+
+#[test]
+fn rejects_missing_intern_entries_before_allocating_the_table() {
+    let mut buf = Vec::new();
+    pojoc::write_varint64(&mut buf, u64::MAX);
+    assert_eq!(read_intern_table(&buf, &mut 0), Err(Error::InvalidLength));
+}

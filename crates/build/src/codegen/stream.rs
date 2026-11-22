@@ -1,4 +1,4 @@
-use super::{is_blastable, ordered_wire_fields, version_uses_intern, wire_fixed_size};
+use super::{is_fixed_wire_field, ordered_wire_fields, version_uses_intern, wire_fixed_size};
 use super::{stream_hybrid::HybridPlans, writer::CodeWriter};
 use crate::core::types::{ResolvedTypeRef, normalize_type};
 use crate::schema::ir::ir_types::ResolvedSchema;
@@ -8,7 +8,7 @@ fn byte_array_layout<'a>(
     schema: &ResolvedSchema,
     version: &'a VersionLineage,
 ) -> Option<(&'a FieldLineage, usize)> {
-    let ordered = ordered_wire_fields(schema, version);
+    let ordered = ordered_wire_fields(version);
     let (&tail, prefix) = ordered.split_last()?;
     let ResolvedTypeRef::Array(element) = &tail.source_ty else {
         return None;
@@ -18,7 +18,7 @@ fn byte_array_layout<'a>(
         return None;
     }
     let prefix_len = prefix.iter().try_fold(0_usize, |size, field| {
-        if !is_blastable(schema, field) {
+        if !is_fixed_wire_field(field) {
             return None;
         }
         size.checked_add(wire_fixed_size(&field.source_ty)?)

@@ -74,3 +74,25 @@ fn decode_overflow_errors() {
     let mut pos = 0;
     assert_eq!(read_varint64(&buf, &mut pos), Err(Error::VarIntOverflow));
 }
+
+#[test]
+fn readers_and_skippers_validate_the_last_varint_byte() {
+    let mut wide = [0xff; 10];
+    wide[9] = 1;
+    assert_eq!(read_varint64(&wide, &mut 0), Ok(u64::MAX));
+    assert_eq!(skip_varint64(&wide, &mut 0), Ok(()));
+    wide[9] = 2;
+    assert_eq!(read_varint64(&wide, &mut 0), Err(Error::VarIntOverflow));
+    assert_eq!(skip_varint64(&wide, &mut 0), Err(Error::VarIntOverflow));
+
+    let mut narrow = [0xff; 5];
+    narrow[4] = 0x0f;
+    assert_eq!(read_varint32(&narrow, &mut 0), Ok(u32::MAX));
+    assert_eq!(skip_varint32(&narrow, &mut 0), Ok(()));
+    narrow[4] = 0x10;
+    assert_eq!(read_varint32(&narrow, &mut 0), Err(Error::VarIntOverflow));
+    assert_eq!(skip_varint32(&narrow, &mut 0), Err(Error::VarIntOverflow));
+
+    assert_eq!(read_varint64(&[0x80, 0], &mut 0), Ok(0));
+    assert_eq!(skip_varint64(&[0x80, 0], &mut 0), Ok(()));
+}

@@ -324,7 +324,7 @@ fn emit_bitset_struct(
     schema: &ResolvedSchema,
     w: &mut CodeWriter,
 ) {
-    let computed_len = bs.variants.len().div_ceil(8);
+    let computed_len = bs.byte_width();
 
     let serde_derive = if emit_serde() {
         ", Serialize, Deserialize"

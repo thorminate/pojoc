@@ -148,16 +148,30 @@ fn emit_union_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
 fn emit_bitset_writers(schema: &ResolvedSchema, w: &mut CodeWriter) {
     let latest = latest_by_name(&schema.bitsets.bitsets);
-    let mut names: Vec<&String> = latest.keys().collect();
-    names.sort();
-    for name in names {
+    let mut versions: Vec<_> = schema.bitsets.bitsets.iter().collect();
+    versions.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+    for (id, bitset) in versions {
+        let name = &id.name;
+        let width = bitset.byte_width();
+        let latest_width = latest[name].1.byte_width();
         w.line("#[allow(dead_code)]");
         w.line(&format!(
-            "fn write_{}(__buf: &mut Vec<u8>, __value: &{name}) {{",
-            name.to_snake_case()
+            "fn write_{}_v{}(__buf: &mut Vec<u8>, __value: &{name}) {{",
+            name.to_snake_case(),
+            id.version
         ));
         w.indent();
-        w.line("write_fixed_bytes(__buf, &__value.0);");
+        if width == latest_width {
+            w.line("write_fixed_bytes(__buf, &__value.0);");
+        } else if width < latest_width {
+            w.line(&format!("__buf.extend_from_slice(&__value.0[..{width}]);"));
+        } else {
+            w.line(&format!("let mut flags = [0u8; {width}];"));
+            w.line(&format!(
+                "flags[..{latest_width}].copy_from_slice(&__value.0);"
+            ));
+            w.line("write_fixed_bytes(__buf, &flags);");
+        }
         w.dedent();
         w.line("}");
         w.blank();
@@ -338,10 +352,10 @@ pub(crate) fn emit_write_expr(
             ));
         }
 
-        ResolvedTypeRef::Bitset(id, _) => {
+        ResolvedTypeRef::Bitset(_, _) => {
             w.line(&format!(
-                "write_{}(__buf, {}{accessor});",
-                id.name.to_snake_case(),
+                "{}(__buf, {}{accessor});",
+                info.write_fn,
                 if is_ref { "" } else { "&" }
             ));
         }
@@ -541,7 +555,7 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     }
 
     // same fixed-first reordering the decoder uses, keeps wire order matching
-    let ordered = ordered_wire_fields(schema, vl);
+    let ordered = ordered_wire_fields(vl);
     let opt_fields: Vec<&FieldLineage> = ordered
         .iter()
         .copied()
@@ -1015,9 +1029,18 @@ fn emit_vn_cast_value(
         }
 
         (Bitset(_, width), Scalar(_)) => match width {
+            0 => {}
             1 => w.line(&format!("write_u8(__buf, {accessor} as u8);")),
             2 => w.line(&format!("write_u16(__buf, {accessor} as u16);")),
-            _ => w.line(&format!("write_u32(__buf, {accessor} as u32);")),
+            4 => w.line(&format!("write_u32(__buf, {accessor} as u32);")),
+            n => {
+                let width = (*n).min(16).next_power_of_two();
+                let copy = (*n).min(width);
+                let bits = width * 8;
+                w.line(&format!("{{ let packed = ({accessor} as u{bits}).to_le_bytes(); \
+                                 let mut flags = [0u8; {n}]; flags[..{copy}].copy_from_slice(&packed[..{copy}]); \
+                                 write_fixed_bytes(__buf, &flags); }}"));
+            }
         },
 
         (Scalar(f), Bitset(_, width)) if is_primitive(&f.name) => match width {
@@ -1141,8 +1164,9 @@ fn emit_vn_default_write(ty: &ResolvedTypeRef, schema: &ResolvedSchema, w: &mut 
         }
         ResolvedTypeRef::Bitset(id, _) => {
             w.line(&format!(
-                "write_{}(__buf, &{}::default());",
+                "write_{}_v{}(__buf, &{}::default());",
                 id.name.to_snake_case(),
+                id.version,
                 id.name
             ));
         }
@@ -1363,13 +1387,12 @@ fn emit_size_expr(
             ));
         }
         ResolvedTypeRef::Bitset(id, _) => {
-            let computed_len = schema
+            let width = schema
                 .bitsets
                 .bitsets
                 .get(id)
-                .map(|bs| bs.variants.len().div_ceil(8))
-                .unwrap_or(1);
-            w.line(&format!("size += {computed_len};"));
+                .map_or(1, ResolvedBitset::byte_width);
+            w.line(&format!("size += {width};"));
         }
         ResolvedTypeRef::Array(inner) => {
             if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
@@ -1860,13 +1883,12 @@ fn emit_default_size(schema: &ResolvedSchema, ty: &ResolvedTypeRef, w: &mut Code
             w.line(&format!("size += {};", width + 1));
         }
         ResolvedTypeRef::Bitset(id, _) => {
-            let len = schema
+            let width = schema
                 .bitsets
                 .bitsets
                 .get(id)
-                .map(|bs| bs.variants.len().div_ceil(8))
-                .unwrap_or(1);
-            w.line(&format!("size += {len};"));
+                .map_or(1, ResolvedBitset::byte_width);
+            w.line(&format!("size += {width};"));
         }
         ResolvedTypeRef::Array(_) | ResolvedTypeRef::Map(_, _) => w.line("size += 1;"),
         ResolvedTypeRef::DeltaArray(_) => w.line("size += 1;"),

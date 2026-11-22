@@ -1,8 +1,8 @@
 //! Partial reads: accessors that pull one `seekable` field out of an encoded
 //! payload without decoding the rest.
 //!
-//! A blastable target sits at a constant offset from the start of the fixed
-//! block, so reaching it is an offset plus one unchecked read. Anything else is
+//! A target in the fixed block sits at a constant offset from its start.
+//! Reaching it takes one read after a bounds check. Anything else is
 //! reached by skipping the tail field-by-field, which `wire_rank` keeps short by
 //! hoisting seekable fields to the front of that tail.
 //!
@@ -15,12 +15,12 @@
 //! checks. That agreement is the invariant the whole feature rests on.
 
 use super::decode::{
-    emit_field_mapping_arm, emit_field_read, emit_optional_header_read, emit_ordered_skip,
-    emit_read_expr_unchecked, get_field_default_expr,
+    emit_field_mapping_arm, emit_field_read, emit_fixed_field_read, emit_optional_header_read,
+    emit_ordered_skip, get_field_default_expr,
 };
 use super::writer::CodeWriter;
 use super::{
-    emit_constraint_guard, field_is_lifetime_infected, is_blastable, ordered_wire_fields,
+    emit_constraint_guard, field_is_lifetime_infected, is_fixed_wire_field, ordered_wire_fields,
     version_uses_intern, wire_fixed_size, wire_rank,
 };
 use crate::core::types::{ResolvedTypeRef, type_info};
@@ -145,12 +145,9 @@ fn emit_prologue(
     emit_optional_header_read(optional_count, w);
 }
 
-fn blast_split<'a>(
-    schema: &ResolvedSchema,
-    vl: &'a VersionLineage,
-) -> (Vec<&'a FieldLineage>, Vec<&'a FieldLineage>) {
-    let ordered = ordered_wire_fields(schema, vl);
-    let split = ordered.partition_point(|fl| is_blastable(schema, fl));
+fn blast_split(vl: &VersionLineage) -> (Vec<&FieldLineage>, Vec<&FieldLineage>) {
+    let ordered = ordered_wire_fields(vl);
+    let split = ordered.partition_point(|fl| is_fixed_wire_field(fl));
     let (blast, rest) = ordered.split_at(split);
     (blast.to_vec(), rest.to_vec())
 }
@@ -214,10 +211,10 @@ fn emit_seek_vn_field(
             );
             emit_prologue(schema, vl, needs_table, fast && needs_table, w);
 
-            let (blast, rest) = blast_split(schema, vl);
+            let (blast, rest) = blast_split(vl);
 
-            if wire_rank(schema, fl) == 0 {
-                emit_blastable_target_read(&blast, fl, name, w);
+            if wire_rank(fl) == 0 {
+                emit_fixed_target_read(schema, &blast, fl, w);
             } else {
                 let total = fixed_total(&blast);
                 if total > 0 {
@@ -240,10 +237,10 @@ fn emit_seek_vn_field(
 
 // rank 0: every preceding blastable field is fixed-width, so the target's offset
 // is a constant and no presence bits intervene
-fn emit_blastable_target_read(
+fn emit_fixed_target_read(
+    schema: &ResolvedSchema,
     blast: &[&FieldLineage],
     target_fl: &FieldLineage,
-    name: &str,
     w: &mut CodeWriter,
 ) {
     let offset: usize = blast
@@ -263,9 +260,7 @@ fn emit_blastable_target_read(
     }
     w.line("// SAFETY: the check above validated the target's whole extent.");
 
-    let rust = type_info(&target_fl.source_ty).rust_type;
-    let expr = emit_read_expr_unchecked(&target_fl.source_ty);
-    w.line(&format!("let {name}: {rust} = {expr};"));
+    emit_fixed_field_read(schema, target_fl, w);
 }
 
 // skips the tail up to the target, then reads it exactly as decode_vN would.
@@ -308,7 +303,7 @@ fn emit_tail_walk_to(
 // Resolve the field's varint index against the table we skipped.
 fn emit_bare_interned_read(name: &str, w: &mut CodeWriter) {
     w.line(&format!(
-        "let {name} = read_interned_string_at(__buf, __table_start, read_varint64(__buf, __pos)? as usize)?;"
+        "let {name} = read_interned_string_at(__buf, __table_start, read_array_len(__buf, __pos)?)?;"
     ));
 }
 
@@ -436,12 +431,12 @@ fn emit_seek_all_vn(
     let fast_intern = needs_table && table_users.iter().all(|fl| can_read_interned_directly(fl));
     emit_prologue(schema, vl, needs_table, fast_intern, w);
 
-    let (blast, rest) = blast_split(schema, vl);
+    let (blast, rest) = blast_split(vl);
 
     // rank 0 targets: constant offsets into the fixed block, read in place
     let blast_ids: HashSet<_> = present
         .iter()
-        .filter(|(_, fl)| wire_rank(schema, fl) == 0)
+        .filter(|(_, fl)| wire_rank(fl) == 0)
         .map(|(_, fl)| fl.field_id)
         .collect();
     if !blast_ids.is_empty() {
@@ -451,10 +446,6 @@ fn emit_seek_all_vn(
     for fl in &blast {
         let size = wire_fixed_size(&fl.source_ty).unwrap_or(0);
         if blast_ids.contains(&fl.field_id) {
-            let (t, _) = present
-                .iter()
-                .find(|(_, f)| f.field_id == fl.field_id)
-                .unwrap();
             w.line(&format!(
                 "let __end = __blast_start.checked_add({}).ok_or(Error::UnexpectedEof)?;",
                 offset + size
@@ -468,9 +459,7 @@ fn emit_seek_all_vn(
                 w.line(&format!("*__pos = __blast_start + {offset};"));
             }
             w.line("// SAFETY: checked directly above.");
-            let rust = type_info(&fl.source_ty).rust_type;
-            let expr = emit_read_expr_unchecked(&fl.source_ty);
-            w.line(&format!("let {}: {rust} = {expr};", t.name));
+            emit_fixed_field_read(schema, fl, w);
         }
         offset += size;
     }
@@ -494,7 +483,7 @@ fn emit_seek_all_vn(
     // last one, so rank 2 fields past it are never touched.
     let tail_ids: HashSet<_> = present
         .iter()
-        .filter(|(_, fl)| wire_rank(schema, fl) != 0)
+        .filter(|(_, fl)| wire_rank(fl) != 0)
         .map(|(_, fl)| fl.field_id)
         .collect();
     let last_needed = rest
@@ -809,15 +798,15 @@ fn emit_seek_subset_vn(
     let fast_intern = needs_table && table_users.iter().all(|fl| can_read_interned_directly(fl));
     emit_prologue(schema, vl, needs_table, fast_intern, w);
 
-    let (blast, rest) = blast_split(schema, vl);
+    let (blast, rest) = blast_split(vl);
     let blast_ids: HashSet<_> = present
         .iter()
-        .filter(|(_, fl)| wire_rank(schema, fl) == 0)
+        .filter(|(_, fl)| wire_rank(fl) == 0)
         .map(|(_, fl)| fl.field_id)
         .collect();
     let tail_ids: HashSet<_> = present
         .iter()
-        .filter(|(_, fl)| wire_rank(schema, fl) != 0)
+        .filter(|(_, fl)| wire_rank(fl) != 0)
         .map(|(_, fl)| fl.field_id)
         .collect();
 
@@ -849,9 +838,7 @@ fn emit_seek_subset_vn(
                 w.line(&format!("*__pos = __blast_start + {offset};"));
             }
             w.line("// SAFETY: checked directly above.");
-            let rust = type_info(&fl.source_ty).rust_type;
-            let expr = emit_read_expr_unchecked(&fl.source_ty);
-            w.line(&format!("let {}: {rust} = {expr};", t.name));
+            emit_fixed_field_read(schema, fl, w);
             emit_constraint_guard(t, &t.name, w);
             w.line(&format!("__out_{} = Some({});", t.name, t.name));
             w.dedent();
