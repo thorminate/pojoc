@@ -188,7 +188,7 @@ fn type_info_map_and_fixed_map() {
         Box::new(ResolvedTypeRef::Scalar(id("f32"))),
         3,
     ));
-    assert_eq!(fixed_map.wire_size, WireSize::Fixed(4 * 4 * 3));
+    assert_eq!(fixed_map.wire_size, WireSize::Fixed((4 + 4) * 3));
 }
 
 #[test]

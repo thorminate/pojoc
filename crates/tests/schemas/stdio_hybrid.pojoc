@@ -1,0 +1,18 @@
+schema StdioHybrid {
+  version 1 {
+    fields {
+      id: u64 = 0
+      name: seekable string?
+      label: seekable intern string = ""
+      samples: [u32] = []
+      blob: seekable lazy [u8]?
+      notes: [string] = []
+    }
+  }
+  version 2 {
+    diff {
+      ~ samples: seekable [u32]
+      + flags: u32 = 17
+    }
+  }
+}

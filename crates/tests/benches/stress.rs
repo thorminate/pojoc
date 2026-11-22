@@ -13,6 +13,11 @@ use prost::Message;
 use std::hint::black_box;
 use std::time::Duration;
 
+#[path = "support/rkyv_player.rs"]
+mod rkyv_player;
+use rkyv::{Archived, rancor::Error as ArchiveError};
+use rkyv_player::RkyvPlayer;
+
 static WORDS: &[&str] = &[
     "sword",
     "shield",
@@ -684,6 +689,10 @@ fn stress_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress/encode");
 
     for &n in SIZES {
+        let rkyv_player = RkyvPlayer::new(make_inventory(n));
+        group.bench_function(BenchmarkId::new("rkyv", n), |b| {
+            b.iter(|| black_box(rkyv::to_bytes::<ArchiveError>(black_box(&rkyv_player)).unwrap()))
+        });
         group.bench_with_input(BenchmarkId::new("pojoc", n), &n, |b, &n| {
             let inv = make_inventory(n);
             let player = Player {
@@ -942,6 +951,22 @@ fn stress_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress/decode");
 
     for &n in SIZES {
+        let archive = rkyv::to_bytes::<ArchiveError>(&RkyvPlayer::new(make_inventory(n))).unwrap();
+        group.bench_function(BenchmarkId::new("rkyv_access", n), |b| {
+            b.iter(|| {
+                black_box(
+                    rkyv::access::<Archived<RkyvPlayer>, ArchiveError>(black_box(&archive))
+                        .unwrap(),
+                )
+            })
+        });
+        group.bench_function(BenchmarkId::new("rkyv_owned", n), |b| {
+            b.iter(|| {
+                black_box(
+                    rkyv::from_bytes::<RkyvPlayer, ArchiveError>(black_box(&archive)).unwrap(),
+                )
+            })
+        });
         let pojoc_buf = make_pojoc_buf(n);
         let proto_buf = make_proto_buf(n);
         let capnp_buf = make_capnp_buf(n);
@@ -982,6 +1007,24 @@ fn stress_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress/roundtrip");
 
     for &n in SIZES {
+        let rkyv_player = RkyvPlayer::new(make_inventory(n));
+        group.bench_function(BenchmarkId::new("rkyv_access", n), |b| {
+            b.iter(|| {
+                let archive = rkyv::to_bytes::<ArchiveError>(black_box(&rkyv_player)).unwrap();
+                black_box(
+                    rkyv::access::<Archived<RkyvPlayer>, ArchiveError>(black_box(&archive))
+                        .unwrap(),
+                );
+            })
+        });
+        group.bench_function(BenchmarkId::new("rkyv_owned", n), |b| {
+            b.iter(|| {
+                let archive = rkyv::to_bytes::<ArchiveError>(black_box(&rkyv_player)).unwrap();
+                black_box(
+                    rkyv::from_bytes::<RkyvPlayer, ArchiveError>(black_box(&archive)).unwrap(),
+                )
+            })
+        });
         let inv = make_inventory(n);
         let player = Player {
             player_id: 1.0,

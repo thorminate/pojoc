@@ -17,6 +17,7 @@ path = "src/lib.rs"
 smallvec = { workspace = true, features = ["const_new"] }
 serde = { workspace = true, optional = true }
 serde_bytes = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 simdutf8 = { version = "0.1.5", features = ["aarch64_neon"] }
 foldhash = { version = "0.2.0" }
@@ -24,4 +25,5 @@ foldhash = { version = "0.2.0" }
 [features]
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_bytes", "smallvec/serde"]
+sidecar-json = ["serde", "dep:serde_json"]
 secure-hasher = []

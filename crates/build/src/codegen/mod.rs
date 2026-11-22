@@ -2,6 +2,8 @@ pub mod builder;
 mod decode;
 mod encode;
 mod seek;
+mod stream;
+mod stream_hybrid;
 mod structs;
 pub mod writer;
 
@@ -40,14 +42,16 @@ fn target_is_lazy(schema: &ResolvedSchema, target_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-// true if this field can go through the single bounds-checked fixed block via unchecked reads; casts and lazy fields always fall back to the checked path
-pub(crate) fn is_blastable(schema: &ResolvedSchema, fl: &FieldLineage) -> bool {
-    if wire_fixed_size(&fl.source_ty).is_none()
-        || contains_fixed_map(&fl.source_ty)
-        || contains_enum_under_closure(&fl.source_ty)
-    {
-        return false;
-    }
+// A version's layout uses its own field types and modifiers, even when a
+// newer schema reads those fields through a cast or a lazy view.
+pub(crate) fn is_fixed_wire_field(fl: &FieldLineage) -> bool {
+    !fl.lazy
+        && wire_fixed_size(&fl.source_ty).is_some()
+        && !contains_fixed_map(&fl.source_ty)
+        && !contains_enum_under_closure(&fl.source_ty)
+}
+
+fn can_read_unchecked(schema: &ResolvedSchema, fl: &FieldLineage) -> bool {
     match &fl.mapping {
         FieldMapping::Discard => true,
         FieldMapping::PassThrough { target_name } => !target_is_lazy(schema, target_name),
@@ -61,13 +65,13 @@ pub(crate) fn is_blastable(schema: &ResolvedSchema, fl: &FieldLineage) -> bool {
 // declaration, never the latest — sourcing it from the latest would relayout
 // every historical version the moment a field is marked.
 //
-// rank 0 is exactly the blastable set, which decode/skip still split on with
-// partition_point(is_blastable). Optional is WireSize::Variable and so never
+// Rank 0 is the historical fixed block; casts and lazy reads may still need
+// checked decoding in that block. Optional is WireSize::Variable and so never
 // rank 0; encode assigns presence-bit indices over all of `ordered` while
 // decode/skip assign them over the non-blastable tail, and those agree only
 // because of that. Keep it that way.
-pub(crate) fn wire_rank(schema: &ResolvedSchema, fl: &FieldLineage) -> u8 {
-    if is_blastable(schema, fl) {
+pub(crate) fn wire_rank(fl: &FieldLineage) -> u8 {
+    if is_fixed_wire_field(fl) {
         0
     } else if fl.seekable {
         1
@@ -77,13 +81,10 @@ pub(crate) fn wire_rank(schema: &ResolvedSchema, fl: &FieldLineage) -> u8 {
 }
 
 // encode/decode/skip all use this same order, so the wire format stays consistent
-pub(crate) fn ordered_wire_fields<'a>(
-    schema: &ResolvedSchema,
-    vl: &'a VersionLineage,
-) -> Vec<&'a FieldLineage> {
+pub(crate) fn ordered_wire_fields(vl: &VersionLineage) -> Vec<&FieldLineage> {
     let mut fields: Vec<&FieldLineage> = vl.fields.iter().collect();
     // stable, so declaration order survives within each rank
-    fields.sort_by_key(|fl| wire_rank(schema, fl));
+    fields.sort_by_key(|fl| wire_rank(fl));
     fields
 }
 
@@ -103,8 +104,6 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
         w.line("// if this doesn't compile: `serde` (with the `derive` feature) must be a direct");
         w.line("// dependency, and the `pojoc`/`pojoc-build` `serde` feature must be enabled or");
         w.line("// disabled together");
-        w.line("#[allow(unused_imports)]");
-        w.line("use serde::{Serialize, Deserialize};");
     }
     w.blank();
 
@@ -143,6 +142,12 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
     emit_dispatcher(
         schema,
         &infected,
+        constraint_infected.contains(&schema.name_hint),
+        &mut w,
+    );
+    w.blank();
+    stream::emit_serve(
+        schema,
         constraint_infected.contains(&schema.name_hint),
         &mut w,
     );
@@ -230,18 +235,24 @@ fn emit_dispatcher(
     let latest = schema.lineage.latest_version;
     let needs_lifetime = infected.contains(name.as_str());
 
-    let decode_sig = if needs_lifetime {
-        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}<'_>> {{")
-    } else {
-        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}> {{")
-    };
-    w.line(&decode_sig);
+    let ref_lt = if needs_lifetime { "<'_>" } else { "" };
+    w.line(&format!(
+        "pub fn decode(buf: &[u8]) -> PojocResult<{name}{ref_lt}> {{"
+    ));
     w.indent();
     w.line("let mut pos = 0;");
     w.line("let envelope = read_envelope(buf, &mut pos)?;");
-    w.line("let payload = envelope.payload;");
+    w.line("decode_payload(envelope.version, envelope.payload)");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line(&format!(
+        "fn decode_payload(version: u64, payload: &[u8]) -> PojocResult<{name}{ref_lt}> {{"
+    ));
+    w.indent();
     w.line("let mut pos = 0;");
-    w.line("match envelope.version {");
+    w.line("match version {");
     w.indent();
     for vl in &schema.lineage.versions {
         let v = vl.version;
@@ -254,7 +265,6 @@ fn emit_dispatcher(
     w.line("}");
     w.blank();
 
-    let ref_lt = if needs_lifetime { "<'_>" } else { "" };
     let encode_sig = if root_constrained {
         format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) -> PojocResult<()> {{")
     } else {
@@ -409,7 +419,7 @@ fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {
                 .filter(|(id, _)| id.name == *ty_name)
                 .max_by_key(|(id, _)| id.version)
             {
-                let computed_len = resolved_bitset.variants.len().div_ceil(8);
+                let computed_len = resolved_bitset.byte_width();
                 let mut default_bytes = vec![0u8; computed_len];
                 for (flag_name, flag_val) in kvs {
                     if *flag_val

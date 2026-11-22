@@ -208,12 +208,8 @@ pub struct ResolvedBitset {
 }
 
 impl ResolvedBitset {
-    pub fn byte_width(&self) -> u8 {
-        match self.variants.len() {
-            n if n <= 8 => 1,
-            n if n <= 16 => 2,
-            _ => 4,
-        }
+    pub fn byte_width(&self) -> usize {
+        self.variants.len().div_ceil(8)
     }
     pub fn backing_type(&self) -> &'static str {
         match self.byte_width() {

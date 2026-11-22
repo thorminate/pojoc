@@ -1,0 +1,12 @@
+schema SeekNested {
+  version 1 {
+    fields {
+      id: u64 = 0
+    }
+  }
+  version 2 {
+    diff {
+      + matrix: seekable [[(map<string, i32?>, string(8)?)](4)] = []
+    }
+  }
+}

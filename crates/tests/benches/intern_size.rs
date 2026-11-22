@@ -1,5 +1,4 @@
-// other formats don't dedup repeated strings, so they scale linearly with
-// element count no matter how few distinct strings are actually present
+// Compare repeated strings with the explicit sharing each format can express.
 use bebop::Record;
 use flatbuffers::FlatBufferBuilder;
 use pojoc_tests::{
@@ -8,6 +7,8 @@ use pojoc_tests::{
     proto_intern_bench,
 };
 use prost::Message;
+use rkyv::rancor::Error as ArchiveError;
+use std::sync::Arc;
 
 const POOL: &[&str] = &[
     "starter_zone",
@@ -88,6 +89,12 @@ fn main() {
     let mut bebop_buf = Vec::new();
     bebop_msg.serialize(&mut bebop_buf).unwrap();
 
+    let plain: Vec<String> = values.iter().map(|s| (*s).to_owned()).collect();
+    let pool: Vec<Arc<str>> = POOL.iter().copied().map(Arc::from).collect();
+    let shared: Vec<_> = pool.iter().cycle().take(values.len()).cloned().collect();
+    let rkyv_plain = rkyv::to_bytes::<ArchiveError>(&plain).unwrap();
+    let rkyv_shared = rkyv::to_bytes::<ArchiveError>(&shared).unwrap();
+
     println!(
         "\n=== interned string array: {ELEMENT_COUNT} elements from a {}-string pool ===",
         POOL.len()
@@ -101,13 +108,17 @@ fn main() {
     println!("Cap'n Proto:      {} bytes", capnp_buf.len());
     println!("FlatBuffers:      {} bytes", fb_buf.len());
     println!("Bebop:            {} bytes", bebop_buf.len());
+    println!("rkyv (plain):     {} bytes", rkyv_plain.len());
+    println!("rkyv (shared):    {} bytes", rkyv_shared.len());
     println!(
         "\npojoc (intern) is {:.1}x smaller than the next smallest competitor",
         [
             proto_buf.len(),
             capnp_buf.len(),
             fb_buf.len(),
-            bebop_buf.len()
+            bebop_buf.len(),
+            rkyv_plain.len(),
+            rkyv_shared.len(),
         ]
         .into_iter()
         .min()

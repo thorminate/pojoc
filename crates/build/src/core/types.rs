@@ -143,7 +143,7 @@ pub enum ResolvedTypeRef {
     Scalar(TypeId),
     // wire discriminant width in bytes (1/2/4), see ResolvedEnum::byte_width
     Enum(TypeId, u8),
-    Bitset(TypeId, u8),
+    Bitset(TypeId, usize),
     Union(TypeId),
     Array(Box<ResolvedTypeRef>),
     FixedArray(Box<ResolvedTypeRef>, usize),
@@ -396,16 +396,19 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
         }
 
         ResolvedTypeRef::Bitset(id, width) => {
-            let lower = id.name.to_snake_case();
-            let (skip, wire) = match width {
-                1 => ("let _ = read_u8(__buf, __pos)?;", WireSize::Fixed(1)),
-                2 => ("let _ = read_u16(__buf, __pos)?;", WireSize::Fixed(2)),
-                _ => ("let _ = read_u32(__buf, __pos)?;", WireSize::Fixed(4)),
-            };
+            let lower = format!("{}_v{}", id.name.to_snake_case(), id.version);
             TypeInfo {
-                wire_size: wire,
+                wire_size: WireSize::Fixed(*width),
                 rust_type: id.name.clone(),
-                skip_stmt: skip.into(),
+                skip_stmt: if *width == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "{{ let __end = __pos.checked_add({width}).ok_or(Error::UnexpectedEof)?; \
+                             if __end > __buf.len() {{ return Err(Error::UnexpectedEof); }} \
+                             *__pos = __end; }}"
+                    )
+                },
                 read_fn: format!("read_{lower}"),
                 write_fn: format!("write_{lower}"),
                 default_expr: format!("{}::default()", id.name),
@@ -444,13 +447,32 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Array(inner) => {
             let i = type_info(inner);
+            let skip_stmt = if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+                && let WireSize::Fixed(width) = i.wire_size
+            {
+                let (to_elements, to_bytes) = if width > 1 {
+                    (format!(" / {width}"), format!(" * {width}"))
+                } else {
+                    (String::new(), String::new())
+                };
+                // Advance by complete elements on EOF, just as the scalar reads do.
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; \
+                     let __available = __buf.len().saturating_sub(*__pos){to_elements}; \
+                     *__pos += __n.min(__available){to_bytes}; \
+                     if __n > __available {{ return Err(Error::UnexpectedEof); }} }}"
+                )
+            } else {
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
+                    i.skip_stmt
+                )
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocVec<{}>", i.rust_type),
-                skip_stmt: format!(
-                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
-                    i.skip_stmt
-                ),
+                skip_stmt,
                 read_fn: "read_array".into(),
                 write_fn: "write_array".into(),
                 default_expr: "PojocVec::new()".into(),
@@ -508,7 +530,9 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
             TypeInfo {
                 wire_size: if let WireSize::Fixed(k) = ki.wire_size {
                     if let WireSize::Fixed(v) = vi.wire_size {
-                        WireSize::Fixed(k * v * n)
+                        k.checked_add(v)
+                            .and_then(|width| width.checked_mul(*n))
+                            .map_or(WireSize::Variable, WireSize::Fixed)
                     } else {
                         WireSize::Variable
                     }
@@ -780,6 +804,7 @@ pub fn contains_fixed_map(ty: &ResolvedTypeRef) -> bool {
         ResolvedTypeRef::FixedMap(..) => true,
         ResolvedTypeRef::Boxed(..) => true,
         ResolvedTypeRef::FixedArray(inner, _) => contains_fixed_map(inner),
+        ResolvedTypeRef::Constrained { inner, .. } => contains_fixed_map(inner),
         ResolvedTypeRef::Tuple(elems) => elems.iter().any(contains_fixed_map),
         _ => false,
     }

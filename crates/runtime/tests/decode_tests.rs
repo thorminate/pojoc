@@ -92,10 +92,64 @@ fn stream_of_envelopes() {
 }
 
 #[test]
+fn buffered_stream_exposes_only_the_current_payload_after_reuse() {
+    let mut request = Vec::new();
+    let mut response = Vec::new();
+    for bytes in [&[1, 2, 3, 4][..], &[5][..], &[][..], &[6, 7][..]] {
+        let mut input = bytes;
+        let response_len = stream::read_buffered_reply(
+            &mut input,
+            bytes.len(),
+            &mut request,
+            &mut response,
+            |payload, output| {
+                assert_eq!(payload, bytes);
+                output.extend_from_slice(payload);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(&response[..response_len], bytes);
+    }
+}
+
+#[test]
 fn read_truncated_u32_errors() {
     let buf = vec![0x01, 0x02];
     let mut pos = 0;
     assert_eq!(read_u32(&buf, &mut pos), Err(Error::UnexpectedEof));
+}
+
+#[test]
+fn unaligned_pod_arrays_decode_into_inline_and_heap_storage() {
+    let expected = [
+        0x0504_0302_u32,
+        0,
+        48,
+        300,
+        u32::MAX,
+        0x0a09_0807,
+        1,
+        31,
+        42,
+    ];
+    for len in [8, 9] {
+        let mut wire = Vec::new();
+        write_pod_array(&mut wire, &expected[..len]);
+        let mut aligned = [0_u32; 10];
+        let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut aligned);
+        bytes[..wire.len()].copy_from_slice(&wire);
+        // The one-byte count puts the elements at an unaligned address.
+        let mut pos = 0;
+        let values = read_pod_array::<u32>(&bytes[..wire.len()], &mut pos).unwrap();
+        assert_eq!(values.as_slice(), &expected[..len]);
+        assert_eq!(values.spilled(), len > 8);
+        assert_eq!(pos, wire.len());
+        assert_eq!(
+            read_pod_array::<u32>(&bytes[..wire.len() - 1], &mut 0),
+            Err(Error::UnexpectedEof)
+        );
+    }
 }
 
 #[test]

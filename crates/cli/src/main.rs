@@ -11,6 +11,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod binary;
+
 #[derive(Parser)]
 #[command(name = "pojoc", version, about = "Pojoc schema compiler")]
 struct Cli {
@@ -36,8 +38,17 @@ enum Command {
         /// Don't emit Serialize/Deserialize derives/impls in generated code.
         /// The consuming crate's `pojoc` dependency must have its own `serde`
         /// feature disabled to match, or the generated code won't compile.
+        /// The standalone executable also omits its JSON stdio modes.
         #[arg(long)]
         no_serde: bool,
+
+        /// Also compile a standalone, schema-specific executable using Cargo.
+        #[arg(long = "bin")]
+        emit_bin: bool,
+
+        /// Use a specific Pojoc runtime crate for the standalone executable.
+        #[arg(long, requires = "emit_bin", value_name = "DIR")]
+        runtime_path: Option<PathBuf>,
     },
 
     /// Check a schema without writing output
@@ -70,7 +81,16 @@ fn main() {
             out_dir,
             verbose,
             no_serde,
-        } => build(input, out_dir, verbose, no_serde),
+            emit_bin,
+            runtime_path,
+        } => build(
+            input,
+            out_dir,
+            verbose,
+            no_serde,
+            emit_bin,
+            runtime_path.as_deref(),
+        ),
         Command::Check { input, verbose } => check(input, verbose),
         Command::Show { input, fields_only } => show(input, fields_only),
     };
@@ -96,7 +116,14 @@ fn log(verbose: bool, msg: &str) {
     }
 }
 
-fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool) -> i32 {
+fn build(
+    input: PathBuf,
+    out_dir: PathBuf,
+    verbose: bool,
+    no_serde: bool,
+    emit_bin: bool,
+    runtime_path: Option<&Path>,
+) -> i32 {
     pojoc_build::set_emit_serde(!no_serde);
 
     let mut orchestrator = ImportOrchestrator::new();
@@ -137,11 +164,13 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool) -> i32
         return 1;
     }
 
-    let stem = input.file_stem().unwrap().to_string_lossy();
-    let out_file = out_dir.join(format!("{stem}.rs"));
+    let stem = input.file_stem().unwrap();
+    let mut source_name = stem.to_os_string();
+    source_name.push(".rs");
+    let out_file = out_dir.join(source_name);
 
     let t = Instant::now();
-    if let Err(e) = std::fs::write(&out_file, code) {
+    if let Err(e) = std::fs::write(&out_file, &code) {
         eprintln!("error: could not write `{}`: {e}", out_file.display());
         return 1;
     }
@@ -153,6 +182,11 @@ fn build(input: PathBuf, out_dir: PathBuf, verbose: bool, no_serde: bool) -> i32
             t.elapsed().as_secs_f64() * 1000.0
         ),
     );
+
+    if emit_bin && let Err(e) = binary::build(&out_dir, stem, &code, no_serde, runtime_path) {
+        eprintln!("error: could not build standalone executable: {e}");
+        return 1;
+    }
 
     0
 }

@@ -1,0 +1,15 @@
+schema StdioLazy {
+  version 1 {
+    fields {
+      id: u64 = 0
+      payload: lazy [u8] = []
+      note: string = ""
+    }
+  }
+  version 2 {
+    diff {
+      - note
+      + flags: u32 = 17
+    }
+  }
+}
