@@ -5,7 +5,7 @@ generate a codec that imports it.
 
 ```sh
 npm install pojoc
-pojoc build player.pojoc --target typescript-npm -o generated
+pojoc build player.pojoc --target typescript -o generated
 ```
 
 Use the exports of the generated module for schema-specific encoding,

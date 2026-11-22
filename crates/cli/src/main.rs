@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use pojoc_build::codegen::generate;
 use pojoc_build::core::types::TypeId;
 use pojoc_build::schema::ir::ir_types::{FieldIR, ResolvedConst, ResolvedSchema, latest_by_name};
@@ -25,44 +25,49 @@ enum Target {
     Rust,
     #[value(alias = "ts")]
     Typescript,
-    #[value(alias = "ts-npm")]
-    TypescriptNpm,
+}
+
+#[derive(Args)]
+struct BuildArgs {
+    /// Entry-point .pojoc file
+    input: PathBuf,
+
+    /// Output directory for generated source files
+    #[arg(short, long, default_value = "out")]
+    out_dir: PathBuf,
+
+    /// Output target for the generated codec.
+    #[arg(long, value_enum, default_value = "rust")]
+    target: Target,
+
+    /// Embed the runtime in the generated TypeScript module.
+    #[arg(long)]
+    standalone: bool,
+
+    /// Print per-file diagnostics
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Don't emit Serialize/Deserialize derives/impls in generated code.
+    /// The consuming crate's `pojoc` dependency must have its own `serde`
+    /// feature disabled to match, or the generated code won't compile.
+    /// The standalone executable also omits its JSON stdio modes.
+    #[arg(long)]
+    no_serde: bool,
+
+    /// Also compile a standalone, schema-specific executable using Cargo.
+    #[arg(long = "bin")]
+    emit_bin: bool,
+
+    /// Use a specific Pojoc runtime crate for the standalone executable.
+    #[arg(long, requires = "emit_bin", value_name = "DIR")]
+    runtime_path: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Compile a schema and write output to disk
-    Build {
-        /// Entry-point .pojoc file
-        input: PathBuf,
-
-        /// Output directory for generated source files
-        #[arg(short, long, default_value = "out")]
-        out_dir: PathBuf,
-
-        /// Output target for the generated codec.
-        #[arg(long, value_enum, default_value = "rust")]
-        target: Target,
-
-        /// Print per-file diagnostics
-        #[arg(short, long)]
-        verbose: bool,
-
-        /// Don't emit Serialize/Deserialize derives/impls in generated code.
-        /// The consuming crate's `pojoc` dependency must have its own `serde`
-        /// feature disabled to match, or the generated code won't compile.
-        /// The standalone executable also omits its JSON stdio modes.
-        #[arg(long)]
-        no_serde: bool,
-
-        /// Also compile a standalone, schema-specific executable using Cargo.
-        #[arg(long = "bin")]
-        emit_bin: bool,
-
-        /// Use a specific Pojoc runtime crate for the standalone executable.
-        #[arg(long, requires = "emit_bin", value_name = "DIR")]
-        runtime_path: Option<PathBuf>,
-    },
+    Build(BuildArgs),
 
     /// Check a schema without writing output
     Check {
@@ -89,23 +94,7 @@ fn main() {
     let cli = Cli::parse();
 
     let code = match cli.command {
-        Command::Build {
-            input,
-            out_dir,
-            target,
-            verbose,
-            no_serde,
-            emit_bin,
-            runtime_path,
-        } => build(
-            input,
-            out_dir,
-            target,
-            verbose,
-            no_serde,
-            emit_bin,
-            runtime_path.as_deref(),
-        ),
+        Command::Build(args) => build(args),
         Command::Check { input, verbose } => check(input, verbose),
         Command::Show { input, fields_only } => show(input, fields_only),
     };
@@ -131,18 +120,27 @@ fn log(verbose: bool, msg: &str) {
     }
 }
 
-fn build(
-    input: PathBuf,
-    out_dir: PathBuf,
-    target: Target,
-    verbose: bool,
-    no_serde: bool,
-    emit_bin: bool,
-    runtime_path: Option<&Path>,
-) -> i32 {
-    if !matches!(target, Target::Rust) && (emit_bin || no_serde) {
-        eprintln!("error: --bin and --no-serde are Rust target options");
-        return 1;
+fn build(args: BuildArgs) -> i32 {
+    let BuildArgs {
+        input,
+        out_dir,
+        target,
+        standalone,
+        verbose,
+        no_serde,
+        emit_bin,
+        runtime_path,
+    } = args;
+    match target {
+        Target::Rust if standalone => {
+            eprintln!("error: --standalone is a TypeScript target option");
+            return 1;
+        }
+        Target::Typescript if emit_bin || no_serde => {
+            eprintln!("error: --bin and --no-serde are Rust target options");
+            return 1;
+        }
+        _ => {}
     }
     pojoc_build::set_emit_serde(!no_serde);
 
@@ -170,9 +168,9 @@ fn build(
     let t = Instant::now();
     let (code, extension) = match target {
         Target::Rust => (generate(&schema), ".rs"),
-        Target::Typescript | Target::TypescriptNpm => {
-            let result = if matches!(target, Target::TypescriptNpm) {
-                pojoc_build::codegen::typescript::generate_with_npm_runtime(&schema)
+        Target::Typescript => {
+            let result = if standalone {
+                pojoc_build::codegen::typescript::generate_standalone(&schema)
             } else {
                 pojoc_build::codegen::typescript::generate(&schema)
             };
@@ -219,7 +217,9 @@ fn build(
         ),
     );
 
-    if emit_bin && let Err(e) = binary::build(&out_dir, stem, &code, no_serde, runtime_path) {
+    if emit_bin
+        && let Err(e) = binary::build(&out_dir, stem, &code, no_serde, runtime_path.as_deref())
+    {
         eprintln!("error: could not build standalone executable: {e}");
         return 1;
     }
