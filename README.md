@@ -137,6 +137,26 @@ The generated Rust module exposes the same loop as
 `serve(&mut input, &mut output, max_payload_bytes)`, with a buffered reader as
 input and a caller-supplied request limit.
 
+### Benchmarking stdio
+
+From the repo root, build the schema-specific executable and run the benchmark:
+
+```sh
+cargo run --release -p pojoc-cli -- build crates/tests/schemas/stdio_bench.pojoc --bin --out-dir target/stdio-bench
+cargo bench -p pojoc-tests --bench stdio
+```
+
+Set `POJOC_STDIO_BIN` to an absolute path to benchmark a different build of the
+same helper. Criterion reports messages per second and time per message. Each
+request is a v1 envelope that decodes and re-encodes as v2, with 256 B, 4 KiB,
+and 64 KiB of data. Labels show the total request size on the wire.
+
+The benchmarks compare the codec alone, spawning per message for the smallest
+payload, a persistent process with one request in flight, and a persistent
+process that sends up to 64 requests at a time while draining stdout. The
+round-trip case measures request/reply latency. The pipelined time is elapsed
+time divided by completed messages, so it measures throughput per message.
+
 ## Building n' Testing
 
 The compiler itself (`pojoc`, `pojoc-build`, `pojoc-cli`) is plain cargo, nothing special:

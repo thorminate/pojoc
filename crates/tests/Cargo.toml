@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "seek"
 harness = false
+
+[[bench]]
+name = "stdio"
+harness = false

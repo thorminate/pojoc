@@ -28,6 +28,7 @@ generated_strict!(pub pojoc_union_width, "/pojoc_union_width.rs");
 generated_strict!(pub pojoc_seek_bench, "/pojoc_seek_bench.rs");
 generated_strict!(pub pojoc_seek_many, "/pojoc_seek_many.rs");
 generated_strict!(pub pojoc_seek_retype, "/pojoc_seek_retype.rs");
+generated_strict!(pub pojoc_stdio_bench, "/pojoc_stdio_bench.rs");
 generated_strict!(pub pojoc_import_root, "/pojoc_import_root.rs");
 
 pub use flatbuf::fb_player;
