@@ -1,5 +1,5 @@
-use super::writer::CodeWriter;
 use super::{is_blastable, ordered_wire_fields, version_uses_intern, wire_fixed_size};
+use super::{stream_hybrid::HybridPlans, writer::CodeWriter};
 use crate::core::types::{ResolvedTypeRef, normalize_type};
 use crate::schema::ir::ir_types::ResolvedSchema;
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
@@ -49,6 +49,7 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
         .collect();
 
     let preserve_length = latest_tail.is_some_and(|tail| tail.lazy);
+    let hybrid = HybridPlans::new(schema, &versions);
     let fallback = "read_buffered_reply(input, version, payload_len, &mut request, &mut response)?";
     for line in include_str!("stream.rs.in").lines() {
         match line.trim() {
@@ -62,14 +63,21 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
                 ));
             }
             "// BYTE_ARRAY_STREAM" => {}
-            "// STREAM_REPLY" if versions.is_empty() => {
-                w.line(&format!("        let reply_len = {fallback};"));
+            "// HYBRID_STREAM" if !hybrid.is_empty() => {
+                for line in include_str!("stream_hybrid.rs.in").lines() {
+                    w.line(line);
+                }
+                w.line("    let mut hybrid = HybridStream::default();");
+            }
+            "// HYBRID_STREAM" => {}
+            "// STREAM_REPLY" if versions.is_empty() && hybrid.is_empty() => {
+                w.line(&format!("        let reply_len = Some({fallback});"));
             }
             "// STREAM_REPLY" => {
                 w.line("        let reply_len = match version {");
                 for (version, prefix_len) in &versions {
                     w.line(&format!(
-                        "            {version} if payload_len > {prefix_len} => byte_array.read_reply("
+                        "            {version} if payload_len > {prefix_len} => Some(byte_array.read_reply("
                     ));
                     w.line(&format!(
                         "                input, payload_len, {prefix_len}, &mut response, |prefix, header| {{"
@@ -84,9 +92,16 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
                     ));
                     w.line("                    Ok(())");
                     w.line("                },");
-                    w.line("            )?,");
+                    w.line("            )?),");
                 }
-                w.line(&format!("            _ => {fallback},"));
+                w.indent();
+                w.indent();
+                w.indent();
+                hybrid.emit_arms(w);
+                w.dedent();
+                w.dedent();
+                w.dedent();
+                w.line(&format!("            _ => Some({fallback}),"));
                 w.line("        };");
             }
             _ => w.line(line),

@@ -3,6 +3,7 @@ mod decode;
 mod encode;
 mod seek;
 mod stream;
+mod stream_hybrid;
 mod structs;
 pub mod writer;
 

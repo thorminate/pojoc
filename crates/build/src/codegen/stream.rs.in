@@ -71,11 +71,14 @@ pub fn serve(
     }
 
     // BYTE_ARRAY_STREAM
+    // HYBRID_STREAM
     let mut request = Vec::new();
     let mut response = Vec::new();
     while let Some((version, payload_len)) = read_header(input, max_payload_bytes)? {
         // STREAM_REPLY
-        output.write_all(&response[..reply_len])?;
+        if let Some(reply_len) = reply_len {
+            output.write_all(&response[..reply_len])?;
+        }
         output.flush()?;
     }
     Ok(())

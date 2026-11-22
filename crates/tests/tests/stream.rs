@@ -1,5 +1,9 @@
 use pojoc_tests::pojoc_player::{self as player, Player, runtime::read_envelope};
 use pojoc_tests::pojoc_stdio_bench::{self as eager, StdioBench};
+use pojoc_tests::pojoc_stdio_hybrid::{
+    self as hybrid, StdioHybrid,
+    runtime::{LazyView, PojocVec},
+};
 use pojoc_tests::pojoc_stdio_lazy as lazy;
 use std::io::{self, BufReader, ErrorKind, Read};
 
@@ -127,7 +131,7 @@ fn lazy_stream_preserves_raw_array_lengths_across_layouts() {
     lazy::runtime::write_u32(&mut latest, 19);
     latest.extend([0x83, 0, 4, 5, 6]);
 
-    // The old layout takes the buffered path, the latest takes the incremental path.
+    // The old layout has a field after the array, while the latest has a trailing array.
     let frames = [envelope(1, &historical), envelope(2, &latest)];
     let mut expected = Vec::new();
     for frame in &frames {
@@ -157,5 +161,58 @@ fn incremental_stream_requires_the_complete_envelope_before_replying() {
     let error = eager::serve(&mut input, &mut replies, 512).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidData);
     assert_eq!(input, request);
+    assert!(replies.is_empty());
+}
+
+fn hybrid_requests() -> [Vec<u8>; 3] {
+    let long_note = "long ".repeat(300);
+    // Use a noncanonical varint for 8192. The lazy blob must forward it verbatim.
+    let mut raw_blob = vec![0x80, 0xc0, 0];
+    raw_blob.resize(8192 + 3, 0x9b);
+    let populated = StdioHybrid {
+        id: 123,
+        name: Some("seekable name"),
+        label: "interned label",
+        samples: PojocVec::from_vec((0..10240).map(|i| i * 0x10101).collect()),
+        blob: LazyView::new(&raw_blob, |buf, pos| {
+            hybrid::runtime::read_pod_array(buf, pos).map(Some)
+        }),
+        notes: PojocVec::from_slice(&["one", &long_note]),
+        flags: 97,
+    };
+    let absent = StdioHybrid {
+        blob: LazyView::Owned(None),
+        name: None,
+        ..populated.clone()
+    };
+    let mut old = Vec::new();
+    let mut latest = Vec::new();
+    let mut empty = Vec::new();
+    hybrid::encode_for_version(&mut old, &populated, 1).unwrap();
+    hybrid::encode(&mut latest, &populated);
+    hybrid::encode(&mut empty, &absent);
+    [old, empty, latest]
+}
+
+#[test]
+fn hybrid_stream_matches_the_slice_codec_across_versions() {
+    let requests = hybrid_requests();
+    let mut expected = Vec::new();
+    for request in &requests {
+        hybrid::encode(&mut expected, &hybrid::decode(request).unwrap());
+    }
+    let requests = requests.concat();
+    let mut input = BufReader::with_capacity(3, Fragmented(&requests));
+    let mut replies = Vec::new();
+    hybrid::serve(&mut input, &mut replies, 65536).unwrap();
+    assert_eq!(replies, expected);
+}
+
+#[test]
+fn hybrid_stream_withholds_a_reply_if_the_suffix_is_truncated() {
+    let [large, _, _] = hybrid_requests();
+    let mut replies = Vec::new();
+    let error = hybrid::serve(&mut &large[..large.len() - 1], &mut replies, 65536).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
     assert!(replies.is_empty());
 }

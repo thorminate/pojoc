@@ -138,7 +138,10 @@ The generated Rust module exposes the same loop as
 input and a caller-supplied request limit.
 When both versions have a fixed-width prefix followed by the same byte array,
 `serve` decodes the prefix first and reads the array directly into its reusable
-reply buffer. Other layouts use the buffered decoder.
+reply buffer. For mixed payloads of at least 32 KiB, `serve` can also stream
+unchanged length-prefixed numeric arrays whose positions can be found from
+preceding field lengths. Surrounding fields use the regular codec, including
+seekable metadata and version upgrades. Other layouts use buffered decoding.
 
 ### Benchmarking stdio
 

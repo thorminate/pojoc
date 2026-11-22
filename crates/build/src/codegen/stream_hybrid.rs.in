@@ -1,0 +1,279 @@
+    // Small envelopes are cheaper to send with one buffered write.
+    const HYBRID_MIN_PAYLOAD_BYTES: usize = 32 * 1024;
+
+    // The generated layouts split the payload at arrays whose wire bytes can be reused.
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)] // A given schema may use only some spans.
+    enum StreamSpan {
+        Fixed(usize),
+        LengthPrefixed(usize),
+        Varint,
+        Array(usize, usize, bool),
+    }
+
+    struct HybridLayout {
+        interned: bool,
+        presence_bytes: usize,
+        steps: &'static [(Option<usize>, StreamSpan)],
+    }
+
+    fn present(header: &[u8], bit: Option<usize>) -> bool {
+        bit.is_none_or(|bit| header[bit / 8] & (1 << (bit % 8)) != 0)
+    }
+
+    fn wire_varint(frame: &mut io::Take<&mut impl BufRead>) -> io::Result<([u8; 10], usize)> {
+        if frame.limit() == 0 {
+            return Err(codec_error(Error::UnexpectedEof));
+        }
+        let mut first = [0];
+        frame.read_exact(&mut first)?;
+        match read_stream_varint(frame, first[0]) {
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && frame.limit() == 0 => {
+                Err(codec_error(Error::UnexpectedEof))
+            }
+            result => result,
+        }
+    }
+
+    fn array_bytes(count: usize, width: usize) -> PojocResult<usize> {
+        count.checked_mul(width).ok_or(Error::InvalidLength)
+    }
+
+    fn require_bytes(frame: &mut io::Take<&mut impl BufRead>, bytes: usize) -> io::Result<()> {
+        if bytes as u64 > frame.limit() {
+            io::copy(frame, &mut io::sink())?;
+            if frame.limit() != 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            return Err(codec_error(Error::UnexpectedEof));
+        }
+        Ok(())
+    }
+
+    fn append_bytes(
+        frame: &mut io::Take<&mut impl BufRead>,
+        buffer: &mut Vec<u8>,
+        bytes: usize,
+    ) -> io::Result<()> {
+        require_bytes(frame, bytes)?;
+        let start = buffer.len();
+        buffer.resize(start + bytes, 0);
+        frame.read_exact(&mut buffer[start..])
+    }
+
+    fn append_field(
+        frame: &mut io::Take<&mut impl BufRead>,
+        buffer: &mut Vec<u8>,
+        width: usize,
+    ) -> io::Result<()> {
+        let (raw, len) = wire_varint(frame)?;
+        let count = read_array_len(&raw[..len], &mut 0).map_err(codec_error)?;
+        let bytes = array_bytes(count, width).map_err(codec_error)?;
+        buffer.extend_from_slice(&raw[..len]);
+        append_bytes(frame, buffer, bytes)
+    }
+
+    #[derive(Default)]
+    struct StreamArray {
+        data: Vec<u8>,
+        len: usize,
+        padding: usize,
+    }
+
+    impl StreamArray {
+        fn write(
+            &mut self,
+            output: &mut impl io::Write,
+            prefix: &[u8],
+            suffix: &[u8],
+        ) -> io::Result<()> {
+            let mut start = self.padding;
+            let mut end = start + self.len;
+            // Keep the usual small metadata adjacent to the array for one pipe write.
+            if prefix.len() <= self.padding {
+                start -= prefix.len();
+                self.data[start..self.padding].copy_from_slice(prefix);
+            } else {
+                output.write_all(prefix)?;
+            }
+            if suffix.len() <= self.padding {
+                self.data[end..end + suffix.len()].copy_from_slice(suffix);
+                end += suffix.len();
+                output.write_all(&self.data[start..end])
+            } else {
+                output.write_all(&self.data[start..end])?;
+                output.write_all(suffix)
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct HybridStream {
+        fields: Vec<u8>,
+        arrays: Vec<StreamArray>,
+        array_length: Vec<u8>,
+        insertions: Vec<(usize, usize)>,
+    }
+
+    impl HybridStream {
+        fn read_fields(
+            &mut self,
+            frame: &mut io::Take<&mut impl BufRead>,
+            layout: &HybridLayout,
+        ) -> io::Result<()> {
+            self.fields.clear();
+            for array in &mut self.arrays {
+                array.len = 0;
+            }
+            if layout.interned {
+                let (raw, len) = wire_varint(frame)?;
+                let count = read_array_len(&raw[..len], &mut 0).map_err(codec_error)?;
+                require_bytes(frame, count)?;
+                self.fields.extend_from_slice(&raw[..len]);
+                for _ in 0..count {
+                    append_field(frame, &mut self.fields, 1)?;
+                }
+            }
+            let presence_start = self.fields.len();
+            let presence_end = presence_start + layout.presence_bytes;
+            append_bytes(frame, &mut self.fields, layout.presence_bytes)?;
+            for &(bit, span) in layout.steps {
+                if !present(&self.fields[presence_start..presence_end], bit) {
+                    continue;
+                }
+                match span {
+                    StreamSpan::Fixed(bytes) => append_bytes(frame, &mut self.fields, bytes)?,
+                    StreamSpan::LengthPrefixed(width) => append_field(frame, &mut self.fields, width)?,
+                    StreamSpan::Varint => {
+                        let (raw, len) = wire_varint(frame)?;
+                        self.fields.extend_from_slice(&raw[..len]);
+                    }
+                    StreamSpan::Array(slot, width, lazy) => {
+                        self.read_array(frame, slot, width, lazy)?;
+                        // The slice codec handles upgrades with an empty array in this slot.
+                        self.fields.push(0);
+                    }
+                }
+            }
+            let remaining = frame.limit() as usize;
+            append_bytes(frame, &mut self.fields, remaining)
+        }
+
+        fn read_array(
+            &mut self,
+            frame: &mut io::Take<&mut impl BufRead>,
+            slot: usize,
+            width: usize,
+            lazy: bool,
+        ) -> io::Result<()> {
+            let (raw, len) = wire_varint(frame)?;
+            let count = read_array_len(&raw[..len], &mut 0).map_err(codec_error)?;
+            let bytes = array_bytes(count, width).map_err(codec_error)?;
+            require_bytes(frame, bytes)?;
+            let length = if lazy {
+                &raw[..len]
+            } else {
+                self.array_length.clear();
+                write_array_len(&mut self.array_length, count);
+                &self.array_length[..]
+            };
+            if self.arrays.len() <= slot {
+                self.arrays.resize_with(slot + 1, StreamArray::default);
+            }
+            let array = &mut self.arrays[slot];
+            array.len = length.len() + bytes;
+            const METADATA_ROOM: usize = 1024;
+            array.padding = if array.len >= METADATA_ROOM
+                && array.len.checked_add(2 * METADATA_ROOM).is_some()
+            {
+                METADATA_ROOM
+            } else {
+                0
+            };
+            let data_len = array.len + 2 * array.padding;
+            if array.data.len() < data_len {
+                array.data.resize(data_len, 0);
+            }
+            let data_start = array.padding;
+            let bytes_start = data_start + length.len();
+            array.data[data_start..bytes_start].copy_from_slice(length);
+            frame.read_exact(&mut array.data[bytes_start..data_start + array.len])
+        }
+
+        fn locate_arrays(
+            &mut self,
+            reply: &[u8],
+            payload_start: usize,
+            layout: &HybridLayout,
+        ) -> PojocResult<usize> {
+            self.insertions.clear();
+            let mut pos = payload_start;
+            if layout.interned {
+                skip_intern_table(reply, &mut pos)?;
+            }
+            let presence_end = pos + layout.presence_bytes;
+            let header = reply.get(pos..presence_end).ok_or(Error::UnexpectedEof)?;
+            pos = presence_end;
+            let mut payload_len = reply.len() - payload_start;
+            for &(bit, span) in layout.steps {
+                if !present(header, bit) {
+                    continue;
+                }
+                let bytes = match span {
+                    StreamSpan::Fixed(bytes) => bytes,
+                    StreamSpan::LengthPrefixed(width) => array_bytes(read_array_len(reply, &mut pos)?, width)?,
+                    StreamSpan::Varint => {
+                        skip_varint64(reply, &mut pos)?;
+                        continue;
+                    }
+                    StreamSpan::Array(slot, _, _) => {
+                        let start = pos;
+                        let array = self.arrays.get(slot).ok_or(Error::InvalidLength)?;
+                        if array.len == 0 || read_u8(reply, &mut pos)? != 0 {
+                            return Err(Error::InvalidLength);
+                        }
+                        payload_len = payload_len.checked_add(array.len - 1).ok_or(Error::InvalidLength)?;
+                        self.insertions.push((start, slot));
+                        continue;
+                    }
+                };
+                pos = pos.checked_add(bytes).filter(|&end| end <= reply.len()).ok_or(Error::UnexpectedEof)?;
+            }
+            u32::try_from(payload_len).map_err(|_| Error::InvalidLength)?;
+            Ok(payload_len)
+        }
+
+        fn read_reply(
+            &mut self,
+            input: &mut impl BufRead,
+            output: &mut impl io::Write,
+            payload_len: usize,
+            version: u64,
+            reply: &mut Vec<u8>,
+            layouts: &[HybridLayout; 2],
+        ) -> io::Result<()> {
+            let mut frame = input.take(payload_len as u64);
+            self.read_fields(&mut frame, &layouts[0])?;
+            reply.clear();
+            let latest = *supported_versions().last().unwrap();
+            {
+                let value = decode_payload(version, &self.fields).map_err(codec_error)?;
+                encode_for_version(reply, &value, latest).map_err(codec_error)?;
+            }
+            let mut length_pos = 0;
+            read_varint64(reply, &mut length_pos).map_err(codec_error)?;
+            let payload_len = self.locate_arrays(reply, length_pos + 4, &layouts[1]).map_err(codec_error)?;
+            patch_envelope_length(reply, length_pos, payload_len);
+
+            if self.insertions.is_empty() {
+                return output.write_all(reply);
+            }
+            let mut pos = 0;
+            for (index, &(offset, slot)) in self.insertions.iter().enumerate() {
+                let suffix = if index + 1 == self.insertions.len() { &reply[offset + 1..] } else { &[] };
+                self.arrays[slot].write(output, &reply[pos..offset], suffix)?;
+                pos = offset + 1;
+            }
+            Ok(())
+        }
+    }
