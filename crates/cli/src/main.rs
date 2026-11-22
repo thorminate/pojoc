@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use pojoc_build::codegen::generate;
 use pojoc_build::core::types::TypeId;
 use pojoc_build::schema::ir::ir_types::{FieldIR, ResolvedConst, ResolvedSchema, latest_by_name};
@@ -20,6 +20,13 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Target {
+    Rust,
+    #[value(alias = "ts")]
+    Typescript,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Compile a schema and write output to disk
@@ -30,6 +37,10 @@ enum Command {
         /// Output directory for generated .rs files
         #[arg(short, long, default_value = "out")]
         out_dir: PathBuf,
+
+        /// Source language for the generated codec.
+        #[arg(long, value_enum, default_value = "rust")]
+        target: Target,
 
         /// Print per-file diagnostics
         #[arg(short, long)]
@@ -79,6 +90,7 @@ fn main() {
         Command::Build {
             input,
             out_dir,
+            target,
             verbose,
             no_serde,
             emit_bin,
@@ -86,6 +98,7 @@ fn main() {
         } => build(
             input,
             out_dir,
+            target,
             verbose,
             no_serde,
             emit_bin,
@@ -119,11 +132,16 @@ fn log(verbose: bool, msg: &str) {
 fn build(
     input: PathBuf,
     out_dir: PathBuf,
+    target: Target,
     verbose: bool,
     no_serde: bool,
     emit_bin: bool,
     runtime_path: Option<&Path>,
 ) -> i32 {
+    if matches!(target, Target::Typescript) && (emit_bin || no_serde) {
+        eprintln!("error: --bin and --no-serde are Rust target options");
+        return 1;
+    }
     pojoc_build::set_emit_serde(!no_serde);
 
     let mut orchestrator = ImportOrchestrator::new();
@@ -148,7 +166,16 @@ fn build(
     );
 
     let t = Instant::now();
-    let code = generate(&schema);
+    let (code, extension) = match target {
+        Target::Rust => (generate(&schema), ".rs"),
+        Target::Typescript => match pojoc_build::codegen::typescript::generate(&schema) {
+            Ok(code) => (code, ".ts"),
+            Err(err) => {
+                eprintln!("error: {err}");
+                return 1;
+            }
+        },
+    };
     log(
         verbose,
         &format!("codegen in {:.1}ms", t.elapsed().as_secs_f64() * 1000.0),
@@ -166,7 +193,7 @@ fn build(
 
     let stem = input.file_stem().unwrap();
     let mut source_name = stem.to_os_string();
-    source_name.push(".rs");
+    source_name.push(extension);
     let out_file = out_dir.join(source_name);
 
     let t = Instant::now();

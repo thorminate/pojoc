@@ -74,6 +74,7 @@ validation, etc.)? Install the CLI:
 ```sh
 cargo install pojoc-cli
 pojoc build schemas/player.pojoc   # writes out/player.rs
+pojoc build schemas/player.pojoc --target typescript   # writes out/player.ts
 pojoc build schemas/player.pojoc --no-serde   # omit Serialize/Deserialize (must match your `pojoc` dependency's own serde feature)
 pojoc check schemas/player.pojoc   # validate without writing output
 ```
@@ -119,6 +120,42 @@ declared version. If an affected generator wrote a historical version using a
 newer layout, those records need regeneration from source or a migration that
 uses the writer's layout. The envelope version alone cannot distinguish the
 two layouts.
+
+### TypeScript target
+
+The TypeScript target emits a standalone ES module. Use it in a browser
+bundle, Node, or Bun. Import the generated types and codec from the same file.
+
+```sh
+pojoc build schemas/player.pojoc --target typescript -o generated
+```
+
+```ts
+import { create, encode, decode, decodeFrom } from "./generated/player.ts";
+
+const player = create({ callsign: "Northwind" });
+const bytes = encode(player);
+const received = decode(bytes);
+const { value, version, offset } = decodeFrom(bytes);
+```
+
+`decode` returns the latest schema shape. `encodeForVersion(value, version)`
+writes a historical envelope from that shape, and `decodeFrom` returns the
+offset of the next envelope. `version` is a `bigint`. Use `seek(bytes, path)`
+for fields marked `seekable`, including dotted paths through seekable structs.
+Current-version seeks skip unrelated fields. Historical seeks use the version
+decoder before looking up the result.
+
+The generated types use `bigint` for 64-bit integers, `null` for absent
+optionals, numeric typed arrays for packed numeric arrays, and `Map` for
+variable-length maps. Fixed maps are arrays of pairs. Tagged unions use
+`{ kind, value }`, with a byte payload and discriminant for unknown variants.
+Lazy fields are materialized as ordinary TypeScript values. Aligned packed
+arrays may share the input buffer on a little-endian host, so keep that buffer
+alive and unchanged while using the decoded views.
+
+See the [TypeScript tests and benchmarks](crates/tests/typescript/README.md) for
+Rust interoperability and the protobuf.js comparison on Node and Bun.
 
 To build a standalone helper for a schema, run:
 

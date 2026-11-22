@@ -2,6 +2,7 @@
 /// needs to handle correctly.
 schema Edge {
   import "player.pojoc" as Player
+  import "union_width.pojoc" as UnionWidth
 
   version 1 {
     /// Boundary values for numeric primitives, used to sanity-check
@@ -506,5 +507,49 @@ schema Edge {
       // table index rather than materializing the table.
       + seek_label: seekable intern string = ""
     }
+  }
+
+  version 7 {
+    type EdgeSeekPoint {
+      x: seekable u32 = 0
+      label: seekable intern string = ""
+      prefix: seekable string?
+    }
+
+    type EdgeSeekTransform {
+      description: seekable string = ""
+      position: seekable EdgeSeekPoint
+      tail: [u8] = []
+    }
+
+    type EdgeTree {
+      value: i32 = 0
+      left: box<EdgeTree>?
+      right: box<EdgeTree>?
+    }
+
+    type EdgePing {
+      count: i32 = 0
+      other: box<EdgePong>?
+    }
+
+    type EdgePong {
+      count: i32 = 0
+      other: box<EdgePing>?
+    }
+
+    diff {
+      + transform: seekable EdgeSeekTransform
+      + tree: EdgeTree?
+      + ping: EdgePing?
+      + interned_generic: Mono<intern string> as EdgeInternedValue
+      + packed_varints: [varint32] = []
+      + union_width_probe: UnionWidth@1?
+    }
+  }
+
+  version 8 {
+    // Reuse the dedicated 256-variant threshold fixture for both wire widths.
+    diff { ~ union_width_probe: UnionWidth@2? }
   }
 }

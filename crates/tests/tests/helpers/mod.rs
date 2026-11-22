@@ -205,6 +205,42 @@ pub fn make_populated_edge() -> Edge<'static> {
     e.seek_blob = LazyView::Owned(Some(vec![9, 8, 7].into()));
     e.seek_label = "shared-tag";
 
+    e.transform = EdgeSeekTransform {
+        description: "transform",
+        position: EdgeSeekPoint {
+            x: 0x1234_5678,
+            label: "shared-tag",
+            prefix: Some("point"),
+        },
+        tail: pojvec![1, 2, 3],
+    };
+    e.tree = Some(EdgeTree {
+        value: 1,
+        left: Some(Box::new(EdgeTree {
+            value: 2,
+            ..Default::default()
+        })),
+        right: Some(Box::new(EdgeTree {
+            value: 3,
+            ..Default::default()
+        })),
+    });
+    e.ping = Some(EdgePing {
+        count: 10,
+        other: Some(Box::new(EdgePong {
+            count: 20,
+            other: Some(Box::new(EdgePing {
+                count: 30,
+                other: None,
+            })),
+        })),
+    });
+    e.interned_generic.value = "shared-tag";
+    e.packed_varints = pojvec![0, 127, 128, 16_384, 2_097_152, 268_435_456, u32::MAX];
+    e.union_width_probe = Some(union_width::UnionWidth {
+        x: union_width::Big::V1(42),
+    });
+
     e
 }
 

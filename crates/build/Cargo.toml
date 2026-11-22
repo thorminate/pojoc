@@ -17,6 +17,7 @@ path = "src/lib.rs"
 heck = { workspace = true }
 thiserror = { workspace = true }
 compact_str = { workspace = true }
+serde_json = { workspace = true }
 
 [features]
 default = ["serde"]

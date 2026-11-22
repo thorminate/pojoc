@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+message Telemetry {
+  message Position {
+    float x = 1;
+    float y = 2;
+  }
+
+  uint32 tick = 1;
+  uint64 server_id = 2;
+  string label = 3;
+  Position position = 4;
+  repeated float samples = 5;
+  repeated uint32 actor_ids = 6;
+}

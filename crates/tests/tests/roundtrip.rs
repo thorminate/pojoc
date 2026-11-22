@@ -397,9 +397,57 @@ fn test_roundtrip_unknown_union_variant_is_lossless() {
     }
 }
 
-// Note: a discriminant overflowing Payload's own u8 width can't even be
-// written as a literal anymore (rejected at compile time); see `union_width.rs`
-// for a union that actually crosses a width threshold.
+#[test]
+fn test_edge_schema_cases_across_union_width_change() {
+    use pojoc_tests::{pluck_edge as pluck, pojoc_edge as schema};
+    use union_width::Big;
+
+    let mut original = make_populated_edge();
+    for version in [7, 8] {
+        let mut data = Vec::new();
+        schema::encode_for_version(&mut data, &original, version).unwrap();
+        let decoded = schema::decode(&data).unwrap();
+        assert_eq!(
+            pluck!(
+                schema,
+                &data,
+                transform.position.x,
+                transform.position.label,
+                transform.position.prefix
+            )
+            .unwrap(),
+            (0x1234_5678, "shared-tag", Some("point"))
+        );
+        assert_eq!(
+            decoded.transform.description,
+            original.transform.description
+        );
+        assert_eq!(decoded.transform.tail, original.transform.tail);
+        let tree = decoded.tree.as_ref().unwrap();
+        assert_eq!(tree.value, 1);
+        assert_eq!(tree.left.as_ref().unwrap().value, 2);
+        assert_eq!(tree.right.as_ref().unwrap().value, 3);
+        let ping = decoded.ping.as_ref().unwrap();
+        let pong = ping.other.as_ref().unwrap();
+        let next_ping = pong.other.as_ref().unwrap();
+        assert_eq!((ping.count, pong.count, next_ping.count), (10, 20, 30));
+        assert_eq!(decoded.interned_generic.value, decoded.interned_label);
+        assert_eq!(decoded.packed_varints, original.packed_varints);
+        assert!(matches!(
+            (version, decoded.union_width_probe.unwrap().x),
+            (7, Big::V1(42)) | (8, Big::W259(99))
+        ));
+        original.union_width_probe.as_mut().unwrap().x = Big::W259(99);
+    }
+    assert_eq!(
+        schema::encode_for_version(&mut Vec::new(), &original, 7),
+        Err(Error::DiscriminantOverflow)
+    );
+
+    let size = schema::size_hint_v8(&original);
+    original.packed_varints.clear();
+    assert_eq!(size - schema::size_hint_v8(&original), 21);
+}
 
 #[test]
 fn test_raw_passthrough_is_byte_identical() {

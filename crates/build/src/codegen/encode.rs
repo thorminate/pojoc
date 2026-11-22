@@ -1525,7 +1525,7 @@ fn emit_size_expr(
         }
         ResolvedTypeRef::Tuple(elements) => {
             for (i, elem) in elements.iter().enumerate() {
-                emit_size_expr(elem, &format!("{accessor}.{i}"), is_ref, w, schema);
+                emit_size_expr(elem, &format!("{accessor}.{i}"), false, w, schema);
             }
         }
         ResolvedTypeRef::VFloat { .. } => {
