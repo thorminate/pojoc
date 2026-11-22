@@ -2,6 +2,7 @@ pub mod builder;
 mod decode;
 mod encode;
 mod seek;
+mod stream;
 mod structs;
 pub mod writer;
 
@@ -147,9 +148,11 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
         &mut w,
     );
     w.blank();
-    for line in include_str!("stream.rs.in").lines() {
-        w.line(line);
-    }
+    stream::emit_serve(
+        schema,
+        constraint_infected.contains(&schema.name_hint),
+        &mut w,
+    );
     w.blank();
     encode::emit_size_hint_helpers(schema, &mut w);
     encode::emit_size_hint_vn_functions(schema, &infected, &mut w);
@@ -234,18 +237,24 @@ fn emit_dispatcher(
     let latest = schema.lineage.latest_version;
     let needs_lifetime = infected.contains(name.as_str());
 
-    let decode_sig = if needs_lifetime {
-        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}<'_>> {{")
-    } else {
-        format!("pub fn decode(buf: &[u8]) -> PojocResult<{name}> {{")
-    };
-    w.line(&decode_sig);
+    let ref_lt = if needs_lifetime { "<'_>" } else { "" };
+    w.line(&format!(
+        "pub fn decode(buf: &[u8]) -> PojocResult<{name}{ref_lt}> {{"
+    ));
     w.indent();
     w.line("let mut pos = 0;");
     w.line("let envelope = read_envelope(buf, &mut pos)?;");
-    w.line("let payload = envelope.payload;");
+    w.line("decode_payload(envelope.version, envelope.payload)");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
+    w.line(&format!(
+        "fn decode_payload(version: u64, payload: &[u8]) -> PojocResult<{name}{ref_lt}> {{"
+    ));
+    w.indent();
     w.line("let mut pos = 0;");
-    w.line("match envelope.version {");
+    w.line("match version {");
     w.indent();
     for vl in &schema.lineage.versions {
         let v = vl.version;
@@ -258,7 +267,6 @@ fn emit_dispatcher(
     w.line("}");
     w.blank();
 
-    let ref_lt = if needs_lifetime { "<'_>" } else { "" };
     let encode_sig = if root_constrained {
         format!("pub fn encode(buf: &mut Vec<u8>, value: &{name}{ref_lt}) -> PojocResult<()> {{")
     } else {

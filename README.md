@@ -136,6 +136,9 @@ request or a payload over 16 MiB exits with an error on stderr.
 The generated Rust module exposes the same loop as
 `serve(&mut input, &mut output, max_payload_bytes)`, with a buffered reader as
 input and a caller-supplied request limit.
+When both versions have a fixed-width prefix followed by the same byte array,
+`serve` decodes the prefix first and reads the array directly into its reusable
+reply buffer. Other layouts use the buffered decoder.
 
 ### Benchmarking stdio
 
@@ -150,7 +153,7 @@ stdio entry point used by `--bin`. Set `POJOC_STDIO_BIN` to an absolute path
 to benchmark a different build of the same helper. Criterion reports messages
 per second and time per message. Each
 request is a v1 envelope that decodes and re-encodes as v2, with 256 B, 4 KiB,
-and 64 KiB of data. Labels show the total request size on the wire.
+64 KiB, and 1 MiB of data. Labels show the total request size on the wire.
 
 The benchmarks compare the codec alone, spawning per message for the smallest
 payload, a persistent process with one request in flight, and a persistent

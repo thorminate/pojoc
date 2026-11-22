@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const BATCH: usize = 64;
-const SIZES: &[usize] = &[256, 4 * 1024, 64 * 1024];
+const SIZES: &[usize] = &[256, 4 * 1024, 64 * 1024, 1024 * 1024];
 
 struct Sidecar(Child);
 
@@ -75,7 +75,6 @@ fn pipelined(b: &mut Bencher<'_>, binary: &Path, request: &[u8], reply: &[u8]) {
     let (mut child, mut input, mut output) = Sidecar::start(binary);
     let mut responses = vec![0; reply.len() * BATCH];
     let requests = request.repeat(BATCH);
-    let expected = reply.repeat(BATCH);
 
     // Drain stdout concurrently so a batch can exceed the capacity of both pipes.
     thread::scope(|scope| {
@@ -92,7 +91,11 @@ fn pipelined(b: &mut Bencher<'_>, binary: &Path, request: &[u8], reply: &[u8]) {
             black_box(&responses[..bytes]);
         };
         exchange_batch(BATCH);
-        assert_eq!(responses, expected);
+        assert!(
+            responses
+                .chunks_exact(reply.len())
+                .all(|chunk| chunk == reply)
+        );
 
         b.iter_custom(|messages| {
             let start = Instant::now();

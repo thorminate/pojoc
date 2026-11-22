@@ -1,5 +1,7 @@
 use pojoc_tests::pojoc_player::{self as player, Player, runtime::read_envelope};
-use std::io::{BufReader, ErrorKind};
+use pojoc_tests::pojoc_stdio_bench::{self as eager, StdioBench};
+use pojoc_tests::pojoc_stdio_lazy as lazy;
+use std::io::{self, BufReader, ErrorKind, Read};
 
 #[test]
 fn serves_multiple_envelopes_and_upgrades_older_versions() {
@@ -70,4 +72,90 @@ fn skipping_a_truncated_array_stops_after_the_last_complete_element() {
         Err(player::runtime::Error::UnexpectedEof)
     ));
     assert_eq!(pos, payload.len() - 3);
+}
+
+struct Fragmented<'a>(&'a [u8]);
+
+impl Read for Fragmented<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = bytes.len().min(3);
+        self.0.read(&mut bytes[..count])
+    }
+}
+
+fn envelope(version: u64, payload: &[u8]) -> Vec<u8> {
+    let mut request = Vec::new();
+    let length_pos = eager::runtime::write_envelope_header(&mut request, version);
+    request.extend_from_slice(payload);
+    eager::runtime::patch_envelope_length(&mut request, length_pos, payload.len());
+    request
+}
+
+#[test]
+fn incremental_eager_replies_match_the_slice_codec() {
+    let latest = StdioBench {
+        id: 17,
+        flags: 83,
+        payload: eager::runtime::PojocVec::from_slice(&[0xab; 257]),
+    };
+    let mut large = Vec::new();
+    eager::encode(&mut large, &latest);
+
+    let mut payload = 42_u64.to_le_bytes().to_vec();
+    // A noncanonical array length followed by trailing bytes inside the envelope.
+    payload.extend([0x83, 0, 1, 2, 3, 0xff]);
+    let frames = [large, envelope(1, &payload), envelope(1, &[0; 9])];
+    let mut expected = Vec::new();
+    for frame in &frames {
+        eager::encode(&mut expected, &eager::decode(frame).unwrap());
+    }
+
+    let requests = frames.concat();
+    let mut input = BufReader::with_capacity(3, Fragmented(&requests));
+    let mut replies = Vec::new();
+    eager::serve(&mut input, &mut replies, 512).unwrap();
+    assert_eq!(replies, expected);
+}
+
+#[test]
+fn lazy_stream_preserves_raw_array_lengths_across_layouts() {
+    let mut historical = 42_u64.to_le_bytes().to_vec();
+    historical.extend([0x83, 0, 1, 2, 3]);
+    lazy::runtime::write_string(&mut historical, "removed in v2");
+
+    let mut latest = 43_u64.to_le_bytes().to_vec();
+    lazy::runtime::write_u32(&mut latest, 19);
+    latest.extend([0x83, 0, 4, 5, 6]);
+
+    // The old layout takes the buffered path, the latest takes the incremental path.
+    let frames = [envelope(1, &historical), envelope(2, &latest)];
+    let mut expected = Vec::new();
+    for frame in &frames {
+        lazy::encode(&mut expected, &lazy::decode(frame).unwrap());
+    }
+    let requests = frames.concat();
+    let mut input = BufReader::with_capacity(3, Fragmented(&requests));
+    let mut replies = Vec::new();
+    lazy::serve(&mut input, &mut replies, 512).unwrap();
+    assert_eq!(replies, expected);
+}
+
+#[test]
+fn incremental_stream_requires_the_complete_envelope_before_replying() {
+    let mut payload = 42_u64.to_le_bytes().to_vec();
+    payload.extend([1, 2, 3]); // One array byte, followed by a trailing byte.
+    let request = envelope(1, &payload);
+    let mut replies = Vec::new();
+    let error = eager::serve(&mut &request[..request.len() - 1], &mut replies, 512).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+    assert!(replies.is_empty());
+
+    payload[8] = 10; // The array cannot borrow bytes from the next envelope.
+    let mut requests = envelope(1, &payload);
+    requests.extend_from_slice(&request);
+    let mut input = requests.as_slice();
+    let error = eager::serve(&mut input, &mut replies, 512).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert_eq!(input, request);
+    assert!(replies.is_empty());
 }
