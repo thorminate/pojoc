@@ -56,3 +56,8 @@ harness = false
 [[bench]]
 name = "stdio"
 harness = false
+
+[[bin]]
+name = "stdio-bench-sidecar"
+test = false
+bench = false

@@ -139,15 +139,16 @@ input and a caller-supplied request limit.
 
 ### Benchmarking stdio
 
-From the repo root, build the schema-specific executable and run the benchmark:
+From the repo root:
 
 ```sh
-cargo run --release -p pojoc-cli -- build crates/tests/schemas/stdio_bench.pojoc --bin --out-dir target/stdio-bench
 cargo bench -p pojoc-tests --bench stdio
 ```
 
-Set `POJOC_STDIO_BIN` to an absolute path to benchmark a different build of the
-same helper. Criterion reports messages per second and time per message. Each
+Cargo builds the helper automatically from the benchmark schema and the same
+stdio entry point used by `--bin`. Set `POJOC_STDIO_BIN` to an absolute path
+to benchmark a different build of the same helper. Criterion reports messages
+per second and time per message. Each
 request is a v1 envelope that decodes and re-encodes as v2, with 256 B, 4 KiB,
 and 64 KiB of data. Labels show the total request size on the wire.
 

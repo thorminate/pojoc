@@ -114,21 +114,13 @@ fn pipelined(b: &mut Bencher<'_>, binary: &Path, request: &[u8], reply: &[u8]) {
 }
 
 fn stdio(c: &mut Criterion) {
-    let override_path = std::env::var_os("POJOC_STDIO_BIN");
-    let binary = override_path.as_ref().map_or_else(
-        || {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-                "../../target/stdio-bench/stdio_bench{}",
-                std::env::consts::EXE_SUFFIX
-            ))
-        },
-        PathBuf::from,
+    let binary = PathBuf::from(
+        std::env::var_os("POJOC_STDIO_BIN")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_stdio-bench-sidecar").into()),
     );
-    if override_path.is_none() && !binary.is_file() {
-        eprintln!("Skipping stdio: build schemas/stdio_bench.pojoc with --bin (see README).");
-        return;
-    }
-    let binary = binary.canonicalize().expect("invalid POJOC_STDIO_BIN path");
+    let binary = binary
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("could not locate sidecar at {}: {err}", binary.display()));
 
     let mut group = c.benchmark_group("stdio");
     group

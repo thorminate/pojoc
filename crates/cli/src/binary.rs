@@ -17,7 +17,13 @@ pub fn build(
     let src = path.join("src");
     std::fs::create_dir(&src)?;
     std::fs::write(src.join("codec.rs"), codec)?;
-    std::fs::write(src.join("main.rs"), include_str!("sidecar.rs.in"))?;
+    std::fs::write(
+        src.join("main.rs"),
+        concat!(
+            "#[allow(dead_code)]\nmod codec { include!(\"codec.rs\"); }\n",
+            include_str!("sidecar.rs.in"),
+        ),
+    )?;
 
     let serde = if no_serde {
         ""

@@ -1,11 +1,6 @@
 use std::io;
 use std::process::ExitCode;
 
-#[allow(dead_code)]
-mod codec {
-    include!("codec.rs");
-}
-
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const USAGE: &str = "Usage: <binary> serve --stdio";
 
