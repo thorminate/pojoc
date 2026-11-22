@@ -444,13 +444,32 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 
         ResolvedTypeRef::Array(inner) => {
             let i = type_info(inner);
+            let skip_stmt = if let ResolvedTypeRef::Scalar(id) = inner.as_ref()
+                && is_bulk_castable_scalar(&id.name)
+                && let WireSize::Fixed(width) = i.wire_size
+            {
+                let (to_elements, to_bytes) = if width > 1 {
+                    (format!(" / {width}"), format!(" * {width}"))
+                } else {
+                    (String::new(), String::new())
+                };
+                // Advance by complete elements on EOF, just as the scalar reads do.
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; \
+                     let __available = __buf.len().saturating_sub(*__pos){to_elements}; \
+                     *__pos += __n.min(__available){to_bytes}; \
+                     if __n > __available {{ return Err(Error::UnexpectedEof); }} }}"
+                )
+            } else {
+                format!(
+                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
+                    i.skip_stmt
+                )
+            };
             TypeInfo {
                 wire_size: WireSize::Variable,
                 rust_type: format!("PojocVec<{}>", i.rust_type),
-                skip_stmt: format!(
-                    "{{ let __n = read_array_len(__buf, __pos)?; for _ in 0..__n {{ {} }} }}",
-                    i.skip_stmt
-                ),
+                skip_stmt,
                 read_fn: "read_array".into(),
                 write_fn: "write_array".into(),
                 default_expr: "PojocVec::new()".into(),

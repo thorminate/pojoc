@@ -235,7 +235,10 @@ pub fn read_pod_array<T: WireScalar>(
     let end = pos.checked_add(byte_len).ok_or(Error::InvalidLength)?;
     let bytes = buf.get(*pos..end).ok_or(Error::UnexpectedEof)?;
     *pos = end;
-    let mut v: crate::PojocVec<T> = crate::PojocVec::from_vec(bytemuck::pod_collect_to_vec(bytes));
+    let mut v = match bytemuck::try_cast_slice::<u8, T>(bytes) {
+        Ok(values) => crate::PojocVec::from_slice(values),
+        Err(_) => crate::PojocVec::from_vec(bytemuck::pod_collect_to_vec(bytes)),
+    };
     if !cfg!(target_endian = "little") {
         for x in v.iter_mut() {
             *x = x.to_wire_le();
