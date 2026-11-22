@@ -74,9 +74,7 @@ pub fn visit_payloads(
 ) -> io::Result<()> {
     let mut payload = Vec::new();
     while let Some((version, payload_len)) = read_header(input, max_payload_bytes)? {
-        payload.resize(payload_len, 0);
-        input.read_exact(&mut payload)?;
-        visit(version, &payload)?;
+        visit(version, read_payload(input, payload_len, &mut payload)?)?;
     }
     Ok(())
 }
@@ -88,10 +86,22 @@ pub fn read_buffered_reply(
     response: &mut Vec<u8>,
     transcode: impl FnOnce(&[u8], &mut Vec<u8>) -> PojocResult<()>,
 ) -> io::Result<usize> {
-    request.clear();
-    request.resize(payload_len, 0);
-    input.read_exact(request)?;
+    let payload = read_payload(input, payload_len, request)?;
     response.clear();
-    transcode(request, response).map_err(codec_error)?;
+    transcode(payload, response).map_err(codec_error)?;
     Ok(response.len())
+}
+
+fn read_payload<'buf>(
+    input: &mut impl BufRead,
+    payload_len: usize,
+    buffer: &'buf mut Vec<u8>,
+) -> io::Result<&'buf [u8]> {
+    // Retain initialized storage so only a new high-water mark needs zeroing.
+    if buffer.len() < payload_len {
+        buffer.resize(payload_len, 0);
+    }
+    let payload = &mut buffer[..payload_len];
+    input.read_exact(payload)?;
+    Ok(payload)
 }

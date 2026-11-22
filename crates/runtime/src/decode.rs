@@ -237,7 +237,22 @@ pub fn read_pod_array<T: WireScalar>(
     *pos = end;
     let mut v = match bytemuck::try_cast_slice::<u8, T>(bytes) {
         Ok(values) => crate::PojocVec::from_slice(values),
-        Err(_) => crate::PojocVec::from_vec(bytemuck::pod_collect_to_vec(bytes)),
+        Err(_) if bytes.is_empty() => crate::PojocVec::new(),
+        Err(_) => {
+            let mut values = crate::PojocVec::<T>::with_capacity(n);
+            // SAFETY: the bounds check supplied exactly n * size_of::<T>()
+            // bytes. The destination has space for n values and cannot alias
+            // the input. T is Pod, so every copied bit pattern is valid.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    values.as_mut_ptr().cast::<u8>(),
+                    byte_len,
+                );
+                values.set_len(n);
+            }
+            values
+        }
     };
     if !cfg!(target_endian = "little") {
         for x in v.iter_mut() {
