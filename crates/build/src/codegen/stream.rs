@@ -1,6 +1,6 @@
 use super::{is_fixed_wire_field, ordered_wire_fields, version_uses_intern, wire_fixed_size};
 use super::{stream_hybrid::HybridPlans, writer::CodeWriter};
-use crate::core::types::{ResolvedTypeRef, normalize_type};
+use crate::core::types::{ResolvedTypeRef, is_infected, normalize_type};
 use crate::schema::ir::ir_types::ResolvedSchema;
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 
@@ -51,8 +51,16 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
     let preserve_length = latest_tail.is_some_and(|tail| tail.lazy);
     let hybrid = HybridPlans::new(schema, &versions);
     let fallback = "read_buffered_reply(input, version, payload_len, &mut request, &mut response)?";
+    let root = &schema.name_hint;
+    let lifetime = if is_infected(root) { "<'_>" } else { "" };
+    let stream_value = format!("{root}{lifetime}");
     for line in include_str!("stream.rs.in").lines() {
         match line.trim() {
+            "// STREAM_READ_IMPORT" if !versions.is_empty() || !hybrid.is_empty() => {
+                w.line("    use __pojoc_stream::read_stream_varint;");
+                w.line("    use std::io::Read;");
+            }
+            "// STREAM_READ_IMPORT" => {}
             "// BYTE_ARRAY_STREAM" if !versions.is_empty() => {
                 for line in include_str!("stream_byte_array.rs.in").lines() {
                     w.line(line);
@@ -103,6 +111,9 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
                 w.dedent();
                 w.line(&format!("            _ => Some({fallback}),"));
                 w.line("        };");
+            }
+            _ if line.contains("StreamValue") => {
+                w.line(&line.replace("StreamValue", &stream_value))
             }
             _ => w.line(line),
         }

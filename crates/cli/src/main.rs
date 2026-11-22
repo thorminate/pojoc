@@ -38,6 +38,7 @@ enum Command {
         /// Don't emit Serialize/Deserialize derives/impls in generated code.
         /// The consuming crate's `pojoc` dependency must have its own `serde`
         /// feature disabled to match, or the generated code won't compile.
+        /// The standalone executable also omits its JSON stdio modes.
         #[arg(long)]
         no_serde: bool,
 

@@ -125,6 +125,8 @@ To build a standalone helper for a schema, run:
 ```sh
 pojoc build schemas/player.pojoc --bin
 ./out/player serve --stdio
+./out/player serve --stdio encode < players.jsonl > players.bin
+./out/player serve --stdio decode < players.bin > players.jsonl
 ```
 
 `--bin` needs Cargo and a Rust toolchain. It emits the executable (`player.exe`
@@ -133,21 +135,37 @@ that checkout's runtime while it is available. Released binaries use the
 matching published runtime version. Pass `--runtime-path <dir>` to point
 Cargo at another checkout's `crates/runtime` directory.
 
-The helper accepts consecutive native
-Pojoc envelopes on stdin and flushes one envelope in the latest schema version
-to stdout per request. The existing version varint and little-endian payload
-length provide framing. EOF between messages exits successfully. A malformed
-request or a payload over 16 MiB exits with an error on stderr.
+`serve --stdio` accepts consecutive Pojoc envelopes and emits one
+latest-version envelope per request. The version varint and little-endian
+payload length provide framing.
+
+`serve --stdio encode` accepts one JSON value per line and writes one
+latest-version Pojoc envelope per value. `serve --stdio decode` accepts Pojoc
+envelopes from supported schema versions and writes one JSON line per envelope
+using the latest schema fields. JSON uses the generated Serde representation,
+including decoded values for lazy fields. Both JSON modes require a
+Serde-enabled build.
+
+The helper flushes each reply. EOF between messages exits successfully, and
+encode also accepts a valid final JSON value without a newline. Invalid input
+exits with an error on stderr. Pojoc requests and JSON encode replies are
+limited to 16 MiB of binary payload. JSON input records are limited to 64 MiB.
 
 The generated Rust module exposes the same loop as
 `serve(&mut input, &mut output, max_payload_bytes)`, with a buffered reader as
-input and a caller-supplied request limit.
+input and a caller-supplied request limit. `serve_decode` visits the decoded
+value from each frame.
+
 When both versions have a fixed-width prefix followed by the same byte array,
 `serve` decodes the prefix first and reads the array directly into its reusable
 reply buffer. For mixed payloads of at least 32 KiB, `serve` can also stream
 unchanged length-prefixed numeric arrays whose positions can be found from
 preceding field lengths. Surrounding fields use the regular codec, including
 seekable metadata and version upgrades. Other layouts use buffered decoding.
+
+Applications with the generated codec can send native Pojoc bytes and call
+`encode` and `decode` directly at the endpoints. The standalone helper is useful
+for exercising the codec from a shell or another process.
 
 ### Benchmarking stdio
 

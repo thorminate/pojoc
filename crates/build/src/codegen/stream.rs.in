@@ -1,18 +1,12 @@
-/// Read consecutive Pojoc envelopes and reply with one latest-version envelope
-/// per request. Flush each reply and return successfully on EOF between frames.
-/// Reject requests whose declared payload exceeds `max_payload_bytes`.
-pub fn serve(
-    input: &mut impl std::io::BufRead,
-    output: &mut impl std::io::Write,
-    max_payload_bytes: usize,
-) -> std::io::Result<()> {
+mod __pojoc_stream {
+    use super::{Error, read_varint64};
     use std::io::{self, BufRead, Read};
 
-    fn codec_error(err: Error) -> io::Error {
+    pub(super) fn codec_error(err: Error) -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, err)
     }
 
-    fn read_stream_varint(input: &mut impl Read, first: u8) -> io::Result<([u8; 10], usize)> {
+    pub(super) fn read_stream_varint(input: &mut impl Read, first: u8) -> io::Result<([u8; 10], usize)> {
         let mut bytes = [0; 10];
         bytes[0] = first;
         let mut len = 1;
@@ -23,7 +17,7 @@ pub fn serve(
         Ok((bytes, len))
     }
 
-    fn read_header(
+    pub(super) fn read_header(
         input: &mut impl BufRead,
         max_payload_bytes: usize,
     ) -> io::Result<Option<(u64, usize)>> {
@@ -52,6 +46,19 @@ pub fn serve(
         }
         Ok(Some((version, payload_len)))
     }
+}
+
+/// Read consecutive Pojoc envelopes and reply with one latest-version envelope
+/// per request. Flush each reply and return successfully on EOF between frames.
+/// Reject requests whose declared payload exceeds `max_payload_bytes`.
+pub fn serve(
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+    max_payload_bytes: usize,
+) -> std::io::Result<()> {
+    use __pojoc_stream::{codec_error, read_header};
+    use std::io::{self, BufRead};
+    // STREAM_READ_IMPORT
 
     fn read_buffered_reply(
         input: &mut impl BufRead,
@@ -80,6 +87,24 @@ pub fn serve(
             output.write_all(&response[..reply_len])?;
         }
         output.flush()?;
+    }
+    Ok(())
+}
+
+/// Decode each consecutive Pojoc envelope and visit the value while its frame
+/// is still available. Reject a declared payload above `max_payload_bytes`.
+pub fn serve_decode(
+    input: &mut impl std::io::BufRead,
+    max_payload_bytes: usize,
+    mut visit: impl FnMut(StreamValue) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use __pojoc_stream::{codec_error, read_header};
+
+    let mut payload = Vec::new();
+    while let Some((version, payload_len)) = read_header(input, max_payload_bytes)? {
+        payload.resize(payload_len, 0);
+        input.read_exact(&mut payload)?;
+        visit(decode_payload(version, &payload).map_err(codec_error)?)?;
     }
     Ok(())
 }

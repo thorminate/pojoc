@@ -3,3 +3,4 @@ pub mod codec {
 }
 
 include!("../../../cli/src/sidecar.rs.in");
+include!("../../../cli/src/sidecar_pojoc.rs.in");

@@ -215,13 +215,16 @@ fn emit_union(
     w.line("}");
 
     if needs_lifetime && emit_serde() {
-        emit_lazy_union_serde(name, latest_version, w);
+        emit_lazy_union_serde(name, latest_version, resolved, w);
     }
 }
 
-// a lifetime-infected union round-trips through serde as opaque wire bytes
-// rather than a tagged enum, same reasoning as emit_lazy_struct_serde.
-fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
+fn emit_lazy_union_serde(
+    name: &str,
+    latest_version: i128,
+    resolved: &ResolvedUnion,
+    w: &mut CodeWriter,
+) {
     let lower = name.to_snake_case();
     let interning = is_union_intern_infected(&TypeId {
         name: name.to_string(),
@@ -233,6 +236,33 @@ fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
     w.indent();
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
     w.indent();
+    w.line("if serializer.is_human_readable() {");
+    w.indent();
+    w.line("return match self {");
+    w.indent();
+    for (index, variant) in resolved.variants.iter().enumerate() {
+        let variant = &variant.name;
+        w.line(&format!(
+            "Self::{variant}(value) => serializer.serialize_newtype_variant(\"{name}\", {index}, \"{variant}\", value),"
+        ));
+    }
+    let unknown_index = resolved.variants.len();
+    w.line("Self::Unknown { discriminant, data } => {");
+    w.indent();
+    w.line("use serde::ser::SerializeStructVariant;");
+    w.line(&format!(
+        "let mut variant = serializer.serialize_struct_variant(\"{name}\", {unknown_index}, \"Unknown\", 2)?;"
+    ));
+    w.line("variant.serialize_field(\"discriminant\", discriminant)?;");
+    w.line("variant.serialize_field(\"data\", data)?;");
+    w.line("variant.end()");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("};");
+    w.dedent();
+    w.line("}");
+    // Binary Serde formats continue to serialize an opaque wire payload.
     if interning {
         // same table-must-precede-fields dance as encode_vN: encode into a
         // scratch buffer first so every intern() call happens before the
@@ -267,6 +297,42 @@ fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
         "fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {",
     );
     w.indent();
+    w.line("if deserializer.is_human_readable() {");
+    w.indent();
+    w.line("#[derive(serde::Deserialize)]");
+    w.line(&format!("#[serde(rename = \"{name}\")]"));
+    w.line("enum HumanReadable<'buf> {");
+    w.indent();
+    for variant in &resolved.variants {
+        let ty = type_info(&variant.payload).rust_type;
+        let borrow = if ty.contains("'buf") {
+            "#[serde(borrow)] "
+        } else {
+            ""
+        };
+        w.line(&format!("{}({borrow}{ty}),", variant.name));
+    }
+    let (discriminant_type, _, _) = width_prim_names(resolved.discriminant_width());
+    w.line(&format!(
+        "Unknown {{ discriminant: {discriminant_type}, data: Vec<u8> }},"
+    ));
+    w.dedent();
+    w.line("}");
+    w.line("return Ok(match serde::Deserialize::deserialize(deserializer)? {");
+    w.indent();
+    for variant in &resolved.variants {
+        let variant = &variant.name;
+        w.line(&format!(
+            "HumanReadable::{variant}(value) => Self::{variant}(value),"
+        ));
+    }
+    w.line(
+        "HumanReadable::Unknown { discriminant, data } => Self::Unknown { discriminant, data },",
+    );
+    w.dedent();
+    w.line("});");
+    w.dedent();
+    w.line("}");
     w.line("struct __Visitor<'buf>(std::marker::PhantomData<&'buf ()>);");
     w.line("impl<'de: 'buf, 'buf> serde::de::Visitor<'de> for __Visitor<'buf> {");
     w.indent();
@@ -650,12 +716,24 @@ fn emit_lazy_struct_serde(
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
     w.indent();
     w.line("use serde::ser::SerializeStruct;");
+    if fields.iter().any(|field| field.lazy) {
+        w.line("let __human_readable = serializer.is_human_readable();");
+    }
     w.line(&format!(
         "let mut __s = serializer.serialize_struct(\"{name}\", {})?;",
         fields.len()
     ));
     for f in fields {
         if f.lazy {
+            w.line("if __human_readable {");
+            w.indent();
+            w.line(&format!(
+                "__s.serialize_field(\"{n}\", &self.{n})?;",
+                n = f.name
+            ));
+            w.dedent();
+            w.line("} else {");
+            w.indent();
             w.line(&format!("match &self.{n} {{", n = f.name));
             w.indent();
             w.line(&format!(
@@ -677,6 +755,8 @@ fn emit_lazy_struct_serde(
                 "__s.serialize_field(\"{}\", SerdeBytes::new(&__buf))?;",
                 f.name
             ));
+            w.dedent();
+            w.line("}");
             w.dedent();
             w.line("}");
             w.dedent();
@@ -709,6 +789,36 @@ fn emit_lazy_struct_serde(
         "fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {",
     );
     w.indent();
+    w.line("if deserializer.is_human_readable() {");
+    w.indent();
+    w.line("#[derive(serde::Deserialize)]");
+    w.line("#[allow(clippy::type_complexity, reason = \"field types follow the schema\")]");
+    w.line(&format!("#[serde(rename = \"{name}\")]"));
+    w.line("struct HumanReadable<'buf> {");
+    w.indent();
+    for field in fields {
+        let mut ty = type_info(&field.ty).rust_type;
+        if field.lazy {
+            ty = format!("LazyView<'buf, {ty}>");
+        }
+        if ty.contains("'buf") {
+            w.line("#[serde(borrow)]");
+        }
+        w.line(&format!("{}: {ty},", field.name));
+    }
+    w.dedent();
+    w.line("}");
+    w.line("let value: HumanReadable<'_> = serde::Deserialize::deserialize(deserializer)?;");
+    w.line("return Ok(Self {");
+    w.indent();
+    for field in fields {
+        let name = &field.name;
+        w.line(&format!("{name}: value.{name},"));
+    }
+    w.dedent();
+    w.line("});");
+    w.dedent();
+    w.line("}");
     w.line("struct __Visitor<'buf>(std::marker::PhantomData<&'buf ()>);");
     w.line("impl<'de: 'buf, 'buf> serde::de::Visitor<'de> for __Visitor<'buf> {");
     w.indent();

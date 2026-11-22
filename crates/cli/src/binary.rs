@@ -22,20 +22,23 @@ pub fn build(
         concat!(
             "pub mod codec { include!(\"codec.rs\"); }\n",
             include_str!("sidecar.rs.in"),
+            include_str!("sidecar_pojoc.rs.in"),
         ),
     )?;
 
-    let serde = if no_serde {
+    let json_dependencies = if no_serde {
         ""
     } else {
-        "serde = { version = \"1\", features = [\"derive\"] }\n"
+        "serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n"
     };
+    let default_features = if no_serde { "[]" } else { "[\"sidecar-json\"]" };
     std::fs::write(
         path.join("Cargo.toml"),
         format!(
             "[package]\nname = \"pojoc-sidecar\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
              [workspace]\n\
-             [dependencies]\npojoc = {{ {runtime}, default-features = {} }}\n{serde}",
+             [features]\ndefault = {default_features}\nsidecar-json = []\n\
+             [dependencies]\npojoc = {{ {runtime}, default-features = {} }}\n{json_dependencies}",
             !no_serde,
         ),
     )?;

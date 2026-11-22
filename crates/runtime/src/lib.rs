@@ -245,6 +245,25 @@ impl<'buf, T: Clone> Clone for LazyView<'buf, T> {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<T: Serialize> Serialize for LazyView<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Raw { buf, decode_fn } => decode_fn(buf, &mut 0)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
+            Self::Owned(value) => value.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de: 'buf, 'buf, T: Deserialize<'de>> Deserialize<'de> for LazyView<'buf, T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::Owned)
+    }
+}
+
 impl<'buf, T> std::fmt::Debug for LazyView<'buf, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

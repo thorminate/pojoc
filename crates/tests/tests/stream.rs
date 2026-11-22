@@ -39,6 +39,101 @@ fn serves_multiple_envelopes_and_upgrades_older_versions() {
     assert_eq!(pos, responses.len());
 }
 
+#[cfg(feature = "sidecar-json")]
+#[test]
+fn sidecar_encodes_and_decodes_multiple_records() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let run = |mode, input: &[u8]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_stdio-bench-sidecar"))
+            .args(["serve", "--stdio", mode])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let first = serde_json::json!({"id": 1, "flags": 17, "payload": [0, 10, 255]});
+    let second = serde_json::json!({"id": 2, "flags": 0, "payload": []});
+    let encoded = run("encode", format!("{first}\n{second}").as_bytes());
+    assert!(encoded.status.success(), "{:?}", encoded.stderr);
+    let mut pos = 0;
+    for (id, flags, payload) in [(1, 17, &[0, 10, 255][..]), (2, 0, &[][..])] {
+        let start = pos;
+        assert_eq!(read_envelope(&encoded.stdout, &mut pos).unwrap().version, 2);
+        let value = eager::decode(&encoded.stdout[start..pos]).unwrap();
+        assert_eq!(
+            (value.id, value.flags, value.payload.as_slice()),
+            (id, flags, payload)
+        );
+    }
+    assert_eq!(pos, encoded.stdout.len());
+
+    let mut frames = Vec::new();
+    let legacy = StdioBench {
+        id: 3,
+        ..Default::default()
+    };
+    eager::encode_for_version(&mut frames, &legacy, 1).unwrap();
+    frames.extend(encoded.stdout);
+    let decoded = run("decode", &frames);
+    assert!(decoded.status.success(), "{:?}", decoded.stderr);
+    let records: Vec<serde_json::Value> = decoded
+        .stdout
+        .strip_suffix(b"\n")
+        .unwrap()
+        .split(|&b| b == b'\n')
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(
+        records,
+        [
+            serde_json::json!({"id": 3, "flags": 0, "payload": []}),
+            first,
+            second
+        ]
+    );
+
+    let invalid = run("encode", b"{broken json}\n");
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+}
+
+#[test]
+fn human_readable_serde_roundtrips_lazy_fields_and_borrowed_strings() {
+    let record: serde_json::Value = serde_json::from_str(
+        r#"{"id":7,"name":"first\nsecond","label":"a \"quote\"","samples":[44],"blob":[1,2],"notes":["\u00e5"],"flags":5}"#,
+    )
+    .unwrap();
+    let value: StdioHybrid<'_> = serde::Deserialize::deserialize(&record).unwrap();
+    let mut frame = Vec::new();
+    hybrid::encode(&mut frame, &value);
+    let mut input = frame.as_slice();
+    hybrid::serve_decode(&mut input, 1024, |decoded| {
+        assert_eq!(serde_json::to_value(decoded).unwrap(), record);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn human_readable_serde_uses_tagged_unions_with_borrowed_payloads() {
+    use pojoc_tests::pojoc_edge::Payload;
+
+    let message = serde_json::json!({"Message": "line 1\nline 2"});
+    let value: Payload<'_> = serde::Deserialize::deserialize(&message).unwrap();
+    assert!(matches!(value, Payload::Message("line 1\nline 2")));
+    assert_eq!(serde_json::to_value(value).unwrap(), message);
+
+    let unknown = serde_json::json!({"Unknown": {"discriminant": 127, "data": [1, 2]}});
+    let value: Payload<'_> = serde::Deserialize::deserialize(&unknown).unwrap();
+    assert_eq!(serde_json::to_value(value).unwrap(), unknown);
+}
+
 #[test]
 fn rejects_truncated_and_oversize_requests_without_a_reply() {
     let mut responses = Vec::new();
