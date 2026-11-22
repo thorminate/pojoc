@@ -25,6 +25,8 @@ enum Target {
     Rust,
     #[value(alias = "ts")]
     Typescript,
+    #[value(alias = "ts-npm")]
+    TypescriptNpm,
 }
 
 #[derive(Subcommand)]
@@ -34,11 +36,11 @@ enum Command {
         /// Entry-point .pojoc file
         input: PathBuf,
 
-        /// Output directory for generated .rs files
+        /// Output directory for generated source files
         #[arg(short, long, default_value = "out")]
         out_dir: PathBuf,
 
-        /// Source language for the generated codec.
+        /// Output target for the generated codec.
         #[arg(long, value_enum, default_value = "rust")]
         target: Target,
 
@@ -138,7 +140,7 @@ fn build(
     emit_bin: bool,
     runtime_path: Option<&Path>,
 ) -> i32 {
-    if matches!(target, Target::Typescript) && (emit_bin || no_serde) {
+    if !matches!(target, Target::Rust) && (emit_bin || no_serde) {
         eprintln!("error: --bin and --no-serde are Rust target options");
         return 1;
     }
@@ -168,13 +170,20 @@ fn build(
     let t = Instant::now();
     let (code, extension) = match target {
         Target::Rust => (generate(&schema), ".rs"),
-        Target::Typescript => match pojoc_build::codegen::typescript::generate(&schema) {
-            Ok(code) => (code, ".ts"),
-            Err(err) => {
-                eprintln!("error: {err}");
-                return 1;
+        Target::Typescript | Target::TypescriptNpm => {
+            let result = if matches!(target, Target::TypescriptNpm) {
+                pojoc_build::codegen::typescript::generate_with_npm_runtime(&schema)
+            } else {
+                pojoc_build::codegen::typescript::generate(&schema)
+            };
+            match result {
+                Ok(code) => (code, ".ts"),
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    return 1;
+                }
             }
-        },
+        }
     };
     log(
         verbose,

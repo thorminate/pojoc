@@ -126,6 +126,11 @@ two layouts.
 The TypeScript target emits a standalone ES module. Use it in a browser
 bundle, Node, or Bun. Import the generated types and codec from the same file.
 
+To share the runtime across generated modules, install `pojoc` at the
+compiler's release version and generate with `--target typescript-npm` instead.
+See the [npm runtime package](packages/runtime/README.md) for package and release
+details.
+
 ```sh
 pojoc build schemas/player.pojoc --target typescript -o generated
 ```

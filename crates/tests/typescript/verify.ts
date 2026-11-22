@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { readdirSync, readFileSync } from "node:fs";
+import process from "node:process";
 
-const dir = new URL("./generated/", import.meta.url);
+const useNpmRuntime = process.argv.includes("--npm-runtime");
+const dir = new URL(useNpmRuntime ? "./generated/npm/" : "./generated/", import.meta.url);
 const codecs = new Map();
 const artifacts = readdirSync(dir).filter(name => /^.+-\d+\.bin$/.test(name));
 assert(artifacts.length > 0, "Generate Rust fixtures before running the test");
@@ -10,7 +12,7 @@ assert(artifacts.length > 0, "Generate Rust fixtures before running the test");
 for (const filename of artifacts) {
   const [, fixture, version] = /^(.+)-(\d+)\.bin$/.exec(filename)!;
   const schema = fixture === "edge-populated" ? "edge" : fixture;
-  if (!codecs.has(schema)) codecs.set(schema, await import(`./generated/${schema}.ts`));
+  if (!codecs.has(schema)) codecs.set(schema, await import(new URL(`${schema}.ts`, dir).href));
   const codec = codecs.get(schema);
   const bytes = readFileSync(new URL(filename, dir));
   const decoded = codec.decodeFrom(bytes);
