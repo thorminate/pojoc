@@ -1144,9 +1144,12 @@ impl Parser {
                 Token::Tilde => {
                     let op = self.parse_diff_tilde()?;
                     let name = match &op {
-                        DiffAst::Rename { from, .. } => from,
-                        DiffAst::UpdateType { name, .. } => name,
-                        DiffAst::Transform { from, .. } => from,
+                        DiffAst::Rename { from, .. }
+                        | DiffAst::Transform { from, .. }
+                        | DiffAst::TransformConst { from, .. } => from,
+                        DiffAst::UpdateType { name, .. } | DiffAst::UpdateConst { name, .. } => {
+                            name
+                        }
                         _ => unreachable!(),
                     };
                     if !seen.insert(name.clone()) {

@@ -31,6 +31,7 @@ struct TemplateField {
     ty: TypeAst,
     default: TemplateDefault,
     lazy: bool,
+    seekable: bool,
     doc: Vec<String>,
     span: Span,
     line: u32,
@@ -833,19 +834,6 @@ impl<'a> SchemaAnalyzer<'a> {
             return Ok(shape.clone());
         }
 
-        // named types have no per-version decoders of their own to seek against
-        if let TypeBody::Fields(f) = &td.body
-            && let Some(fa) = f.fields.iter().find(|fa| fa.seekable)
-        {
-            return Err(AnalysisError::SeekableOnlyOnRootFields {
-                field: fa.name.clone(),
-                type_name: td.name.clone(),
-                version,
-                span: fa.span,
-                line: fa.line,
-            });
-        }
-
         let shape = match &td.body {
             TypeBody::Fields(f) => TemplateShape {
                 params: td.params.clone(),
@@ -858,6 +846,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: fa.ty.clone(),
                         default: TemplateDefault::Literal(fa.default.clone()),
                         lazy: fa.lazy,
+                        seekable: fa.seekable,
                         doc: fa.doc.clone(),
                         span: fa.span,
                         line: fa.line,
@@ -933,6 +922,7 @@ impl<'a> SchemaAnalyzer<'a> {
                         ty: substitute_ast(&f.ty, &rename),
                         default: f.default.clone(),
                         lazy: f.lazy,
+                        seekable: f.seekable,
                         doc: f.doc.clone(),
                         span: f.span,
                         line: f.line,
@@ -1101,9 +1091,7 @@ impl<'a> SchemaAnalyzer<'a> {
                     ty,
                     default,
                     lazy: f.lazy,
-                    // named types never carry it, rejected where it would enter
-                    // the template pipeline
-                    seekable: false,
+                    seekable: f.seekable,
                     doc: f.doc.clone(),
                 })
             })
@@ -2567,22 +2555,13 @@ fn apply_template_diff_ops(
                         line: field.line,
                     });
                 }
-                if field.seekable {
-                    return Err(AnalysisError::SeekableOnlyOnRootFields {
-                        field: field.name.clone(),
-                        type_name: type_name.to_string(),
-                        version,
-                        span: field.span,
-                        line: field.line,
-                    });
-                }
-
                 fields.push(TemplateField {
                     id: id_gen.next_id(),
                     name: field.name.clone(),
                     ty: field.ty.clone(),
                     default: TemplateDefault::AddedViaDiff(field.default.clone()),
                     lazy: field.lazy,
+                    seekable: field.seekable,
                     doc: field.doc.clone(),
                     span: field.span,
                     line: field.line,
@@ -2659,18 +2638,10 @@ fn apply_template_diff_ops(
                 span,
                 line,
             } => {
-                if *seekable {
-                    return Err(AnalysisError::SeekableOnlyOnRootFields {
-                        field: name.clone(),
-                        type_name: type_name.to_string(),
-                        version,
-                        span: *span,
-                        line: *line,
-                    });
-                }
                 if let Some(f) = fields.iter_mut().find(|f| f.name == *name) {
                     f.ty = ty.clone();
                     f.lazy = *lazy;
+                    f.seekable = *seekable;
                     f.span = *span;
                     f.line = *line;
                     // see the root-fields UpdateType handling above: a retype
@@ -2698,15 +2669,6 @@ fn apply_template_diff_ops(
                 span,
                 line,
             } => {
-                if *seekable {
-                    return Err(AnalysisError::SeekableOnlyOnRootFields {
-                        field: to.clone(),
-                        type_name: type_name.to_string(),
-                        version,
-                        span: *span,
-                        line: *line,
-                    });
-                }
                 if let Some(f) = fields.iter_mut().find(|f| f.name == *from) {
                     f.name = to.clone();
                     if let Some(ty) = ty {
@@ -2717,6 +2679,7 @@ fn apply_template_diff_ops(
                         f.default = TemplateDefault::Literal(None);
                     }
                     f.lazy = *lazy;
+                    f.seekable = *seekable;
                 } else if let Some(c) = consts.iter_mut().find(|c| c.name == *from) {
                     c.name = to.clone();
                 } else {

@@ -1,4 +1,4 @@
-use super::writer::CodeWriter;
+use super::writer::{CodeWriter, VersionBodies};
 use crate::codegen::{
     can_read_unchecked, emit_constraint_guard, emit_default, is_fixed_wire_field,
     ordered_wire_fields, wire_fixed_size,
@@ -13,7 +13,7 @@ pub fn emit_decode_functions(
     schema: &ResolvedSchema,
     infected: &HashSet<String>,
     w: &mut CodeWriter,
-) {
+) -> Vec<Vec<i128>> {
     emit_type_readers(schema, w);
     emit_type_lazy_helpers(schema, w);
     emit_type_skippers(schema, w);
@@ -23,10 +23,27 @@ pub fn emit_decode_functions(
     emit_lazy_helpers(schema, w);
     emit_skip_vn_functions(schema, w);
 
-    for vl in &schema.lineage.versions {
-        emit_decode_fn(schema, vl, infected, w);
-        w.blank();
+    // Compare complete bodies so defaults, casts and validation are part of
+    // the identity. A matching wire layout alone is insufficient.
+    let mut decoders = VersionBodies::default();
+    for version in &schema.lineage.versions {
+        let mut body = CodeWriter::default();
+        body.indent = w.indent + 1;
+        emit_decode_body(schema, version, &mut body);
+        decoders.insert(version.version, body);
     }
+    let mut dispatch = Vec::new();
+    for (body, versions) in decoders.into_groups() {
+        let first = versions[0];
+        emit_decode_fn(schema, first, infected, &body, w);
+        for v in &versions[1..] {
+            w.line("#[allow(unused_imports)]");
+            w.line(&format!("pub use self::decode_v{first} as decode_v{v};"));
+        }
+        w.blank();
+        dispatch.push(versions);
+    }
+    dispatch
 }
 
 fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
@@ -64,54 +81,7 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
 
         let mut optional_counter = 0;
         for field in &resolved.fields {
-            match &field.ty {
-                ResolvedTypeRef::Optional(inner) => {
-                    let byte_idx = optional_counter / 8;
-                    let bit_idx = optional_counter % 8;
-                    optional_counter += 1;
-                    if field.lazy {
-                        let fname = &field.name;
-                        let helper_name = lazy_field_helper_name(name, fname);
-                        let default_expr = type_info(&field.ty).default_expr;
-                        w.line(&format!("let __{fname}_start = *__pos;"));
-                        if let Some(stmt) = emit_skip_stmt(inner) {
-                            w.line(&format!(
-                                "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
-                            ));
-                            w.indent();
-                            w.line(&stmt);
-                            w.dedent();
-                            w.line("}");
-                        }
-                        w.line(&format!(
-                            "let {fname} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ \
-                             LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name}) \
-                             }} else {{ LazyView::Owned({default_expr}) }};"
-                        ));
-                    } else {
-                        let inner_expr = emit_read_expr(inner);
-                        w.line(&format!(
-                            "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
-                            field.name
-                        ));
-                    }
-                }
-                _ if field.lazy => {
-                    let fname = &field.name;
-                    let helper_name = lazy_field_helper_name(name, fname);
-                    w.line(&format!("let __{fname}_start = *__pos;"));
-                    if let Some(stmt) = emit_skip_stmt(&field.ty) {
-                        w.line(&stmt);
-                    }
-                    w.line(&format!(
-                        "let {fname} = LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name});"
-                    ));
-                }
-                _ => {
-                    let expr = emit_read_expr(&field.ty);
-                    w.line(&format!("let {} = {expr};", field.name));
-                }
-            }
+            emit_type_field_read(name, field, &mut optional_counter, w);
         }
 
         for field in &resolved.fields {
@@ -128,6 +98,62 @@ fn emit_type_readers(schema: &ResolvedSchema, w: &mut CodeWriter) {
         w.dedent();
         w.line("}");
         w.blank();
+    }
+}
+
+pub(crate) fn emit_type_field_read(
+    name: &str,
+    field: &FieldIR,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    match &field.ty {
+        ResolvedTypeRef::Optional(inner) => {
+            let byte_idx = *optional_counter / 8;
+            let bit_idx = *optional_counter % 8;
+            *optional_counter += 1;
+            if field.lazy {
+                let fname = &field.name;
+                let helper_name = lazy_field_helper_name(name, fname);
+                let default_expr = type_info(&field.ty).default_expr;
+                w.line(&format!("let __{fname}_start = *__pos;"));
+                if let Some(stmt) = emit_skip_stmt(inner) {
+                    w.line(&format!(
+                        "if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{"
+                    ));
+                    w.indent();
+                    w.line(&stmt);
+                    w.dedent();
+                    w.line("}");
+                }
+                w.line(&format!(
+                    "let {fname} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ \
+                     LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name}) \
+                     }} else {{ LazyView::Owned({default_expr}) }};"
+                ));
+            } else {
+                let inner_expr = emit_read_expr(inner);
+                w.line(&format!(
+                    "let {} = if (__header[{byte_idx}] & (1 << {bit_idx})) != 0 {{ Some({inner_expr}) }} else {{ None }};",
+                    field.name
+                ));
+            }
+        }
+        _ if field.lazy => {
+            let fname = &field.name;
+            let helper_name = lazy_field_helper_name(name, fname);
+            w.line(&format!("let __{fname}_start = *__pos;"));
+            if let Some(stmt) = emit_skip_stmt(&field.ty) {
+                w.line(&stmt);
+            }
+            w.line(&format!(
+                "let {fname} = LazyView::new(&__buf[__{fname}_start..*__pos], {helper_name});"
+            ));
+        }
+        _ => {
+            let expr = emit_read_expr(&field.ty);
+            w.line(&format!("let {} = {expr};", field.name));
+        }
     }
 }
 
@@ -391,12 +417,12 @@ pub(crate) fn emit_skip_stmt(ty: &ResolvedTypeRef) -> Option<String> {
 
 fn emit_decode_fn(
     schema: &ResolvedSchema,
-    vl: &VersionLineage,
+    v: i128,
     infected: &HashSet<String>,
+    body: &str,
     w: &mut CodeWriter,
 ) {
     let name = &schema.name_hint;
-    let v = vl.version;
     let needs_lifetime = infected.contains(name.as_str());
     let lifetime = if needs_lifetime { "<'buf>" } else { "" };
     let buf_ty = if needs_lifetime {
@@ -404,15 +430,16 @@ fn emit_decode_fn(
     } else {
         "&[u8]"
     };
-    // checks this version specifically, see version_uses_intern
-    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
-
     w.line(&format!(
         "pub fn decode_v{v}{lifetime}(__buf: {buf_ty}, __pos: &mut usize) -> PojocResult<{name}{lifetime}> {{"
     ));
+    w.append(body);
+    w.line("}");
+}
 
-    w.indent();
-
+fn emit_decode_body(schema: &ResolvedSchema, vl: &VersionLineage, w: &mut CodeWriter) {
+    let name = &schema.name_hint;
+    let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
     if interning {
         // table precedes every field on the wire, read once up front then threaded through nested read_* calls
         w.line("let __table_owned = read_intern_table(__buf, __pos)?;");
@@ -492,8 +519,6 @@ fn emit_decode_fn(
     }
     w.dedent();
     w.line("})");
-    w.dedent();
-    w.line("}");
 }
 
 pub(crate) fn emit_field_read(schema: &ResolvedSchema, fl: &FieldLineage, w: &mut CodeWriter) {
@@ -1379,7 +1404,15 @@ pub(crate) fn emit_ordered_skip(
     optional_counter: &mut usize,
     w: &mut CodeWriter,
 ) {
-    if let ResolvedTypeRef::Optional(inner) = &fl.source_ty {
+    emit_field_type_skip(&fl.source_ty, optional_counter, w);
+}
+
+pub(crate) fn emit_field_type_skip(
+    ty: &ResolvedTypeRef,
+    optional_counter: &mut usize,
+    w: &mut CodeWriter,
+) {
+    if let ResolvedTypeRef::Optional(inner) = ty {
         let byte_idx = *optional_counter / 8;
         let bit_idx = *optional_counter % 8;
         *optional_counter += 1;
@@ -1392,7 +1425,7 @@ pub(crate) fn emit_ordered_skip(
             w.dedent();
             w.line("}");
         }
-    } else if let Some(stmt) = emit_skip_stmt(&fl.source_ty) {
+    } else if let Some(stmt) = emit_skip_stmt(ty) {
         w.line(&stmt);
     }
 }

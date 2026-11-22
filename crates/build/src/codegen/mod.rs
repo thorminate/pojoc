@@ -1,6 +1,7 @@
 pub mod builder;
 mod decode;
 mod encode;
+mod nested_seek;
 mod seek;
 mod stream;
 mod stream_hybrid;
@@ -20,7 +21,7 @@ use crate::schema::ir::ir_types::{
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::ToSnakeCase;
 use std::collections::HashSet;
-use writer::CodeWriter;
+use writer::{CodeWriter, version_pattern};
 
 // wire byte size if ty is fixed-width, none if variable
 pub(crate) fn wire_fixed_size(ty: &ResolvedTypeRef) -> Option<usize> {
@@ -136,11 +137,12 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
     structs::emit_structs(schema, &infected, &mut w);
     structs::emit_bitsets(schema, &mut w);
     structs::emit_unions(schema, &infected, &mut w);
-    decode::emit_decode_functions(schema, &infected, &mut w);
+    let decoders = decode::emit_decode_functions(schema, &infected, &mut w);
     // after decode: reuses its read_*/skip_*/lazy_* helpers
     seek::emit_seek_functions(schema, &infected, export_pluck, &mut w);
     emit_dispatcher(
         schema,
+        &decoders,
         &infected,
         constraint_infected.contains(&schema.name_hint),
         &mut w,
@@ -227,6 +229,7 @@ fn compute_union_write_intern_infected(schema: &ResolvedSchema) -> HashSet<TypeI
 
 fn emit_dispatcher(
     schema: &ResolvedSchema,
+    decoders: &[Vec<i128>],
     infected: &HashSet<String>,
     root_constrained: bool,
     w: &mut CodeWriter,
@@ -254,9 +257,12 @@ fn emit_dispatcher(
     w.line("let mut pos = 0;");
     w.line("match version {");
     w.indent();
-    for vl in &schema.lineage.versions {
-        let v = vl.version;
-        w.line(&format!("{v} => decode_v{v}(payload, &mut pos),"));
+    for versions in decoders {
+        w.line(&format!(
+            "{} => decode_v{}(payload, &mut pos),",
+            version_pattern(versions),
+            versions[0]
+        ));
     }
     w.line("v => Err(Error::UnsupportedVersion(v)),");
     w.dedent();

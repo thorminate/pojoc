@@ -1,0 +1,42 @@
+schema NestedPluck {
+  version 1 {
+    type Point {
+      prefix: string?
+      x: u32 = 0
+      label: intern string = ""
+      scratch: [u8] = []
+    }
+    type Transform {
+      first: string = ""
+      position: Point
+      tail: [u8] = []
+    }
+    fields {
+      marker: seekable u32 = 0
+      preamble: string?
+      legacy_text: string = ""
+      legacy_numbers: [u32] = []
+      legacy_bytes: [u8] = []
+      transform: Transform
+      trailer: [u32] = []
+    }
+  }
+  version 2 {
+    type Point extends Point@1 {
+      ~ prefix: seekable string?
+      ~ x: seekable u32
+      ~ label: seekable intern string
+    }
+    type Transform extends Transform@1 {
+      ~ first -> description: seekable string
+      ~ position: seekable Point
+      + mode: seekable u32 = 9
+    }
+    diff {
+      ~ transform: seekable Transform
+    }
+  }
+  version 3 {
+    diff { + protocol_hint: const u32 = 3 }
+  }
+}
