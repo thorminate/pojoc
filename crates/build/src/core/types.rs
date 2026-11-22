@@ -334,7 +334,8 @@ impl TypeInfo {
                 if self.rust_type == "PojocString" || self.rust_type == "&'buf str" {
                     format!("varint_size({accessor}.len()) + {accessor}.len()")
                 } else if let Some(ref f) = self.size_fn {
-                    format!("{f}({accessor} as usize)")
+                    let deref = if is_ref { "*" } else { "" };
+                    format!("{f}({deref}{accessor} as usize)")
                 } else {
                     let borrow_symbol = if is_ref { "" } else { "&" };
                     // strip <'buf> so an infected NestedLeaf<'buf> maps to size_hint_nested_leaf

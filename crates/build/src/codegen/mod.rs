@@ -6,6 +6,7 @@ mod seek;
 mod stream;
 mod stream_hybrid;
 mod structs;
+pub mod typescript;
 pub mod writer;
 
 use crate::core::types::{

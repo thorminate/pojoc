@@ -253,9 +253,10 @@ fn size_expr_variable_string_uses_len_plus_varint_size() {
 fn size_expr_with_size_fn_calls_it_directly() {
     let info = type_info(&ResolvedTypeRef::Scalar(id("varint32")));
     assert_eq!(
-        info.size_expr(true, "self.x"),
+        info.size_expr(false, "self.x"),
         "varint_size(self.x as usize)"
     );
+    assert_eq!(info.size_expr(true, "item"), "varint_size(*item as usize)");
 }
 
 #[test]
