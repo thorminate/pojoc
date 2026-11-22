@@ -1,6 +1,6 @@
 mod common;
 use common::*;
-use pojoc_build::schema::{AnalysisError, SchemaError, SchemaWarning};
+use pojoc_build::schema::{SchemaError, SchemaWarning};
 
 fn generate(src: &str) -> String {
     let ast = parse_schema(src).expect("parse failed");
@@ -27,50 +27,65 @@ fn warnings(src: &str) -> Vec<SchemaWarning> {
 // ---- placement rules ----
 
 #[test]
-fn seekable_in_a_type_body_is_rejected() {
-    let err = analysis_error(
+fn seekable_in_a_type_body_exposes_a_nested_path() {
+    let code = generate(
         r#"
         schema S {
           version 1 {
             type Inner { x: seekable u32 = 0 }
-            fields { a: Inner }
+            fields { a: seekable Inner }
           }
         }
         "#,
     );
-    assert!(
-        matches!(
-            err,
-            SchemaError::Analysis(AnalysisError::SeekableOnlyOnRootFields { .. })
-        ),
-        "expected SeekableOnlyOnRootFields, got: {err}"
-    );
+    assert!(code.contains("pub mod __pluck_paths"));
+    assert!(code.contains("pub mod x"));
 }
 
 #[test]
-fn seekable_added_to_a_type_via_diff_is_rejected() {
-    let err = analysis_error(
+fn seekable_added_to_a_type_via_diff_exposes_a_nested_path() {
+    let code = generate(
         r#"
         schema S {
           version 1 {
             type Inner { x: u32 = 0 }
-            fields { a: Inner }
+            fields { a: seekable Inner }
           }
           version 2 {
             type Inner extends Inner@1 {
               + y: seekable u32 = 0
             }
+            diff { ~ a: seekable Inner }
           }
         }
         "#,
     );
-    assert!(
-        matches!(
-            err,
-            SchemaError::Analysis(AnalysisError::SeekableOnlyOnRootFields { .. })
-        ),
-        "expected SeekableOnlyOnRootFields, got: {err}"
+    assert!(code.contains("pub mod y"));
+    assert!(!code.contains("pub mod x"));
+}
+
+#[test]
+fn identical_decoders_and_pluck_walks_share_version_dispatch() {
+    let code = generate(
+        r#"
+        schema S {
+          version 1 {
+            fields {
+              x: seekable u32 = 0
+              tuning: const u8 = 1
+            }
+          }
+          version 2 { diff { ~ tuning: const u8 = 2 } }
+          version 4 { diff { ~ tuning -> updated_tuning: const u8 = 4 } }
+          version 5 { diff { + y: u16 = 9 } }
+        }
+        "#,
     );
+    assert!(code.contains("pub use self::decode_v1 as decode_v2;"));
+    assert!(code.contains("1..=2 | 4 => decode_v1(payload, &mut pos)"));
+    assert!(code.contains("pub fn decode_v5"));
+    assert!(code.contains("pub use self::__pluck_v1 as __pluck_v4;"));
+    assert!(code.contains("1..=2 | 4..=5 => __pluck_v1::<M0>"));
 }
 
 #[test]

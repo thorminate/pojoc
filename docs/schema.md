@@ -439,22 +439,51 @@ walk and its bit constants are `#[doc(hidden)]`; the macro is the intended entry
 point. The selection is sized per schema, so the number of seekable fields is
 unbounded.
 
-It is opt-in because it changes the field's position on the wire. A fixed-width
-seekable field is read at a constant offset; a variable-width one is hoisted to
-the front of the variable region so reaching it crosses only other seekable
-fields. Marking every field would make the generated code grow quadratically.
+On root fields this is opt-in because it changes the field's position on the
+wire. A fixed-width seekable field is read at a constant offset. A variable-width
+one is hoisted to the front of the variable region so reaching it crosses only
+other seekable fields. Marking every field can make the generated code grow
+quadratically.
 
-- Only valid on **root schema fields** — not inside a `type` body or a union
-  payload, which have no per-version decoders to seek against.
 - Combines with `lazy`, in that order (`seekable lazy T`): you get the raw slice
   without decoding it.
-- Toggling it in a later version relayouts **only that version**; messages
+- Toggling a root field in a later version relayouts **only that version**. Messages
   already written under earlier versions are unaffected.
-- `~ field: T` in a diff **clears** it, like `lazy` — restate `seekable` to keep
-  it. The compiler warns when a `~` drops it.
+- `~ field: T` in a diff **clears** it, like `lazy`. Restate `seekable` to keep
+  it. The compiler warns when a `~` drops it from a root field.
 - A seekable field that reaches the intern table as anything other than a bare
   `seekable intern string` makes the seek materialize the whole table; the
   compiler warns about it.
+
+#### Nested paths
+
+```pojoc
+type Vector {
+  x: seekable f32 = 0
+  y: f32 = 0
+}
+type Movement {
+  velocity: seekable Vector
+}
+fields {
+  movement: seekable Movement
+}
+```
+
+```rust
+let x = pluck!(schema, &buf, movement.velocity.x)?;
+```
+
+Mark every component of the path `seekable`. Intermediate fields must be
+required, eager fields of a local named struct type. The selected leaf can
+itself be optional or lazy. Markers inside named structs preserve declaration
+order on the wire. The reader skips the prefix at each level and returns as
+soon as it reads the leaf. Historical layouts that require conversion or a
+missing-field default can fall back to the version decoder.
+
+Tuples can mix root and dotted selectors. Calls with dotted selectors read each
+path separately and preserve the requested tuple order. Root-only calls use
+one const-mask walk.
 
 ### `intern`
 

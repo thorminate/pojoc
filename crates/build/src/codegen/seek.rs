@@ -18,12 +18,12 @@ use super::decode::{
     emit_field_mapping_arm, emit_field_read, emit_fixed_field_read, emit_optional_header_read,
     emit_ordered_skip, get_field_default_expr,
 };
-use super::writer::CodeWriter;
+use super::writer::{CodeWriter, VersionBodies, version_pattern};
 use super::{
     emit_constraint_guard, field_is_lifetime_infected, is_fixed_wire_field, ordered_wire_fields,
     version_uses_intern, wire_fixed_size, wire_rank,
 };
-use crate::core::types::{ResolvedTypeRef, type_info};
+use crate::core::types::{ResolvedTypeRef, is_bulk_castable_scalar, type_info};
 use crate::schema::ir::ir_types::{FieldIR, ResolvedSchema, type_reaches_intern_table};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
 use heck::{ToSnakeCase, ToUpperCamelCase};
@@ -96,7 +96,7 @@ fn lineage_for<'a>(vl: &'a VersionLineage, target: &str) -> Option<&'a FieldLine
     })
 }
 
-fn seek_type_alias(target: &FieldIR) -> Option<String> {
+pub(super) fn seek_type_alias(target: &FieldIR) -> Option<String> {
     // Keep repeated signatures readable when the field contains several
     // nested types. Plain fields still expose their types directly.
     let mut nodes = 0;
@@ -109,7 +109,7 @@ fn seek_type_alias(target: &FieldIR) -> Option<String> {
     Some(format!("__Seek{name}Field{id}"))
 }
 
-fn raw_seek_type(target: &FieldIR) -> String {
+pub(super) fn raw_seek_type(target: &FieldIR) -> String {
     if target.lazy {
         format!("LazyView<'buf, {}>", type_info(&target.ty).rust_type)
     } else {
@@ -147,7 +147,7 @@ fn can_read_interned_directly(field: &FieldLineage) -> bool {
 
 /// emits the cursor, intern-table handling and optional header. leaves `__pos`
 /// positioned at the start of the fixed block.
-fn emit_prologue(
+pub(super) fn emit_prologue(
     schema: &ResolvedSchema,
     vl: &VersionLineage,
     needs_table: bool,
@@ -329,7 +329,7 @@ fn emit_tail_walk_to(
 }
 
 // Resolve the field's varint index against the table we skipped.
-fn emit_bare_interned_read(name: &str, w: &mut CodeWriter) {
+pub(super) fn emit_bare_interned_read(name: &str, w: &mut CodeWriter) {
     w.line(&format!(
         "let {name} = read_interned_string_at(__buf, __table_start, read_array_len(__buf, __pos)?)?;"
     ));
@@ -681,9 +681,34 @@ fn emit_seek_subset(
     w.line("}");
     w.blank();
 
+    let mut legacy_skips = false;
+    let mut walks = VersionBodies::default();
     for vl in &schema.lineage.versions {
-        emit_seek_subset_vn(schema, vl, targets, &params, ret_lt, w);
+        let mut body = CodeWriter::default();
+        body.indent = w.indent + 1;
+        legacy_skips |= emit_seek_subset_body(schema, vl, targets, &mut body);
+        walks.insert(vl.version, body);
+    }
+    let walks = walks.into_groups();
+    for (body, versions) in &walks {
+        let first = versions[0];
+        w.line("#[doc(hidden)]");
+        w.line("#[allow(dead_code)]");
+        w.line(&format!(
+            "pub fn __pluck_v{first}<{params}>(__buf: &[u8], __start: usize) \
+             -> PojocResult<__PluckOut{ret_lt}> {{"
+        ));
+        w.append(body);
+        w.line("}");
+        for v in &versions[1..] {
+            w.line("#[doc(hidden)]");
+            w.line("#[allow(unused_imports)]");
+            w.line(&format!("pub use self::__pluck_v{first} as __pluck_v{v};"));
+        }
         w.blank();
+    }
+    if legacy_skips {
+        emit_legacy_skip_helper(w);
     }
 
     w.line("#[doc(hidden)]");
@@ -698,10 +723,11 @@ fn emit_seek_subset(
     let args = args.join(", ");
     w.line("match envelope.version {");
     w.indent();
-    for vl in &schema.lineage.versions {
-        let v = vl.version;
+    for (_, versions) in walks {
         w.line(&format!(
-            "{v} => __pluck_v{v}::<{args}>(envelope.payload, 0),"
+            "{} => __pluck_v{}::<{args}>(envelope.payload, 0),",
+            version_pattern(&versions),
+            versions[0]
         ));
     }
     w.line("v => Err(Error::UnsupportedVersion(v)),");
@@ -711,13 +737,14 @@ fn emit_seek_subset(
     w.line("}");
     w.blank();
 
-    emit_pluck_macro(&schema.name_hint, words, w);
+    let nested_paths = super::nested_seek::emit_paths(schema, targets, w);
+    emit_pluck_macro(&schema.name_hint, words, nested_paths, w);
 }
 
 /// The ergonomic front door: field names in, values out. Generated per schema
 /// rather than living in the runtime crate because it has to know how many mask
 /// words this schema needs.
-fn emit_pluck_macro(schema_name: &str, words: usize, w: &mut CodeWriter) {
+fn emit_pluck_macro(schema_name: &str, words: usize, nested_paths: bool, w: &mut CodeWriter) {
     // `macro_rules!` only crosses a crate boundary via #[macro_export], which
     // lands it at the including crate's root. It can't then be re-exported under
     // a nicer path, because generated code arrives through `include!` and rustc
@@ -776,28 +803,32 @@ fn emit_pluck_macro(schema_name: &str, words: usize, w: &mut CodeWriter) {
     ));
     w.dedent();
     w.line("}};");
+    if nested_paths {
+        w.line("($m:ident, $buf:expr, $f:ident $(.$tail:ident)+ $(,)?) => {{");
+        w.indent();
+        w.line("$m::__pluck_paths::$f$(::$tail)+::read($buf)");
+        w.dedent();
+        w.line("}};");
+        w.line("($m:ident, $buf:expr, $($f:ident $(.$tail:ident)*),+ $(,)?) => {{");
+        w.indent();
+        w.line("let __buf = $buf;");
+        w.line("let __read = || Ok::<_, $m::runtime::Error>(($($m::__pluck_paths::$f$(::$tail)*::read(__buf)?,)+));");
+        w.line("__read()");
+        w.dedent();
+        w.line("}};");
+    }
     w.dedent();
     w.line("}");
 }
-fn emit_seek_subset_vn(
+fn emit_seek_subset_body(
     schema: &ResolvedSchema,
     vl: &VersionLineage,
     targets: &[&FieldIR],
-    params: &str,
-    ret_lt: &str,
     w: &mut CodeWriter,
-) {
+) -> bool {
     let v = vl.version;
     let index_of = |n: &str| targets.iter().position(|t| t.name == n).expect("target");
     let requested = |n: &str| bit_test(index_of(n));
-
-    w.line("#[doc(hidden)]");
-    w.line("#[allow(dead_code)]");
-    w.line(&format!(
-        "pub fn __pluck_v{v}<{params}>(__buf: &[u8], __start: usize) \
-         -> PojocResult<__PluckOut{ret_lt}> {{"
-    ));
-    w.indent();
 
     for t in targets {
         w.line(&format!("let mut __out_{} = None;", t.name));
@@ -906,7 +937,16 @@ fn emit_seek_subset_vn(
         .unwrap_or(0);
 
     let mut optional_counter = 0usize;
+    let mut skip_until = 0;
+    let mut legacy_skips = false;
+    let historical = schema
+        .versions
+        .last()
+        .is_some_and(|latest| v != latest.version);
     for (i, fl) in rest.iter().take(last_needed).enumerate() {
+        if i < skip_until {
+            continue;
+        }
         if tail_ids.contains(&fl.field_id) {
             let name = target_name_of(fl).expect("tail target has a mapping");
             let t = targets.iter().find(|t| t.name == name).unwrap();
@@ -957,6 +997,24 @@ fn emit_seek_subset_vn(
                 ));
             }
         } else {
+            if historical {
+                // A batch only crosses unconditional skips. Presence bits
+                // and stop points for requested fields stay in the walk.
+                let ops: Vec<_> = rest[i..last_needed]
+                    .iter()
+                    .take_while(|fl| !tail_ids.contains(&fl.field_id))
+                    .map_while(|fl| legacy_skip_op(&fl.source_ty))
+                    .collect();
+                if ops.len() >= 3 {
+                    w.line(&format!(
+                        "__skip_legacy_fields(__buf, __pos, &[{}])?;",
+                        ops.join(", ")
+                    ));
+                    skip_until = i + ops.len();
+                    legacy_skips = true;
+                    continue;
+                }
+            }
             emit_ordered_skip(fl, &mut optional_counter, w);
         }
     }
@@ -992,6 +1050,46 @@ fn emit_seek_subset_vn(
     }
     w.dedent();
     w.line("})");
+    legacy_skips
+}
+
+fn legacy_skip_op(ty: &ResolvedTypeRef) -> Option<String> {
+    match ty {
+        ResolvedTypeRef::Scalar(id) if id.name == "string" => Some("__LegacySkip::String".into()),
+        ResolvedTypeRef::Array(inner) if matches!(inner.as_ref(), ResolvedTypeRef::Scalar(id) if is_bulk_castable_scalar(&id.name)) =>
+        {
+            let stride = wire_fixed_size(inner)?;
+            Some(format!("__LegacySkip::Array({stride})"))
+        }
+        _ => None,
+    }
+}
+
+fn emit_legacy_skip_helper(w: &mut CodeWriter) {
+    w.line("#[allow(dead_code)]");
+    w.line("enum __LegacySkip { String, Array(usize) }");
+    w.line("#[inline(never)]");
+    w.line("fn __skip_legacy_fields(buf: &[u8], pos: &mut usize, ops: &[__LegacySkip]) -> PojocResult<()> {");
+    w.indent();
+    w.line("for op in ops {");
+    w.indent();
+    w.line("match *op {");
+    w.indent();
+    w.line("__LegacySkip::String => skip_string(buf, pos)?,");
+    w.line("__LegacySkip::Array(stride) => {");
+    w.indent();
+    w.line("let count = read_array_len(buf, pos)?;");
+    w.line("let available = buf.len().saturating_sub(*pos) / stride;");
+    w.line("*pos += count.min(available) * stride;");
+    w.line("if count > available { return Err(Error::UnexpectedEof); }");
     w.dedent();
     w.line("}");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.line("Ok(())");
+    w.dedent();
+    w.line("}");
+    w.blank();
 }

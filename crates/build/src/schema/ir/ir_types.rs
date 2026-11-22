@@ -128,7 +128,7 @@ pub struct FieldIR {
     pub ty: ResolvedTypeRef,
     pub default: Option<DefaultValue>,
     pub lazy: bool,
-    /// only ever set on root schema fields, see SeekableOnlyOnRootFields
+    /// enables a root accessor or a hop in a nested pluck path
     pub seekable: bool,
     /// doc lines carried through unchanged across renames/retypes, like default
     pub doc: Vec<String>,
