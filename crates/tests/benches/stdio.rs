@@ -1,5 +1,10 @@
-use criterion::{Bencher, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    Bencher, BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+    measurement::WallTime,
+};
 use pojoc_tests::pojoc_stdio_bench::{self as codec, StdioBench, runtime::PojocVec};
+use pojoc_tests::stdio_rkyv;
+use rkyv::util::AlignedVec;
 use std::hint::black_box;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -116,6 +121,49 @@ fn pipelined(b: &mut Bencher<'_>, binary: &Path, request: &[u8], reply: &[u8]) {
     child.wait();
 }
 
+fn transport(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    binary: &Path,
+    request: &[u8],
+    expected: &[u8],
+    measure_spawn: bool,
+) {
+    let mut reply = vec![0; expected.len()];
+    // The v1 request must come back as a v2 envelope before we time the pipe.
+    one_process(binary, request, &mut reply);
+    assert_eq!(reply, expected, "sidecar returned the wrong envelope");
+    let bytes_on_wire = request.len();
+
+    if measure_spawn {
+        group.bench_function(BenchmarkId::new("spawn_per_message", bytes_on_wire), |b| {
+            b.iter(|| one_process(binary, request, &mut reply));
+        });
+    }
+    group.bench_function(BenchmarkId::new("round_trip", bytes_on_wire), |b| {
+        let (mut child, mut input, mut output) = Sidecar::start(binary);
+        exchange(&mut input, &mut output, request, &mut reply);
+        b.iter(|| {
+            exchange(&mut input, &mut output, request, &mut reply);
+            black_box(&reply);
+        });
+        drop(input);
+        child.wait();
+    });
+    group.bench_function(BenchmarkId::new("pipelined_64", bytes_on_wire), |b| {
+        pipelined(b, binary, request, expected);
+    });
+}
+
+fn stdio_group<'a>(c: &'a mut Criterion, name: &str) -> BenchmarkGroup<'a, WallTime> {
+    let mut group = c.benchmark_group(name);
+    group
+        .throughput(Throughput::Elements(1))
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(3))
+        .sample_size(25);
+    group
+}
+
 fn stdio(c: &mut Criterion) {
     let binary = PathBuf::from(
         std::env::var_os("POJOC_STDIO_BIN")
@@ -125,19 +173,10 @@ fn stdio(c: &mut Criterion) {
         .canonicalize()
         .unwrap_or_else(|err| panic!("could not locate sidecar at {}: {err}", binary.display()));
 
-    let mut group = c.benchmark_group("stdio");
-    group
-        .throughput(Throughput::Elements(1))
-        .warm_up_time(Duration::from_secs(1))
-        .measurement_time(Duration::from_secs(3))
-        .sample_size(25);
+    let mut group = stdio_group(c, "stdio");
 
     for &bytes in SIZES {
         let (request, expected) = frame_pair(bytes);
-        let mut reply = vec![0; expected.len()];
-        // Compare bytes before timing. The v1 request must come back as a v2 envelope.
-        one_process(&binary, &request, &mut reply);
-        assert_eq!(reply, expected, "sidecar returned the wrong envelope");
         let bytes_on_wire = request.len();
 
         group.bench_function(BenchmarkId::new("codec_only", bytes_on_wire), |b| {
@@ -149,27 +188,28 @@ fn stdio(c: &mut Criterion) {
                 black_box(&encoded);
             });
         });
-        if bytes == SIZES[0] {
-            group.bench_function(BenchmarkId::new("spawn_per_message", bytes_on_wire), |b| {
-                b.iter(|| one_process(&binary, &request, &mut reply));
-            });
-        }
-        group.bench_function(BenchmarkId::new("round_trip", bytes_on_wire), |b| {
-            let (mut child, mut input, mut output) = Sidecar::start(&binary);
-            exchange(&mut input, &mut output, &request, &mut reply);
-            b.iter(|| {
-                exchange(&mut input, &mut output, &request, &mut reply);
-                black_box(&reply);
-            });
-            drop(input);
-            child.wait();
-        });
-        group.bench_function(BenchmarkId::new("pipelined_64", bytes_on_wire), |b| {
-            pipelined(b, &binary, &request, &expected);
-        });
+        transport(&mut group, &binary, &request, &expected, bytes == SIZES[0]);
     }
     group.finish();
 }
 
-criterion_group!(benches, stdio);
+fn stdio_rkyv_benches(c: &mut Criterion) {
+    let binary = Path::new(env!("CARGO_BIN_EXE_stdio-rkyv-sidecar"));
+    let mut group = stdio_group(c, "stdio_rkyv");
+    for &bytes in SIZES {
+        let payload: Vec<u8> = (0..bytes).map(|byte| byte as u8).collect();
+        let (request, expected) = stdio_rkyv::frame_pair(&payload);
+        group.bench_function(BenchmarkId::new("codec_only", request.len()), |b| {
+            let mut reply = AlignedVec::with_capacity(expected.len());
+            b.iter(|| {
+                stdio_rkyv::upgrade(black_box(&request), &mut reply).unwrap();
+                black_box(&reply);
+            });
+        });
+        transport(&mut group, binary, &request, &expected, bytes == SIZES[0]);
+    }
+    group.finish();
+}
+
+criterion_group!(benches, stdio, stdio_rkyv_benches);
 criterion_main!(benches);

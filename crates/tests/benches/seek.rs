@@ -4,8 +4,12 @@
 // value, so the delta is exactly the payload the seek skipped. Message size is
 // swept because that is the whole point: a seek's cost is bounded by where its
 // target sits in the wire order, a decode's grows with everything after it.
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+    measurement::WallTime,
+};
 use pojoc_tests::pojoc_seek_bench::{self as sb, SeekBench, runtime::*};
+use rkyv::{Archive, Archived, Serialize, rancor::Error as ArchiveError};
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -51,6 +55,61 @@ fn encoded(n: usize) -> Vec<u8> {
 
 const SIZES: &[usize] = &[0, 16, 256, 4096];
 
+#[derive(Archive, Serialize)]
+struct RkyvSeek {
+    id: u64,
+    kind: u32,
+    name: String,
+    label: String,
+    timestamp: u64,
+    flags: u32,
+    score: f64,
+    description: String,
+    tags: Vec<String>,
+    samples: Vec<f64>,
+    history: Vec<u64>,
+    points: Vec<(f32, f32, f32)>,
+    notes: Vec<String>,
+}
+
+impl From<SeekBench<'_>> for RkyvSeek {
+    fn from(value: SeekBench<'_>) -> Self {
+        Self {
+            id: value.id,
+            kind: value.kind,
+            name: value.name.to_owned(),
+            label: value.label.to_owned(),
+            timestamp: value.timestamp,
+            flags: value.flags,
+            score: value.score,
+            description: value.description.to_owned(),
+            tags: value.tags.into_iter().map(str::to_owned).collect(),
+            samples: value.samples.into_vec(),
+            history: value.history.into_vec(),
+            points: value.points.into_vec(),
+            notes: value.notes.into_iter().map(str::to_owned).collect(),
+        }
+    }
+}
+
+fn rkyv_fields(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    n: usize,
+    read: impl Fn(&Archived<RkyvSeek>),
+) {
+    let archive = rkyv::to_bytes::<ArchiveError>(&RkyvSeek::from(make(n))).unwrap();
+    let archived = rkyv::access::<Archived<RkyvSeek>, ArchiveError>(&archive).unwrap();
+    group.throughput(Throughput::Bytes(archive.len() as u64));
+    group.bench_function(BenchmarkId::new("rkyv_access", archive.len()), |b| {
+        b.iter(|| {
+            read(rkyv::access::<Archived<RkyvSeek>, ArchiveError>(black_box(&archive)).unwrap())
+        })
+    });
+    group.bench_function(BenchmarkId::new("rkyv_prevalidated", archive.len()), |b| {
+        b.iter(|| read(black_box(archived)))
+    });
+}
+
 /// one seekable target vs the full decode that would yield the same value
 fn per_field(c: &mut Criterion) {
     // (group, seek fn, the same field off a full decode)
@@ -81,6 +140,9 @@ fn per_field(c: &mut Criterion) {
             g.bench_with_input(BenchmarkId::new("decode", buf.len()), &buf, |b, buf| {
                 b.iter(|| black_box(dec(black_box(buf))))
             });
+            rkyv_fields(&mut g, n, |v| {
+                black_box(v.id.to_native());
+            });
         }
         g.finish();
     }
@@ -98,6 +160,9 @@ fn per_field(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("decode", buf.len()), &buf, |b, buf| {
             b.iter(|| black_box(sb::decode(black_box(buf)).unwrap().name))
         });
+        rkyv_fields(&mut g, n, |v| {
+            black_box(v.name.as_str());
+        });
     }
     g.finish();
 
@@ -113,6 +178,9 @@ fn per_field(c: &mut Criterion) {
         });
         g.bench_with_input(BenchmarkId::new("decode", buf.len()), &buf, |b, buf| {
             b.iter(|| black_box(sb::decode(black_box(buf)).unwrap().label))
+        });
+        rkyv_fields(&mut g, n, |v| {
+            black_box(v.label.as_str());
         });
     }
     g.finish();
@@ -152,12 +220,29 @@ fn batch(c: &mut Criterion) {
                 black_box((v.id, v.kind, v.name, v.label))
             })
         });
+        rkyv_fields(&mut g, n, |v| {
+            black_box((
+                v.id.to_native(),
+                v.kind.to_native(),
+                v.name.as_str(),
+                v.label.as_str(),
+            ));
+        });
     }
     g.finish();
 }
 
 criterion_group!(benches, per_field, batch, many_targets);
 criterion_main!(benches);
+
+#[derive(Archive, Serialize)]
+struct RkyvSeekMany {
+    fixed: (u64, u64, u32, u32, i64, i32, f64, f32),
+    strings: [String; 12],
+    blob: Vec<u8>,
+    samples: Vec<f64>,
+    notes: Vec<String>,
+}
 
 /// With many seekable fields, `seek_all` must walk to the *last* one before it
 /// can return — so pulling a few early fields can cost more through the batch
@@ -273,5 +358,66 @@ fn many_targets(c: &mut Criterion) {
     g.bench_function("decode", |b| {
         b.iter(|| black_box(sm::decode(black_box(&buf)).unwrap().s0))
     });
+
+    let archive = rkyv::to_bytes::<ArchiveError>(&RkyvSeekMany {
+        fixed: (
+            value.f0, value.f1, value.f2, value.f3, value.f4, value.f5, value.f6, value.f7,
+        ),
+        strings: [
+            value.s0, value.s1, value.s2, value.s3, value.s4, value.s5, value.s6, value.s7,
+            value.s8, value.s9, value.s10, value.s11,
+        ]
+        .map(str::to_owned),
+        blob: value.blob.into_vec(),
+        samples: value.samples.into_vec(),
+        notes: value.notes.into_iter().map(str::to_owned).collect(),
+    })
+    .unwrap();
+    let archived = rkyv::access::<Archived<RkyvSeekMany>, ArchiveError>(&archive).unwrap();
+    type Projection = (&'static str, fn(&Archived<RkyvSeekMany>));
+    let cases: &[Projection] = &[
+        ("one_early", |v| {
+            black_box(v.strings[0].as_str());
+        }),
+        ("one_late", |v| {
+            black_box(v.strings[11].as_str());
+        }),
+        ("three_early", |v| {
+            black_box((
+                v.strings[0].as_str(),
+                v.strings[1].as_str(),
+                v.strings[2].as_str(),
+            ));
+        }),
+        ("two_fixed", |v| {
+            black_box((v.fixed.0.to_native(), v.fixed.7.to_native()));
+        }),
+        ("all_twenty", |v| {
+            black_box((
+                v.fixed.0.to_native(),
+                v.fixed.1.to_native(),
+                v.fixed.2.to_native(),
+                v.fixed.3.to_native(),
+                v.fixed.4.to_native(),
+                v.fixed.5.to_native(),
+                v.fixed.6.to_native(),
+                v.fixed.7.to_native(),
+            ));
+            black_box(std::array::from_fn::<_, 12, _>(|i| v.strings[i].as_str()));
+        }),
+    ];
+    for &(name, read) in cases {
+        g.bench_function(format!("rkyv_access_{name}"), |b| {
+            b.iter(|| {
+                read(
+                    rkyv::access::<Archived<RkyvSeekMany>, ArchiveError>(black_box(&archive))
+                        .unwrap(),
+                )
+            })
+        });
+        g.bench_function(format!("rkyv_prevalidated_{name}"), |b| {
+            b.iter(|| read(black_box(archived)))
+        });
+    }
     g.finish();
 }

@@ -2,7 +2,9 @@
 // on encode and table index on decode, vs writing/reading bytes directly
 use criterion::{Criterion, criterion_group, criterion_main};
 use pojoc_tests::pojoc_intern_bench::{self, InternBench, runtime::*};
+use rkyv::{Archived, rancor::Error as ArchiveError};
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Duration;
 
 const POOL: &[&str] = &[
@@ -43,6 +45,19 @@ fn make_plain() -> InternBench<'static> {
     }
 }
 
+fn plain_tags() -> Vec<String> {
+    POOL.iter()
+        .copied()
+        .cycle()
+        .take(ELEMENT_COUNT)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn shared_tags(pool: &[Arc<str>]) -> Vec<Arc<str>> {
+    pool.iter().cycle().take(ELEMENT_COUNT).cloned().collect()
+}
+
 fn encode_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("intern_encode");
     group.sample_size(1000).warm_up_time(Duration::from_secs(3));
@@ -66,6 +81,15 @@ fn encode_benchmarks(c: &mut Criterion) {
         })
     });
 
+    group.bench_function("rkyv_plain", |b| {
+        b.iter(|| black_box(rkyv::to_bytes::<ArchiveError>(black_box(&plain_tags())).unwrap()))
+    });
+    let pool: Vec<Arc<str>> = POOL.iter().copied().map(Arc::from).collect();
+    group.bench_function("rkyv_shared", |b| {
+        b.iter(|| {
+            black_box(rkyv::to_bytes::<ArchiveError>(black_box(&shared_tags(&pool))).unwrap())
+        })
+    });
     group.finish();
 }
 
@@ -92,6 +116,23 @@ fn decode_benchmarks(c: &mut Criterion) {
         b.iter(|| black_box(pojoc_intern_bench::decode(black_box(&plain_buf)).unwrap()))
     });
 
+    let plain = rkyv::to_bytes::<ArchiveError>(&plain_tags()).unwrap();
+    group.bench_function("rkyv_plain_access", |b| {
+        b.iter(|| {
+            black_box(
+                rkyv::access::<Archived<Vec<String>>, ArchiveError>(black_box(&plain)).unwrap(),
+            )
+        })
+    });
+    let pool: Vec<Arc<str>> = POOL.iter().copied().map(Arc::from).collect();
+    let shared = rkyv::to_bytes::<ArchiveError>(&shared_tags(&pool)).unwrap();
+    group.bench_function("rkyv_shared_access", |b| {
+        b.iter(|| {
+            black_box(
+                rkyv::access::<Archived<Vec<Arc<str>>>, ArchiveError>(black_box(&shared)).unwrap(),
+            )
+        })
+    });
     group.finish();
 }
 

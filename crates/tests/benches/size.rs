@@ -10,6 +10,11 @@ use pojoc_tests::{
 };
 use prost::Message;
 
+#[path = "support/rkyv_player.rs"]
+mod rkyv_player;
+use rkyv::rancor::Error as ArchiveError;
+use rkyv_player::RkyvPlayer;
+
 fn make_pojoc_player() -> Player<'static> {
     Player {
         player_id: 1.0,
@@ -658,11 +663,14 @@ fn main() {
     let mut bebop_buf = Vec::new();
     bebop_player.serialize(&mut bebop_buf).unwrap();
 
+    let archive = rkyv::to_bytes::<ArchiveError>(&RkyvPlayer::default()).unwrap();
+
     println!("\n=== binary size comparison ===");
     println!("POJOC:        {} bytes", pojoc_buf.len());
     println!("Protobuf:     {} bytes", proto_buf.len());
     println!("Cap'n Proto:  {} bytes", capnp_buf.len());
     println!("FlatBuffers:  {} bytes", fb_buf.len());
     println!("Bebop:        {} bytes", bebop_buf.len());
+    println!("rkyv:         {} bytes", archive.len());
     println!("==============================\n");
 }

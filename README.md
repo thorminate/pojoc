@@ -163,6 +163,8 @@ payload, a persistent process with one request in flight, and a persistent
 process that sends up to 64 requests at a time while draining stdout. The
 round-trip case measures request/reply latency. The pipelined time is elapsed
 time divided by completed messages, so it measures throughput per message.
+The `stdio_rkyv` group runs the same version upgrade over pipes using checked
+rkyv archive access and a length-and-version header that keeps the archive aligned.
 
 ## Building n' Testing
 
@@ -174,8 +176,8 @@ cargo test -p pojoc -p pojoc-build
 ```
 
 `cargo build`/`cargo test` at the workspace root also pulls in `crates/tests`,
-which round-trip-tests and benchmarks Pojoc against Protobuf, Cap'n Proto,
-FlatBuffers, and Bebop from equivalent schemas — that requires `protoc`,
+which round-trip-tests Pojoc and benchmarks it against Protobuf, Cap'n Proto,
+FlatBuffers, Bebop, and rkyv using equivalent data — that requires `protoc`,
 `capnp`, and the `flatc` CLI on `PATH`. Skip it by scoping to the crates above
 if you don't need those comparisons.
 
@@ -183,12 +185,18 @@ if you don't need those comparisons.
 
 Measured with [Criterion](https://github.com/bheisler/criterion.rs), run `cargo bench` to see these results yourself. The schema definitions are in `/crates/tests/schemas` and benches themselves are in `/crates/tests/benches` if you want to review them.
 
+The player and stress suites report checked rkyv archive access and owned
+deserialization separately. The seek suite also measures field reads from a prevalidated
+archive. The interning suites compare plain strings and shared `Arc<str>`
+references drawn from the same string pool.
+
 **Serialized size** (identical populated message, bytes. Smaller is better):
 
 | Format      | Bytes   |
 | ----------- | ------- |
 | **Pojoc**   | **429** |
 | Protobuf    | 463     |
+| rkyv        | 608     |
 | Bebop       | 634     |
 | FlatBuffers | 944     |
 | Cap'n Proto | 1,008   |

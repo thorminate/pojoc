@@ -34,6 +34,7 @@ generated_strict!(pub pojoc_stdio_lazy, "/pojoc_stdio_lazy.rs");
 generated_strict!(pub pojoc_import_root, "/pojoc_import_root.rs");
 
 pub use flatbuf::fb_player;
+pub mod stdio_rkyv;
 
 generated!(pub proto_intern_bench, "/proto_intern_bench.rs");
 generated!(pub intern_bench_capnp, "/schemas/intern_bench_capnp.rs");
