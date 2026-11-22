@@ -3,6 +3,10 @@ pub mod delta;
 pub mod encode;
 pub mod error;
 pub mod intern;
+#[doc(hidden)]
+pub mod sidecar;
+#[doc(hidden)]
+pub mod stream;
 pub mod varint;
 
 pub use decode::*;

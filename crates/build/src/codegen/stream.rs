@@ -50,72 +50,106 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
 
     let preserve_length = latest_tail.is_some_and(|tail| tail.lazy);
     let hybrid = HybridPlans::new(schema, &versions);
-    let fallback = "read_buffered_reply(input, version, payload_len, &mut request, &mut response)?";
+    let fallback =
+        "stream::read_buffered_reply(input, payload_len, &mut request, &mut response, transcode)?";
+
+    w.line("/// Reply to each Pojoc envelope with one latest-version envelope.");
+    w.line("/// Flush each reply and reject a declared payload above `max_payload_bytes`.");
+    w.line("pub fn serve(");
+    w.indent();
+    w.line("input: &mut impl std::io::BufRead,");
+    w.line("output: &mut impl std::io::Write,");
+    w.line("max_payload_bytes: usize,");
+    w.dedent();
+    w.line(") -> std::io::Result<()> {");
+    w.indent();
+    w.line("use runtime::stream;");
+    w.line("let mut request = Vec::new();");
+    w.line("let mut response = Vec::new();");
+    if !versions.is_empty() {
+        w.line(&format!(
+            "let mut byte_array = stream::ByteArrayStream::new({}, {preserve_length});",
+            latest.version
+        ));
+    }
+    if !hybrid.is_empty() {
+        w.line("let mut hybrid = stream::HybridStream::default();");
+    }
+    w.line("stream::serve_frames(input, output, max_payload_bytes, |input, output, version, payload_len| {");
+    w.indent();
+    w.line("let transcode = |payload: &[u8], reply: &mut Vec<u8>| {");
+    w.indent();
+    w.line("let value = decode_payload(version, payload)?;");
+    w.line(&format!(
+        "encode_for_version(reply, &value, {})",
+        latest.version
+    ));
+    w.dedent();
+    w.line("};");
+
+    if versions.is_empty() && hybrid.is_empty() {
+        w.line(&format!("let reply_len = {fallback};"));
+        w.line("output.write_all(&response[..reply_len])");
+    } else {
+        w.line("let reply_len = match version {");
+        w.indent();
+        for (version, prefix_len) in versions {
+            w.line(&format!(
+                "{version} if payload_len > {prefix_len} => Some(byte_array.read_reply("
+            ));
+            w.indent();
+            w.line(&format!(
+                "input, payload_len, {prefix_len}, &mut response, |prefix, header| {{"
+            ));
+            w.indent();
+            w.line(&format!("let value = decode_v{version}(prefix, &mut 0)?;"));
+            let question = if fallible_encode { "?" } else { "" };
+            w.line(&format!(
+                "encode_v{}(header, &value){question};",
+                latest.version
+            ));
+            w.line("Ok(())");
+            w.dedent();
+            w.line("},");
+            w.dedent();
+            w.line(")?),");
+        }
+        hybrid.emit_arms(w);
+        w.line(&format!("_ => Some({fallback}),"));
+        w.dedent();
+        w.line("};");
+        w.line("if let Some(reply_len) = reply_len {");
+        w.indent();
+        w.line("output.write_all(&response[..reply_len])?;");
+        w.dedent();
+        w.line("}");
+        w.line("Ok(())");
+    }
+    w.dedent();
+    w.line("})");
+    w.dedent();
+    w.line("}");
+    w.blank();
+
     let root = &schema.name_hint;
     let lifetime = if is_infected(root) { "<'_>" } else { "" };
-    let stream_value = format!("{root}{lifetime}");
-    for line in include_str!("stream.rs.in").lines() {
-        match line.trim() {
-            "// STREAM_READ_IMPORT" if !versions.is_empty() || !hybrid.is_empty() => {
-                w.line("    use __pojoc_stream::read_stream_varint;");
-                w.line("    use std::io::Read;");
-            }
-            "// STREAM_READ_IMPORT" => {}
-            "// BYTE_ARRAY_STREAM" if !versions.is_empty() => {
-                for line in include_str!("stream_byte_array.rs.in").lines() {
-                    w.line(line);
-                }
-                w.line(&format!(
-                    "    let mut byte_array = ByteArrayStream::new({}, {preserve_length});",
-                    latest.version
-                ));
-            }
-            "// BYTE_ARRAY_STREAM" => {}
-            "// HYBRID_STREAM" if !hybrid.is_empty() => {
-                for line in include_str!("stream_hybrid.rs.in").lines() {
-                    w.line(line);
-                }
-                w.line("    let mut hybrid = HybridStream::default();");
-            }
-            "// HYBRID_STREAM" => {}
-            "// STREAM_REPLY" if versions.is_empty() && hybrid.is_empty() => {
-                w.line(&format!("        let reply_len = Some({fallback});"));
-            }
-            "// STREAM_REPLY" => {
-                w.line("        let reply_len = match version {");
-                for (version, prefix_len) in &versions {
-                    w.line(&format!(
-                        "            {version} if payload_len > {prefix_len} => Some(byte_array.read_reply("
-                    ));
-                    w.line(&format!(
-                        "                input, payload_len, {prefix_len}, &mut response, |prefix, header| {{"
-                    ));
-                    w.line(&format!(
-                        "                    let value = decode_v{version}(prefix, &mut 0)?;"
-                    ));
-                    let question = if fallible_encode { "?" } else { "" };
-                    w.line(&format!(
-                        "                    encode_v{}(header, &value){question};",
-                        latest.version
-                    ));
-                    w.line("                    Ok(())");
-                    w.line("                },");
-                    w.line("            )?),");
-                }
-                w.indent();
-                w.indent();
-                w.indent();
-                hybrid.emit_arms(w);
-                w.dedent();
-                w.dedent();
-                w.dedent();
-                w.line(&format!("            _ => Some({fallback}),"));
-                w.line("        };");
-            }
-            _ if line.contains("StreamValue") => {
-                w.line(&line.replace("StreamValue", &stream_value))
-            }
-            _ => w.line(line),
-        }
-    }
+    w.line("/// Visit the decoded value from each frame while its payload is available.");
+    w.line("pub fn serve_decode(");
+    w.indent();
+    w.line("input: &mut impl std::io::BufRead,");
+    w.line("max_payload_bytes: usize,");
+    w.line(&format!(
+        "mut visit: impl FnMut({root}{lifetime}) -> std::io::Result<()>,"
+    ));
+    w.dedent();
+    w.line(") -> std::io::Result<()> {");
+    w.indent();
+    w.line("use runtime::stream;");
+    w.line("stream::visit_payloads(input, max_payload_bytes, |version, payload| {");
+    w.indent();
+    w.line("visit(decode_payload(version, payload).map_err(stream::codec_error)?)");
+    w.dedent();
+    w.line("})");
+    w.dedent();
+    w.line("}");
 }

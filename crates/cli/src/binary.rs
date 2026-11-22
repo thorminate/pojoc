@@ -17,29 +17,30 @@ pub fn build(
     let src = path.join("src");
     std::fs::create_dir(&src)?;
     std::fs::write(src.join("codec.rs"), codec)?;
+    let json_mode = if no_serde { "" } else { ", json" };
     std::fs::write(
         src.join("main.rs"),
-        concat!(
-            "pub mod codec { include!(\"codec.rs\"); }\n",
-            include_str!("sidecar.rs.in"),
-            include_str!("sidecar_pojoc.rs.in"),
+        format!(
+            "pub mod codec {{ include!(\"codec.rs\"); }}\npojoc::stdio_sidecar!(codec{json_mode});\n",
         ),
     )?;
 
-    let json_dependencies = if no_serde {
+    let serde = if no_serde {
         ""
     } else {
-        "serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n"
+        "serde = { version = \"1\", features = [\"derive\"] }\n"
     };
-    let default_features = if no_serde { "[]" } else { "[\"sidecar-json\"]" };
+    let runtime_features = if no_serde {
+        ""
+    } else {
+        ", features = [\"sidecar-json\"]"
+    };
     std::fs::write(
         path.join("Cargo.toml"),
         format!(
             "[package]\nname = \"pojoc-sidecar\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
              [workspace]\n\
-             [features]\ndefault = {default_features}\nsidecar-json = []\n\
-             [dependencies]\npojoc = {{ {runtime}, default-features = {} }}\n{json_dependencies}",
-            !no_serde,
+             [dependencies]\npojoc = {{ {runtime}, default-features = false{runtime_features} }}\n{serde}",
         ),
     )?;
 

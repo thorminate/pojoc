@@ -118,7 +118,7 @@ impl<'a> Layout<'a> {
 
     fn emit(&self, arrays: &[(FieldId, bool)], w: &mut CodeWriter) {
         w.line(&format!(
-            "HybridLayout {{ interned: {}, presence_bytes: {}, steps: &[",
+            "stream::HybridLayout {{ interned: {}, presence_bytes: {}, steps: &[",
             self.interned, self.presence_bytes
         ));
         w.indent();
@@ -129,7 +129,7 @@ impl<'a> Layout<'a> {
             .unwrap();
         for step in &self.fields[..=last_array] {
             let layout = match step.span {
-                Span::Fixed(bytes) => format!("StreamSpan::Fixed({bytes})"),
+                Span::Fixed(bytes) => format!("stream::StreamSpan::Fixed({bytes})"),
                 Span::LengthPrefixed(width) => {
                     match arrays
                         .iter()
@@ -137,12 +137,12 @@ impl<'a> Layout<'a> {
                         .find(|(_, (id, _))| *id == step.field.field_id)
                     {
                         Some((index, (_, lazy))) => {
-                            format!("StreamSpan::Array({index}, {width}, {lazy})")
+                            format!("stream::StreamSpan::Array({index}, {width}, {lazy})")
                         }
-                        None => format!("StreamSpan::LengthPrefixed({width})"),
+                        None => format!("stream::StreamSpan::LengthPrefixed({width})"),
                     }
                 }
-                Span::Varint => "StreamSpan::Varint".into(),
+                Span::Varint => "stream::StreamSpan::Varint".into(),
             };
             w.line(&format!("({:?}, {layout}),", step.presence_bit));
         }
@@ -197,16 +197,16 @@ impl<'a> HybridPlans<'a> {
     pub(super) fn emit_arms(&self, w: &mut CodeWriter) {
         for plan in &self.versions {
             w.line(&format!(
-                "{} if payload_len >= HYBRID_MIN_PAYLOAD_BYTES => {{",
+                "{} if payload_len >= stream::HYBRID_MIN_PAYLOAD_BYTES => {{",
                 plan.version
             ));
             w.indent();
-            w.line("hybrid.read_reply(input, output, payload_len, version, &mut response, &[");
+            w.line("hybrid.read_reply(input, output, payload_len, &mut response, &[");
             w.indent();
             plan.input.emit(&plan.arrays, w);
             self.reply.emit(&plan.arrays, w);
             w.dedent();
-            w.line("])?;");
+            w.line("], transcode)?;");
             w.line("None");
             w.dedent();
             w.line("},");

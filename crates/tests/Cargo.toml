@@ -16,7 +16,7 @@ serde_json.workspace = true
 
 [features]
 default = ["sidecar-json"]
-sidecar-json = []
+sidecar-json = ["pojoc/sidecar-json"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
