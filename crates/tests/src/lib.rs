@@ -27,6 +27,7 @@ generated_strict!(pub pojoc_interning, "/pojoc_interning.rs");
 generated_strict!(pub pojoc_union_width, "/pojoc_union_width.rs");
 generated_strict!(pub pojoc_seek_bench, "/pojoc_seek_bench.rs");
 generated_strict!(pub pojoc_seek_many, "/pojoc_seek_many.rs");
+generated_strict!(pub pojoc_seek_nested, "/pojoc_seek_nested.rs");
 generated_strict!(pub pojoc_seek_retype, "/pojoc_seek_retype.rs");
 generated_strict!(pub pojoc_read_offsets, "/pojoc_read_offsets.rs");
 generated_strict!(pub pojoc_stdio_bench, "/pojoc_stdio_bench.rs");

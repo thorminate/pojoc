@@ -1248,7 +1248,6 @@ fn emit_type_size_hints(schema: &ResolvedSchema, w: &mut CodeWriter) {
         let (_, resolved) = latest[name];
         let lt = if is_infected(name) { "<'buf>" } else { "" };
         w.line("#[allow(dead_code)]");
-        w.line("#[allow(unused_variables)]");
         w.line(&format!(
             "fn size_hint_{}{lt}(__value: &{name}{lt}) -> usize {{",
             name.to_snake_case()

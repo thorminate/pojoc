@@ -20,7 +20,7 @@ pub fn build(
     std::fs::write(
         src.join("main.rs"),
         concat!(
-            "#[allow(dead_code)]\nmod codec { include!(\"codec.rs\"); }\n",
+            "pub mod codec { include!(\"codec.rs\"); }\n",
             include_str!("sidecar.rs.in"),
         ),
     )?;

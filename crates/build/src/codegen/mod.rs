@@ -104,8 +104,6 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
         w.line("// if this doesn't compile: `serde` (with the `derive` feature) must be a direct");
         w.line("// dependency, and the `pojoc`/`pojoc-build` `serde` feature must be enabled or");
         w.line("// disabled together");
-        w.line("#[allow(unused_imports)]");
-        w.line("use serde::{Serialize, Deserialize};");
     }
     w.blank();
 

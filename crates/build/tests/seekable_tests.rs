@@ -649,7 +649,7 @@ fn the_subset_walk_guards_every_target_and_exits_after_the_last_requested() {
     );
     // the walk gives up as soon as nothing later is wanted
     assert!(
-        f.contains("if M0 & ((1u128 << 2) | (1u128 << 3)) == 0 { break; }"),
+        f.contains("if M0 & ((1u128 << 2) | (1u128 << 3)) == 0 { break 'tail; }"),
         "expected an early exit keyed on the remaining targets:\n{f}"
     );
     // unrequested fields stay None rather than picking up a default

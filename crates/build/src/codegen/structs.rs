@@ -73,7 +73,7 @@ pub fn emit_enums(schema: &ResolvedSchema, w: &mut CodeWriter) {
 fn emit_enum(name: &str, resolved: &ResolvedEnum, w: &mut CodeWriter) {
     let has_default = !resolved.variants.is_empty();
     let serde_derive = if emit_serde() {
-        ", Serialize, Deserialize"
+        ", serde::Serialize, serde::Deserialize"
     } else {
         ""
     };
@@ -147,7 +147,7 @@ fn emit_union(
 
     // lifetime-infected unions get a hand-written impl below, see emit_lazy_struct_serde.
     let serde_derive = if emit_serde() && !needs_lifetime {
-        ", Serialize, Deserialize"
+        ", serde::Serialize, serde::Deserialize"
     } else {
         ""
     };
@@ -229,7 +229,7 @@ fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
     });
 
     w.blank();
-    w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
+    w.line(&format!("impl<'buf> serde::Serialize for {name}<'buf> {{"));
     w.indent();
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
     w.indent();
@@ -260,7 +260,7 @@ fn emit_lazy_union_serde(name: &str, latest_version: i128, w: &mut CodeWriter) {
     w.blank();
 
     w.line(&format!(
-        "impl<'de: 'buf, 'buf> Deserialize<'de> for {name}<'buf> {{"
+        "impl<'de: 'buf, 'buf> serde::Deserialize<'de> for {name}<'buf> {{"
     ));
     w.indent();
     w.line(
@@ -327,7 +327,7 @@ fn emit_bitset_struct(
     let computed_len = bs.byte_width();
 
     let serde_derive = if emit_serde() {
-        ", Serialize, Deserialize"
+        ", serde::Serialize, serde::Deserialize"
     } else {
         ""
     };
@@ -535,12 +535,12 @@ fn emit_named_struct(
     let impl_lt_param = if needs_lifetime { "<'buf>" } else { "" };
 
     let serde_derive = if emit_serde() {
-        ", Serialize, Deserialize"
+        ", serde::Serialize, serde::Deserialize"
     } else {
         ""
     };
     emit_doc(doc, w);
-    w.line("#[allow(clippy::type_complexity)]");
+    w.line("#[allow(clippy::type_complexity, reason = \"field types follow the schema\")]");
     if needs_lifetime {
         // a lifetime-infected struct may hold a `lazy` field (LazyView), which
         // needs a hand-written Serialize/Deserialize impl below rather than a
@@ -596,13 +596,17 @@ fn emit_named_struct(
 
     if !consts.is_empty() {
         w.blank();
-        w.line("#[allow(clippy::approx_constant)]");
         w.line(&format!("impl{impl_lt_param} {name}{struct_lt} {{"));
         w.indent();
         for c in consts {
             let const_name = c.name.to_shouty_snake_case();
             let value = render_const_value(&c.value);
             emit_doc(&c.doc, w);
+            if matches!(c.value, DefaultValue::Float(_)) {
+                w.line(
+                    "#[allow(clippy::approx_constant, reason = \"preserve the schema literal\")]",
+                );
+            }
             w.line(&format!(
                 "pub const {const_name}: {} = {value};",
                 c.rust_type
@@ -641,7 +645,7 @@ fn emit_lazy_struct_serde(
 ) {
     w.blank();
 
-    w.line(&format!("impl<'buf> Serialize for {name}<'buf> {{"));
+    w.line(&format!("impl<'buf> serde::Serialize for {name}<'buf> {{"));
     w.indent();
     w.line("fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {");
     w.indent();
@@ -660,17 +664,15 @@ fn emit_lazy_struct_serde(
             ));
             w.line("LazyView::Owned(__val) => {");
             w.indent();
-            // emit_write_expr may emit an internal `?`, so wrap in a closure and
-            // translate the error to the serializer's error type at the boundary.
-            w.line("let mut __buf = Vec::new();");
-            w.line("#[allow(clippy::redundant_closure_call)]");
-            w.line("(|| -> PojocResult<()> {");
+            // Keep codec errors local until the serialization boundary.
+            w.line("let __write = |__buf: &mut Vec<u8>| -> PojocResult<()> {");
             w.indent();
-            w.line("let __buf = &mut __buf;");
             emit_write_expr(&f.ty, "__val", Some(schema), true, w);
             w.line("Ok(())");
             w.dedent();
-            w.line("})().map_err(serde::ser::Error::custom)?;");
+            w.line("};");
+            w.line("let mut __buf = Vec::new();");
+            w.line("__write(&mut __buf).map_err(serde::ser::Error::custom)?;");
             w.line(&format!(
                 "__s.serialize_field(\"{}\", SerdeBytes::new(&__buf))?;",
                 f.name
@@ -700,7 +702,7 @@ fn emit_lazy_struct_serde(
         .join(", ");
 
     w.line(&format!(
-        "impl<'de: 'buf, 'buf> Deserialize<'de> for {name}<'buf> {{"
+        "impl<'de: 'buf, 'buf> serde::Deserialize<'de> for {name}<'buf> {{"
     ));
     w.indent();
     w.line(

@@ -1,5 +1,4 @@
-#[allow(dead_code)]
-mod codec {
+pub mod codec {
     include!(concat!(env!("OUT_DIR"), "/pojoc_stdio_bench.rs"));
 }
 

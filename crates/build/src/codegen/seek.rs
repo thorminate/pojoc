@@ -26,7 +26,7 @@ use super::{
 use crate::core::types::{ResolvedTypeRef, type_info};
 use crate::schema::ir::ir_types::{FieldIR, ResolvedSchema, type_reaches_intern_table};
 use crate::schema::ir::lineage::{FieldLineage, FieldMapping, VersionLineage};
-use heck::ToSnakeCase;
+use heck::{ToSnakeCase, ToUpperCamelCase};
 use std::collections::HashSet;
 
 pub fn emit_seek_functions(
@@ -38,6 +38,16 @@ pub fn emit_seek_functions(
     let targets = seek_targets(schema);
     if targets.is_empty() {
         return;
+    }
+
+    for target in &targets {
+        if let Some(alias) = seek_type_alias(target) {
+            let ty = raw_seek_type(target);
+            let lifetime = if ty.contains("'buf") { "<'buf>" } else { "" };
+            w.line("#[doc(hidden)]");
+            w.line(&format!("pub type {alias}{lifetime} = {ty};"));
+            w.blank();
+        }
     }
 
     for target in &targets {
@@ -86,11 +96,33 @@ fn lineage_for<'a>(vl: &'a VersionLineage, target: &str) -> Option<&'a FieldLine
     })
 }
 
-fn rust_type_of(target: &FieldIR) -> String {
+fn seek_type_alias(target: &FieldIR) -> Option<String> {
+    // Keep repeated signatures readable when the field contains several
+    // nested types. Plain fields still expose their types directly.
+    let mut nodes = 0;
+    target.ty.for_each_node(&mut |_| nodes += 1);
+    if nodes < 5 {
+        return None;
+    }
+    let name = target.name.to_upper_camel_case();
+    let id = target.id.0;
+    Some(format!("__Seek{name}Field{id}"))
+}
+
+fn raw_seek_type(target: &FieldIR) -> String {
     if target.lazy {
         format!("LazyView<'buf, {}>", type_info(&target.ty).rust_type)
     } else {
         type_info(&target.ty).rust_type
+    }
+}
+
+fn rust_type_of(target: &FieldIR) -> String {
+    let ty = raw_seek_type(target);
+    match seek_type_alias(target) {
+        Some(alias) if ty.contains("'buf") => format!("{alias}<'buf>"),
+        Some(alias) => alias,
+        None => ty,
     }
 }
 
@@ -175,10 +207,6 @@ fn emit_seek_vn_field(
     // __start rather than &mut usize: a seek does not consume the block, so
     // handing back a cursor would only invite misuse
     w.line("#[allow(dead_code)]");
-    if found.is_none() {
-        // reads nothing, but the signature stays uniform for the dispatcher
-        w.line("#[allow(unused_variables)]");
-    }
     w.line(&format!(
         "pub fn seek_v{v}_{name}(__buf: &[u8], __start: usize) -> PojocResult<{ret}> {{"
     ));
@@ -764,7 +792,7 @@ fn emit_seek_subset_vn(
     let requested = |n: &str| bit_test(index_of(n));
 
     w.line("#[doc(hidden)]");
-    w.line("#[allow(dead_code, clippy::never_loop)]");
+    w.line("#[allow(dead_code)]");
     w.line(&format!(
         "pub fn __pluck_v{v}<{params}>(__buf: &[u8], __start: usize) \
          -> PojocResult<__PluckOut{ret_lt}> {{"
@@ -810,10 +838,6 @@ fn emit_seek_subset_vn(
         .map(|(_, fl)| fl.field_id)
         .collect();
 
-    // `break` is the early exit once nothing further is requested
-    w.line("loop {");
-    w.indent();
-
     if !blast_ids.is_empty() {
         w.line("let __blast_start = *__pos;");
     }
@@ -853,10 +877,13 @@ fn emit_seek_subset_vn(
         .filter(|fl| tail_ids.contains(&fl.field_id))
         .filter_map(|fl| target_name_of(fl).map(&index_of))
         .collect();
-    if tail_bits.is_empty() {
-        w.line("break;");
-    } else {
-        w.line(&format!("if {} {{ break; }}", no_bit_test(&tail_bits)));
+    if !tail_bits.is_empty() {
+        w.line("'tail: {");
+        w.indent();
+        w.line(&format!(
+            "if {} {{ break 'tail; }}",
+            no_bit_test(&tail_bits)
+        ));
     }
 
     let total = fixed_total(&blast);
@@ -923,20 +950,21 @@ fn emit_seek_subset_vn(
                 .filter(|f| tail_ids.contains(&f.field_id))
                 .filter_map(|f| target_name_of(f).map(&index_of))
                 .collect();
-            if remaining.is_empty() {
-                w.line("break;");
-            } else {
-                w.line(&format!("if {} {{ break; }}", no_bit_test(&remaining)));
+            if !remaining.is_empty() {
+                w.line(&format!(
+                    "if {} {{ break 'tail; }}",
+                    no_bit_test(&remaining)
+                ));
             }
         } else {
             emit_ordered_skip(fl, &mut optional_counter, w);
         }
     }
 
-    // every path out of the body already breaks: either the tail was skipped
-    // wholesale above, or the last requested field breaks unconditionally
-    w.dedent();
-    w.line("}");
+    if !tail_bits.is_empty() {
+        w.dedent();
+        w.line("}");
+    }
 
     // requested targets this version predates get its default, matching decode
     for t in targets {
