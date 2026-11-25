@@ -1,9 +1,10 @@
 //! Write real Rust envelopes for the generated TypeScript interoperability tests.
 
 use pojoc_tests::{
-    pojoc_constraints as constraints, pojoc_edge as edge, pojoc_import_root as imports,
-    pojoc_interning as intern, pojoc_nested_pluck as nested, pojoc_player as player,
-    pojoc_recursive as recursive, pojoc_seek_retype as retype,
+    pojoc_constraints as constraints, pojoc_edge as edge, pojoc_fixed_envelope as envelope,
+    pojoc_import_root as imports, pojoc_interning as intern, pojoc_nested_pluck as nested,
+    pojoc_player as player, pojoc_recursive as recursive, pojoc_seek_retype as retype,
+    pojoc_typescript_fixed_records as fixed,
 };
 use std::{env, fs, path::Path};
 
@@ -66,6 +67,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fixtures(dir, "edge-populated", 8..=latest_edge, |buf, v| {
         edge::encode_for_version(buf, &populated, v)
     })?;
+
+    let fixed_batch = fixed::TypescriptFixedRecords {
+        rows: [
+            fixed::Row {
+                id: u32::MAX,
+                value: i16::MIN,
+                ratio: -1.5,
+                enabled: true,
+            },
+            fixed::Row {
+                id: 0,
+                value: i16::MAX,
+                ratio: 2.25,
+                enabled: false,
+            },
+        ]
+        .into_iter()
+        .collect(),
+    };
+    fixtures(dir, "typescript_fixed_records", 1..=2, |buf, v| {
+        fixed::encode_for_version(buf, &fixed_batch, v)
+    })?;
+
+    let value = envelope::FixedEnvelope {
+        point: envelope::Point {
+            x: 42,
+            y: 1234,
+            z: 9,
+        },
+        ..Default::default()
+    };
+    for (version, header, payload_size) in [
+        (1, &[1][..], 127),
+        (2, &[2, 128, 0, 0, 0][..], 128),
+        (128, &[128, 1][..], 129),
+    ] {
+        let mut bytes = vec![0xaa];
+        envelope::encode_for_version(&mut bytes, &value, version)?;
+        assert_eq!(bytes[0], 0xaa);
+        let frame = &bytes[1..];
+        assert!(frame.starts_with(header));
+        assert_eq!(frame.len(), header.len() + payload_size);
+        let decoded = envelope::decode(frame)?;
+        assert_eq!(
+            (decoded.point.x, decoded.point.y, decoded.marker),
+            (42, 1234, 7)
+        );
+        if version == 128 {
+            let mut current = Vec::new();
+            envelope::encode(&mut current, &value);
+            assert_eq!(current, frame);
+        }
+        fs::write(dir.join(format!("fixed_envelope-{version}.bin")), frame)?;
+    }
 
     let interned = intern::Interning {
         primary_label: "first",

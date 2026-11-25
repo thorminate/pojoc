@@ -75,7 +75,7 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
     if !hybrid.is_empty() {
         w.line("let mut hybrid = stream::HybridStream::default();");
     }
-    w.line("stream::serve_frames(input, output, max_payload_bytes, |input, output, version, payload_len| {");
+    w.line("stream::serve_frames(input, output, max_payload_bytes, fixed_payload_size, |input, output, version, payload_len| {");
     w.indent();
     w.line("let transcode = |payload: &[u8], reply: &mut Vec<u8>| {");
     w.indent();
@@ -145,7 +145,9 @@ pub(super) fn emit_serve(schema: &ResolvedSchema, fallible_encode: bool, w: &mut
     w.line(") -> std::io::Result<()> {");
     w.indent();
     w.line("use runtime::stream;");
-    w.line("stream::visit_payloads(input, max_payload_bytes, |version, payload| {");
+    w.line(
+        "stream::visit_payloads(input, max_payload_bytes, fixed_payload_size, |version, payload| {",
+    );
     w.indent();
     w.line("visit(decode_payload(version, payload).map_err(stream::codec_error)?)");
     w.dedent();

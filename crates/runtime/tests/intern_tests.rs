@@ -7,6 +7,24 @@ fn table_buf(entries: &[&str]) -> Vec<u8> {
 }
 
 #[test]
+fn intern_indices_survive_promotion_to_a_hash_table() {
+    let entries = [
+        "alpha", "beta", "", "gamma", "delta", "å", "epsilon", "omega",
+    ];
+    let mut builder = InternBuilder::new();
+    for (index, entry) in entries.iter().enumerate() {
+        assert_eq!(builder.intern(entry), index as u32);
+        assert_eq!(builder.intern("alpha"), 0);
+    }
+    let second_allocation = String::from("beta");
+    assert_eq!(builder.intern(&second_allocation), 1);
+    for (index, entry) in entries.iter().enumerate().rev() {
+        assert_eq!(builder.intern(entry), index as u32);
+    }
+    assert_eq!(builder.finish_table().as_slice(), entries);
+}
+
+#[test]
 fn skip_advances_exactly_as_read() {
     for entries in [
         vec![],

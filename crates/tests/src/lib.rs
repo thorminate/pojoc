@@ -35,6 +35,8 @@ generated_strict!(pub pojoc_stdio_bench, "/pojoc_stdio_bench.rs");
 generated_strict!(pub pojoc_stdio_hybrid, "/pojoc_stdio_hybrid.rs");
 generated_strict!(pub pojoc_stdio_lazy, "/pojoc_stdio_lazy.rs");
 generated_strict!(pub pojoc_import_root, "/pojoc_import_root.rs");
+generated_strict!(pub pojoc_typescript_fixed_records, "/pojoc_typescript_fixed_records.rs");
+generated_strict!(pub pojoc_fixed_envelope, "/pojoc_fixed_envelope.rs");
 
 pub use flatbuf::fb_player;
 pub mod stdio_rkyv;

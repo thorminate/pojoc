@@ -8,5 +8,5 @@
     "rootDir": ".build",
     "outDir": "dist"
   },
-  "files": [".build/index.ts"]
+  "files": [".build/index.ts", ".build/compiler.ts"]
 }

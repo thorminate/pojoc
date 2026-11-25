@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pojoc_build::codegen::generate;
+use pojoc_build::codegen::typescript::{GenerationOptions, RuntimeProfile, generate_with_options};
 use pojoc_build::core::types::TypeId;
 use pojoc_build::schema::ir::ir_types::{FieldIR, ResolvedConst, ResolvedSchema, latest_by_name};
 use pojoc_build::schema::render::{
@@ -43,6 +44,18 @@ struct BuildArgs {
     /// Embed the runtime in the generated TypeScript module.
     #[arg(long)]
     standalone: bool,
+
+    /// Omit dedicated TypeScript seek code for older wire layouts.
+    #[arg(long)]
+    compact: bool,
+
+    /// Select a TypeScript runtime profile [portable, bun, node].
+    #[arg(long, value_name = "PROFILE")]
+    runtime: Option<RuntimeProfile>,
+
+    /// Shorthand for --runtime bun.
+    #[arg(long, conflicts_with = "runtime")]
+    bun: bool,
 
     /// Print per-file diagnostics
     #[arg(short, long)]
@@ -126,6 +139,9 @@ fn build(args: BuildArgs) -> i32 {
         out_dir,
         target,
         standalone,
+        compact,
+        runtime,
+        bun,
         verbose,
         no_serde,
         emit_bin,
@@ -134,6 +150,14 @@ fn build(args: BuildArgs) -> i32 {
     match target {
         Target::Rust if standalone => {
             eprintln!("error: --standalone is a TypeScript target option");
+            return 1;
+        }
+        Target::Rust if compact => {
+            eprintln!("error: --compact is a TypeScript target option");
+            return 1;
+        }
+        Target::Rust if runtime.is_some() || bun => {
+            eprintln!("error: --runtime and --bun are TypeScript target options");
             return 1;
         }
         Target::Typescript if emit_bin || no_serde => {
@@ -169,11 +193,19 @@ fn build(args: BuildArgs) -> i32 {
     let (code, extension) = match target {
         Target::Rust => (generate(&schema), ".rs"),
         Target::Typescript => {
-            let result = if standalone {
-                pojoc_build::codegen::typescript::generate_standalone(&schema)
+            let profile = if bun {
+                RuntimeProfile::Bun
             } else {
-                pojoc_build::codegen::typescript::generate(&schema)
+                runtime.unwrap_or_default()
             };
+            let result = generate_with_options(
+                &schema,
+                GenerationOptions {
+                    standalone,
+                    runtime: profile,
+                    compact,
+                },
+            );
             match result {
                 Ok(code) => (code, ".ts"),
                 Err(err) => {

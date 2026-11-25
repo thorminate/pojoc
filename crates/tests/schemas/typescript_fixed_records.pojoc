@@ -1,0 +1,19 @@
+schema TypescriptFixedRecords {
+  version 1 {
+    type Row {
+      id: u32 = 0
+      value: i16 = 0
+      ratio: f32 = 0.0
+      enabled: bool = false
+    }
+    fields {
+      legacy_rows: [Row] = []
+    }
+  }
+
+  version 2 {
+    diff {
+      ~ legacy_rows -> rows
+    }
+  }
+}

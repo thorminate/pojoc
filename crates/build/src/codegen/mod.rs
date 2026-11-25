@@ -1,6 +1,7 @@
 pub mod builder;
 mod decode;
 mod encode;
+mod envelope;
 mod nested_seek;
 mod seek;
 mod stream;
@@ -238,14 +239,60 @@ fn emit_dispatcher(
     let name = &schema.name_hint;
     let latest = schema.lineage.latest_version;
     let needs_lifetime = infected.contains(name.as_str());
+    let fixed_sizes = envelope::fixed_payload_sizes(schema);
+    let interned_versions: HashSet<_> = schema
+        .lineage
+        .versions
+        .iter()
+        .filter(|version| version_uses_intern(schema, &version.fields))
+        .map(|version| version.version)
+        .collect();
+    let needs_patch =
+        |version| !fixed_sizes.contains_key(&version) && !interned_versions.contains(&version);
+    let has_dynamic = schema
+        .lineage
+        .versions
+        .iter()
+        .any(|v| needs_patch(v.version));
+    let try_encode = if root_constrained { "?" } else { "" };
 
     let ref_lt = if needs_lifetime { "<'_>" } else { "" };
+    w.line("fn fixed_payload_size(version: u64) -> PojocResult<Option<u32>> {");
+    w.indent();
+    w.line("match version {");
+    w.indent();
+    for (version, size) in &fixed_sizes {
+        w.line(&format!("{version} => Ok(Some({size})),"));
+    }
+    let dynamic: Vec<_> = schema
+        .lineage
+        .versions
+        .iter()
+        .map(|v| v.version)
+        .filter(|v| !fixed_sizes.contains_key(v))
+        .collect();
+    if !dynamic.is_empty() {
+        w.line(&format!("{} => Ok(None),", version_pattern(&dynamic)));
+    }
+    w.line("v => Err(Error::UnsupportedVersion(v)),");
+    w.dedent();
+    w.line("}");
+    w.dedent();
+    w.line("}");
+    w.blank();
+    w.line("/// Open one encoded envelope using this schema's version layouts.");
+    w.line("pub fn open_envelope<'buf>(buf: &'buf [u8], pos: &mut usize) -> PojocResult<Envelope<'buf>> {");
+    w.indent();
+    w.line("read_envelope(buf, pos, fixed_payload_size)");
+    w.dedent();
+    w.line("}");
+    w.blank();
     w.line(&format!(
         "pub fn decode(buf: &[u8]) -> PojocResult<{name}{ref_lt}> {{"
     ));
     w.indent();
     w.line("let mut pos = 0;");
-    w.line("let envelope = read_envelope(buf, &mut pos)?;");
+    w.line("let envelope = open_envelope(buf, &mut pos)?;");
     w.line("decode_payload(envelope.version, envelope.payload)");
     w.dedent();
     w.line("}");
@@ -279,18 +326,21 @@ fn emit_dispatcher(
     };
     w.line(&encode_sig);
     w.indent();
-    w.line(&format!("buf.reserve(size_hint_v{latest}(value));"));
-    w.line(&format!(
-        "let len_pos = write_envelope_header(buf, {latest});"
-    ));
-    w.line("let payload_start = buf.len();");
-    if root_constrained {
-        w.line(&format!("encode_v{latest}(buf, value)?;"));
+    if let Some(&size) = fixed_sizes.get(&latest) {
+        emit_fixed_envelope(latest, size, try_encode, root_constrained, w);
+    } else if interned_versions.contains(&latest) {
+        emit_interned_envelope(latest, try_encode, w);
     } else {
-        w.line(&format!("encode_v{latest}(buf, value);"));
+        let wire_version = envelope::version_bytes(latest as u64);
+        w.line(&format!("let hint = size_hint_v{latest}(value);"));
+        w.line(&format!(
+            "let len_pos = write_envelope_header_with_hint(buf, &{wire_version:?}, hint);"
+        ));
+        w.line("let payload_start = buf.len();");
+        w.line(&format!("encode_v{latest}(buf, value){try_encode};"));
+        w.line("let payload_len = buf.len() - payload_start;");
+        w.line("patch_envelope_length(buf, len_pos, payload_len);");
     }
-    w.line("let payload_len = buf.len() - payload_start;");
-    w.line("patch_envelope_length(buf, len_pos, payload_len);");
     if root_constrained {
         w.line("Ok(())");
     }
@@ -302,34 +352,61 @@ fn emit_dispatcher(
         "pub fn encode_for_version(buf: &mut Vec<u8>, value: &{name}{ref_lt}, version: u64) -> PojocResult<()> {{"
     ));
     w.indent();
-    w.line("let hint = match version {");
+    w.line(if has_dynamic {
+        "let (hint, wire_version): (usize, &[u8]) = match version {"
+    } else {
+        "match version {"
+    });
     w.indent();
     for vl in &schema.lineage.versions {
         let v = vl.version;
-        w.line(&format!("{v} => size_hint_v{v}(value),"));
-    }
-    w.line("v => return Err(Error::UnsupportedVersion(v)),");
-    w.dedent();
-    w.line("};");
-    w.line("buf.reserve(hint);");
-    w.line("let len_pos = write_envelope_header(buf, version);");
-    w.line("let payload_start = buf.len();");
-    w.line("match version {");
-    w.indent();
-    for vl in &schema.lineage.versions {
-        let v = vl.version;
-        if root_constrained {
-            w.line(&format!("{v} => encode_v{v}(buf, value)?,"));
+        if !needs_patch(v) {
+            w.line(&format!("{v} => {{"));
+            w.indent();
+            if v == latest {
+                w.line(&format!("encode(buf, value){try_encode};"));
+            } else if let Some(&size) = fixed_sizes.get(&v) {
+                emit_fixed_envelope(v, size, try_encode, true, w);
+            } else {
+                emit_interned_envelope(v, try_encode, w);
+            }
+            w.line(if has_dynamic {
+                "return Ok(());"
+            } else {
+                "Ok(())"
+            });
+            w.dedent();
+            w.line("}");
         } else {
-            w.line(&format!("{v} => encode_v{v}(buf, value),"));
+            let bytes = envelope::version_bytes(v as u64);
+            w.line(&format!("{v} => (size_hint_v{v}(value), &{bytes:?}),"));
         }
     }
-    w.line("_ => unreachable!(),");
-    w.dedent();
-    w.line("}");
-    w.line("let payload_len = buf.len() - payload_start;");
-    w.line("patch_envelope_length(buf, len_pos, payload_len);");
-    w.line("Ok(())");
+    if has_dynamic {
+        w.line("v => return Err(Error::UnsupportedVersion(v)),");
+        w.dedent();
+        w.line("};");
+        w.line("let len_pos = write_envelope_header_with_hint(buf, wire_version, hint);");
+        w.line("let payload_start = buf.len();");
+        w.line("match version {");
+        w.indent();
+        for vl in &schema.lineage.versions {
+            let v = vl.version;
+            if needs_patch(v) {
+                w.line(&format!("{v} => encode_v{v}(buf, value){try_encode},"));
+            }
+        }
+        w.line("_ => unreachable!(),");
+        w.dedent();
+        w.line("}");
+        w.line("let payload_len = buf.len() - payload_start;");
+        w.line("patch_envelope_length(buf, len_pos, payload_len);");
+        w.line("Ok(())");
+    } else {
+        w.line("v => Err(Error::UnsupportedVersion(v)),");
+        w.dedent();
+        w.line("}");
+    }
     w.dedent();
     w.line("}");
     w.blank();
@@ -345,6 +422,40 @@ fn emit_dispatcher(
     w.line(&format!("&[{}]", versions.join(", ")));
     w.dedent();
     w.line("}");
+}
+
+fn emit_interned_envelope(version: i128, try_encode: &str, w: &mut CodeWriter) {
+    let header = envelope::version_bytes(version as u64);
+    w.line(&format!(
+        "encode_interned_v{version}(buf, value, &{header:?}){try_encode};"
+    ));
+}
+
+fn emit_fixed_envelope(
+    version: i128,
+    size: u32,
+    try_encode: &str,
+    fallible: bool,
+    w: &mut CodeWriter,
+) {
+    let header = envelope::version_bytes(version as u64);
+    w.line(&format!(
+        "buf.reserve({size}usize.saturating_add({}));",
+        header.len()
+    ));
+    w.line(&format!("buf.extend_from_slice(&{header:?});"));
+    w.line("let payload_start = buf.len();");
+    w.line(&format!("encode_v{version}(buf, value){try_encode};"));
+    if fallible {
+        w.line(&format!("if buf.len() - payload_start != {size} {{"));
+        w.indent();
+        w.line(&format!("buf.truncate(payload_start - {});", header.len()));
+        w.line("return Err(Error::InvalidLength);");
+        w.dedent();
+        w.line("}");
+    } else {
+        w.line(&format!("assert_eq!(buf.len() - payload_start, {size}, \"Unexpected Pojoc fixed payload length\");"));
+    }
 }
 
 fn emit_default(default: &DefaultValue, schema: &ResolvedSchema) -> String {

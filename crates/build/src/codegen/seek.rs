@@ -350,7 +350,7 @@ fn emit_seek_dispatcher(
     ));
     w.indent();
     w.line("let mut pos = 0;");
-    w.line("let envelope = read_envelope(buf, &mut pos)?;");
+    w.line("let envelope = open_envelope(buf, &mut pos)?;");
     w.line("match envelope.version {");
     w.indent();
     for vl in &schema.lineage.versions {
@@ -404,7 +404,7 @@ fn emit_seek_all(
     ));
     w.indent();
     w.line("let mut pos = 0;");
-    w.line("let envelope = read_envelope(buf, &mut pos)?;");
+    w.line("let envelope = open_envelope(buf, &mut pos)?;");
     w.line("match envelope.version {");
     w.indent();
     for vl in &schema.lineage.versions {
@@ -718,7 +718,7 @@ fn emit_seek_subset(
     ));
     w.indent();
     w.line("let mut pos = 0;");
-    w.line("let envelope = read_envelope(buf, &mut pos)?;");
+    w.line("let envelope = open_envelope(buf, &mut pos)?;");
     let args: Vec<String> = (0..words).map(|i| format!("M{i}")).collect();
     let args = args.join(", ");
     w.line("match envelope.version {");

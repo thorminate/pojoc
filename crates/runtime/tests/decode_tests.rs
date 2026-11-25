@@ -65,7 +65,7 @@ fn roundtrip_envelope() {
     let payload_len = payload.len();
     patch_envelope_length(&mut buf, len_pos, payload_len);
     let mut pos = 0;
-    let env = read_envelope(&buf, &mut pos).unwrap();
+    let env = read_envelope(&buf, &mut pos, |_| Ok(None)).unwrap();
     assert_eq!(env.version, 1);
     assert_eq!(env.payload, payload);
     assert_eq!(pos, buf.len());
@@ -79,10 +79,14 @@ fn stream_of_envelopes() {
     write_envelope(&mut buf, 2, b"third");
 
     let mut messages: Vec<(u64, Vec<u8>)> = Vec::new();
-    read_envelope_stream(&buf, |version, payload| {
-        messages.push((version, payload.to_vec()));
-        Ok(())
-    })
+    read_envelope_stream(
+        &buf,
+        |_| Ok(None),
+        |version, payload| {
+            messages.push((version, payload.to_vec()));
+            Ok(())
+        },
+    )
     .unwrap();
 
     assert_eq!(messages.len(), 3);
@@ -155,12 +159,84 @@ fn unaligned_pod_arrays_decode_into_inline_and_heap_storage() {
 #[test]
 fn read_envelope_bad_length_errors() {
     let mut buf = Vec::new();
-    write_varint64(&mut buf, 1);
-    write_u32(&mut buf, 100);
+    let length_pos = write_envelope_header(&mut buf, 1);
+    patch_envelope_length(&mut buf, length_pos, 100);
     let mut pos = 0;
-    match read_envelope(&buf, &mut pos) {
+    match read_envelope(&buf, &mut pos, |_| Ok(None)) {
         Err(Error::InvalidLength) => {}
         Ok(e) => panic!("expected error, got envelope: {:?}", e),
         Err(e) => panic!("wrong error: {:?}", e),
     }
+}
+
+#[test]
+fn dynamic_envelope_length_stays_at_the_same_offset() {
+    let version = 128;
+    for size in [0, 127, 128, 16_383, 16_384, 2_097_152] {
+        let payload = vec![0xab; size];
+        let mut expected = vec![42];
+        expected.extend_from_slice(&[128, 1]);
+        expected.extend_from_slice(&(size as u32).to_le_bytes());
+        let expected_start = expected.len();
+        expected.extend_from_slice(&payload);
+        for hint in [0, size, 16_384] {
+            let mut frame = vec![42];
+            let length_pos = write_envelope_header_with_hint(&mut frame, &[128, 1], hint);
+            assert_eq!(frame.len(), expected_start);
+            frame.extend_from_slice(&payload);
+            assert_eq!(
+                patch_envelope_length(&mut frame, length_pos, size),
+                expected_start
+            );
+            assert_eq!(frame, expected);
+            let envelope = read_envelope(&frame, &mut 1, |_| Ok(None)).unwrap();
+            assert_eq!(envelope.version, version);
+            assert_eq!(envelope.payload, payload);
+        }
+    }
+}
+
+#[test]
+fn rejects_truncated_lengths_and_overflowing_version_tags() {
+    assert!(matches!(
+        read_envelope(&[1, 0x80], &mut 0, |_| Ok(None)),
+        Err(Error::UnexpectedEof)
+    ));
+    for last in [2, 0x80] {
+        let mut wire = vec![0x80; 9];
+        wire.push(last);
+        assert!(matches!(
+            read_envelope(&wire, &mut 0, |_| Ok(None)),
+            Err(Error::VarIntOverflow)
+        ));
+    }
+}
+
+#[test]
+fn full_u64_version_range_and_schema_bound_fixed_payload() {
+    let mut dynamic = Vec::new();
+    write_envelope(&mut dynamic, u64::MAX, b"hello");
+    assert_eq!(
+        read_envelope(&dynamic, &mut 0, |_| Ok(None))
+            .unwrap()
+            .version,
+        u64::MAX
+    );
+
+    let wire = [1, 0xca, 0xfe, 2, 0, 0, 0, 0];
+    let schema = |version| match version {
+        1 => Ok(Some(2)),
+        2 => Ok(None),
+        v => Err(Error::UnsupportedVersion(v)),
+    };
+    assert!(matches!(
+        read_envelope(&[3], &mut 0, schema),
+        Err(Error::UnsupportedVersion(3))
+    ));
+    let mut pos = 0;
+    let fixed = read_envelope(&wire, &mut pos, schema).unwrap();
+    assert_eq!(fixed.payload, [0xca, 0xfe]);
+    assert_eq!(pos, 3);
+    assert_eq!(read_envelope(&wire, &mut pos, schema).unwrap().version, 2);
+    assert_eq!(pos, wire.len());
 }

@@ -58,7 +58,7 @@ fn nested_selectors_match_decoding_across_versions() {
             if version == 1 {
                 // Corrupt a batched legacy array length ahead of the target.
                 let mut corrupt = data.clone();
-                let envelope = schema::runtime::read_envelope(&data, &mut 0).unwrap();
+                let envelope = schema::open_envelope(&data, &mut 0).unwrap();
                 let mut pos = 0;
                 schema::runtime::skip_intern_table(envelope.payload, &mut pos).unwrap();
                 schema::runtime::read_u8(envelope.payload, &mut pos).unwrap();
@@ -73,9 +73,14 @@ fn nested_selectors_match_decoding_across_versions() {
             }
 
             let x = value.transform.position.x.to_le_bytes();
+            let mut frame_end = 0;
+            let envelope = schema::open_envelope(&data, &mut frame_end).unwrap();
+            let payload_start = frame_end - envelope.payload.len();
+            let length_pos = payload_start - 4;
             let end = data.windows(x.len()).position(|bytes| bytes == x).unwrap() + x.len();
             data.truncate(end);
-            schema::runtime::patch_envelope_length(&mut data, 1, end - 5);
+            let payload_start =
+                schema::runtime::patch_envelope_length(&mut data, length_pos, end - payload_start);
             assert_eq!(
                 pluck!(schema, &data, transform.position.x).unwrap(),
                 value.transform.position.x
@@ -83,7 +88,8 @@ fn nested_selectors_match_decoding_across_versions() {
             assert!(schema::decode(&data).is_err());
 
             data.pop();
-            schema::runtime::patch_envelope_length(&mut data, 1, end - 6);
+            let payload_len = data.len() - payload_start;
+            schema::runtime::patch_envelope_length(&mut data, length_pos, payload_len);
             assert!(pluck!(schema, &data, transform.position.x).is_err());
         }
     }

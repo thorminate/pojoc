@@ -1,6 +1,6 @@
 use super::{codec_error, read_stream_varint};
 use crate::{
-    Error, PojocResult, patch_envelope_length, read_array_len, read_u8, read_varint64,
+    Error, PojocResult, patch_envelope_length, read_array_len, read_u8, read_u32, read_varint64,
     skip_intern_table, skip_varint64, write_array_len,
 };
 use std::io::{self, BufRead, Read};
@@ -33,7 +33,7 @@ fn wire_varint(frame: &mut io::Take<&mut impl BufRead>) -> io::Result<([u8; 10],
     }
     let mut first = [0];
     frame.read_exact(&mut first)?;
-    match read_stream_varint(frame, first[0]) {
+    match read_stream_varint::<10>(frame, first[0]) {
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && frame.limit() == 0 => {
             Err(codec_error(Error::UnexpectedEof))
         }
@@ -242,7 +242,7 @@ impl HybridStream {
                     payload_len = payload_len
                         .checked_add(array.len - 1)
                         .ok_or(Error::InvalidLength)?;
-                    self.insertions.push((start, slot));
+                    self.insertions.push((start - payload_start, slot));
                     continue;
                 }
             };
@@ -270,16 +270,19 @@ impl HybridStream {
         transcode(&self.fields, reply).map_err(codec_error)?;
         let mut length_pos = 0;
         read_varint64(reply, &mut length_pos).map_err(codec_error)?;
+        let mut payload_start = length_pos;
+        read_u32(reply, &mut payload_start).map_err(codec_error)?;
         let payload_len = self
-            .locate_arrays(reply, length_pos + 4, &layouts[1])
+            .locate_arrays(reply, payload_start, &layouts[1])
             .map_err(codec_error)?;
-        patch_envelope_length(reply, length_pos, payload_len);
+        let payload_start = patch_envelope_length(reply, length_pos, payload_len);
 
         if self.insertions.is_empty() {
             return output.write_all(reply);
         }
         let mut pos = 0;
-        for (index, &(offset, slot)) in self.insertions.iter().enumerate() {
+        for (index, &(relative, slot)) in self.insertions.iter().enumerate() {
+            let offset = payload_start + relative;
             let suffix = if index + 1 == self.insertions.len() {
                 &reply[offset + 1..]
             } else {

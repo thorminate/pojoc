@@ -1,0 +1,435 @@
+syntax = "proto3";
+
+package edgebench;
+
+// The latest logical Edge shape and its imported Player. Pojoc-specific
+// constraints, quantization, interning, deltas, and version upgrades are not
+// part of this Protobuf schema. Fixed-length collections keep their elements.
+message Edge {
+  sint64 u8_to_i64 = 1;
+  float i64_to_f32 = 2;
+  sint64 i64_min = 3;
+  uint32 varint32_max = 4;
+  uint64 varint64_min = 5;
+  float f32_nan = 6;
+  float f32_inf = 7;
+  double f64_neg_inf = 8;
+  optional string nullified_str = 9;
+  string spaces_str = 10;
+  bytes fixed_str_min = 11;
+  uint32 constrained_count = 12;
+  repeated string constrained_tags = 13;
+  string constrained_label = 14;
+  repeated string empty_arr = 15;
+  repeated sint32 fixed_arr_empty = 16;
+  map<sint32, uint32> array_to_map = 17;
+  repeated sint32 delta_positions = 18;
+  repeated sint64 delta_i64_seq = 19;
+  repeated uint64 delta_u64_seq = 20;
+  repeated uint32 delta_u16_seq = 21;
+  repeated sint32 delta_i8_seq = 22;
+  repeated uint32 delta_single = 23;
+  bytes delta_fixed_u8 = 24;
+  repeated sint32 delta_fixed_empty = 25;
+  repeated sint32 legacy_positions = 26;
+  repeated float plain_f32_arr = 27;
+  bytes plain_u8_arr = 28;
+  repeated sint32 plain_i8_arr = 29;
+  MiddleLayer root_struct = 30;
+  BoxI32 generic_box = 31;
+  PairI32String generic_pair = 32;
+  TripleI32StringBool generic_triple = 33;
+  FlagBox generic_flag_box = 34;
+  repeated BlobEntry lazy_annotated_blob = 35;
+  NestedLeaf lazy_leaf = 36;
+  NumericBounds bounds_enum = 37;
+  Payload action = 38;
+  repeated Payload action_log = 39;
+  Payload deferred_action = 40;
+  float angle_deg_v2 = 41;
+  float normalized_v5 = 42;
+  float vfloat_256_steps = 43;
+  float vfloat_257_steps = 44;
+  repeated float vfloat_arr = 45;
+  repeated float fixed_vfloat_arr = 46;
+  Player updated_imported_player = 47;
+  uint64 newly_added_optional = 48;
+  repeated uint32 u32_delta_seq = 49;
+  I64List lazy_delta_log = 50;
+  float heal_radius = 51;
+  map<string, string> basic_map = 52;
+  repeated IntFloatEntry fixed_map_empty = 53;
+  repeated StringI64Entry fixed_map_populated = 54;
+  map<string, IntBoolMapList> nested_map = 55;
+  StringValue generic_mono_v3 = 56;
+  repeated SensorFrame sensor_log = 57;
+  repeated StringI64ListEntry delta_value_map = 58;
+  ControlSignal control = 59;
+  map<string, Payload> control_map = 60;
+  map<string, I32List> lazy_sensor_dump = 61;
+  map<string, float> vfloat_map = 62;
+  optional uint32 opt_u8 = 63;
+  optional sint32 opt_i16 = 64;
+  optional uint32 opt_u32 = 65;
+  optional sint64 opt_i64 = 66;
+  optional float opt_f32 = 67;
+  optional double opt_f64 = 68;
+  optional bool opt_bool = 69;
+  optional bytes opt_fixed_str = 70;
+  optional bytes opt_bitset = 71;
+  bytes system_perms = 72;
+  uint32 legacy_hw_flags = 73;
+  I32List opt_delta_arr = 74;
+  DuoStringI32 generic_duo_v4 = 75;
+  repeated ControlSignal control_log = 76;
+  ControlSignal lazy_pending_signal = 77;
+  optional float opt_vfloat = 78;
+  DeepComplexWrapper ultimate_boss_structure = 79;
+  StringValue generic_mono_v5 = 80;
+  Payload final_action = 81;
+  StringList lazy_audit_log = 82;
+  string interned_label = 83;
+  repeated string interned_tags = 84;
+  LinkedNode linked_list = 85;
+  uint32 seek_tag = 86;
+  string seek_name = 87;
+  optional string seek_note = 88;
+  optional bytes seek_blob = 89;
+  string seek_label = 90;
+  EdgeSeekTransform transform = 91;
+  EdgeTree tree = 92;
+  EdgePing ping = 93;
+  StringValue interned_generic = 94;
+  repeated uint32 packed_varints = 95;
+  UnionWidth union_width_probe = 96;
+}
+
+enum NumericBounds {
+  UNKNOWN = 0;
+  RESET_ZERO = 1;
+  MAX_U8 = 2;
+  MIN_I64 = 3;
+  MAX_I64 = 4;
+  EXTRA_VARIANT = 5;
+}
+
+message Player {
+  enum Status {
+    STATUS_UNKNOWN = 0;
+    ALIVE = 1;
+    DEAD = 2;
+    DOWNED = 3;
+    DISQUALIFIED = 4;
+    SPECTATING = 5;
+  }
+
+  enum Class {
+    CLASS_UNKNOWN = 0;
+    WARRIOR = 1;
+    MAGE = 2;
+    ASSASSIN = 3;
+    NECROMANCER = 4;
+    PALADIN = 5;
+  }
+
+  enum Region {
+    REGION_UNKNOWN = 0;
+    NORTH = 1;
+    SOUTH = 2;
+    EAST = 3;
+    WEST = 4;
+    CENTRAL = 5;
+    VOID = 6;
+  }
+
+  double player_id = 1;
+  float level = 2;
+  Status status = 3;
+  Class class = 4;
+  Region region = 5;
+  repeated string inventory = 6;
+  string callsign = 7;
+  Stats stats = 8;
+  repeated string hotbar = 9;
+  bytes session_token = 10;
+  repeated float coordinates = 11;
+  Vector3 position = 12;
+  repeated sint32 kill_death = 13;
+  repeated string tags = 14;
+  Transform transform = 15;
+  repeated string recent_zones = 16;
+  repeated float velocity = 17;
+  bytes status_code = 18;
+  bool is_nauseous = 19;
+  bytes guild_tag = 20;
+  repeated float spawn_point = 21;
+  repeated uint32 achievement_ids = 22;
+  bytes active_perks = 23;
+  bytes account_flags = 24;
+  repeated StringI32Entry loadout = 25;
+  repeated uint32 party_members = 26;
+  repeated float last_position = 27;
+}
+
+message Stats {
+  sint32 strength = 1;
+  sint32 agility = 2;
+  sint32 intelligence = 3;
+  sint32 endurance = 4;
+  sint32 charisma = 5;
+  float resistance = 6;
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+message AABB {
+  float min_x = 1;
+  float min_y = 2;
+  float max_x = 3;
+  float max_y = 4;
+}
+
+message Transform {
+  Vector3 position = 1;
+  AABB bounds = 2;
+}
+
+message NestedLeaf {
+  string leaf_val = 1;
+  sint32 leaf_numeric = 2;
+  float leaf_rotation = 3;
+}
+
+message MiddleLayer {
+  NestedLeaf leaf = 1;
+  repeated NestedLeaf leaf_arr = 2;
+  NestedLeaf leaf_opt = 3;
+  float weight = 4;
+  NestedLeaf secondary_leaf = 5;
+}
+
+message BoxI32 {
+  sint32 value = 1;
+  string label = 2;
+}
+
+message PairI32String {
+  sint32 first = 1;
+  string second = 2;
+}
+
+message TripleI32StringBool {
+  sint32 first = 1;
+  string second = 2;
+  bool third = 3;
+}
+
+message FlagBox {
+  bool value = 1;
+}
+
+message StringValue {
+  string value = 1;
+}
+
+message DuoStringI32 {
+  string value = 1;
+  optional sint32 secondary = 2;
+}
+
+message UnknownVariant {
+  uint32 discriminant = 1;
+  bytes data = 2;
+}
+
+message Payload {
+  oneof kind {
+    UnknownVariant unknown = 1;
+    Move move = 2;
+    Attack attack = 3;
+    Heal heal = 4;
+    Despawn despawn = 5;
+    string message = 6;
+    sint32 bounded = 7;
+    Bounded bounded_struct = 8;
+    Rich rich = 9;
+  }
+}
+
+message Move {
+  sint32 dx = 1;
+  sint32 dy = 2;
+}
+
+message Attack {
+  uint32 target_id = 1;
+  float damage = 2;
+  float knockback = 3;
+}
+
+message Heal {
+  uint32 target_id = 1;
+  float amount = 2;
+  bool overheal = 3;
+  float splash_radius = 4;
+}
+
+message Despawn {
+  uint32 entity_id = 1;
+}
+
+message Bounded {
+  sint32 value = 1;
+}
+
+message Rich {
+  string note = 1;
+  bytes blob = 2;
+}
+
+message ControlSignal {
+  oneof kind {
+    UnknownVariant unknown = 1;
+    Ping ping = 2;
+    Pong pong = 3;
+    Disconnect disconnect = 4;
+  }
+}
+
+message Ping {}
+
+message Pong {
+  uint32 latency_ms = 1;
+}
+
+message Disconnect {
+  uint32 reason_code = 1;
+}
+
+message SensorFrame {
+  repeated sint32 readings = 1;
+  repeated uint64 sample_ids = 2;
+  float calibration = 3;
+}
+
+message I32List {
+  repeated sint32 values = 1;
+}
+
+message I64List {
+  repeated sint64 values = 1;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message IntBoolMap {
+  map<sint32, bool> values = 1;
+}
+
+message IntBoolMapList {
+  repeated IntBoolMap values = 1;
+}
+
+message BlobEntry {
+  uint64 id = 1;
+  bytes data = 2;
+}
+
+message IntFloatEntry {
+  sint32 key = 1;
+  float value = 2;
+}
+
+message StringI64Entry {
+  string key = 1;
+  sint64 value = 2;
+}
+
+message StringI64ListEntry {
+  string key = 1;
+  repeated sint64 value = 2;
+}
+
+message StringI32Entry {
+  string key = 1;
+  sint32 value = 2;
+}
+
+message NullableIntEntry {
+  string key = 1;
+  optional sint32 value = 2;
+}
+
+message MatrixCell {
+  repeated NullableIntEntry labels = 1;
+  optional bytes text = 2;
+}
+
+message MatrixRow {
+  repeated MatrixCell values = 1;
+}
+
+message DeepComplexWrapper {
+  repeated MatrixRow matrix = 1;
+  repeated sint64 frame_deltas = 2;
+  float scale = 3;
+}
+
+message LinkedNode {
+  sint32 value = 1;
+  LinkedNode next = 2;
+}
+
+message EdgeSeekPoint {
+  uint32 x = 1;
+  string label = 2;
+  optional string prefix = 3;
+}
+
+message EdgeSeekTransform {
+  string description = 1;
+  EdgeSeekPoint position = 2;
+  bytes tail = 3;
+}
+
+message EdgeTree {
+  sint32 value = 1;
+  EdgeTree left = 2;
+  EdgeTree right = 3;
+}
+
+message EdgePing {
+  sint32 count = 1;
+  EdgePong other = 2;
+}
+
+message EdgePong {
+  sint32 count = 1;
+  EdgePing other = 2;
+}
+
+// All known UnionWidth variants carry a sint32, so keep the variant number
+// beside that value. 1 through 3 are V0 through V2 and 4 through 263 are W0
+// through W259. Preserve opaque payloads for the unknown case separately.
+message UnionWidth {
+  WidthUnion x = 1;
+}
+
+message WidthUnion {
+  oneof kind {
+    WidthValue known = 1;
+    UnknownVariant unknown = 2;
+  }
+}
+
+message WidthValue {
+  uint32 variant = 1;
+  sint32 value = 2;
+}

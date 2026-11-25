@@ -1,9 +1,8 @@
 # Pojoc Schema Reference
 
-A `.pojoc` file describes a versioned binary format. The compiler turns it into
-Rust encode/decode/size-hint code where the generated struct always reflects the
-**latest** version, and per-version functions translate to and from every
-historical wire layout — so old data keeps decoding as the schema evolves.
+A `.pojoc` file describes a versioned binary format. The compiler generates
+Rust or TypeScript codecs for the same wire format. Both decode historical
+messages into the latest version's shape and can encode for a selected version.
 
 This is a reference for the schema language itself. For benchmarks and setup see
 [`README.md`](../README.md).
@@ -67,6 +66,10 @@ schema Player {
 | Bool          | `bool`                 | `boolean`                                 |
 | String        | `string`               | `str`                                     |
 
+Rust uses the corresponding numeric types, `bool`, and borrowed `&str`.
+TypeScript uses `bigint` for `i64` and `u64`, `number` for the remaining
+numeric primitives, `boolean` for `bool`, and `string` for `string`.
+
 ### Varints
 
 ```pojoc
@@ -74,7 +77,9 @@ count: varint32 = 0     // 1–5 bytes, value range of u32
 big:   varint64 = 0     // 1–10 bytes, value range of u64
 ```
 
-LEB128-style variable-length integers. Smaller values take fewer bytes, is slower to encode/decode however.
+LEB128-style variable-length integers. Smaller values take fewer bytes.
+Rust represents them as `u32` and `u64`. TypeScript represents them as `number`
+and `bigint`, respectively.
 
 ### Fixed-length string
 
@@ -82,7 +87,8 @@ LEB128-style variable-length integers. Smaller values take fewer bytes, is slowe
 code: string(8) = "00000000"   // exactly 8 bytes on the wire, no length prefix
 ```
 
-Decodes to `[u8; N]`. The default literal's byte length must equal `N`.
+Decodes to `[u8; N]` in Rust and `Uint8Array` in TypeScript. The default
+literal's UTF-8 byte length must equal `N`.
 
 ### Ranged / quantized floats (`vfloat`)
 
@@ -90,9 +96,9 @@ Decodes to `[u8; N]`. The default literal's byte length must equal `N`.
 angle: vfloat(min: 0, max: 360, step: 0.1) = 0.0
 ```
 
-Packs a float in `[min, max]` at resolution `step` into the fewest bytes the
-range needs (`(max-min)/step` steps → `u16` or `u32` backing). Decodes to `f32`.
-Lossy to `step`; ideal for angles, normalized values, positions.
+Packs a float in `[min, max]` at resolution `step` into a `u16` or `u32` on
+the wire. Decodes to `f32` in Rust and `number` in TypeScript. Useful for
+angles, normalized values, and positions where rounding to `step` is acceptable.
 
 ### Arrays
 
@@ -110,6 +116,12 @@ frames:   [u8](delta, 8)     = [..0]         // fixed-length delta array
   only (`u8`..`u64`, `i8`..`i64`).
 - `[T](delta, N)` — fixed-length delta array.
 
+In TypeScript, arrays of fixed-width integers and floats use the matching
+typed array, such as `Uint32Array` for `[u32](delta)` and `BigInt64Array` for
+`[i64]`. Other element types use `Array<T>`, such as `Array<bigint>` for
+`[varint64]`. A fixed-length array uses the same TypeScript type and the
+encoder checks its length.
+
 ### Tuples
 
 ```pojoc
@@ -118,7 +130,8 @@ loadout:     [(string, i32)](4)   = [..("", 0)]
 ```
 
 Heterogeneous fixed-arity groups. A tuple of only fixed-width elements is itself
-fixed-width on the wire.
+fixed-width on the wire. In TypeScript, `coordinates` has type
+`[number, number]` and `loadout` has type `Array<[string, number]>`.
 
 ### Maps
 
@@ -130,6 +143,10 @@ scores:  map<string, i64>(4)       = {"ok": -1, "bad": 0, "x": 1, "y": 2}
 - `map<K, V>` — variable-size, length-prefixed.
 - `map<K, V>(N)` — fixed `N` entries.
 
+Rust uses `PojocMap<K, V>` and `PojocFixedMap<K, V, N>`, respectively.
+TypeScript uses `Map<K, V>` for the variable-size form and `Array<[K, V]>`
+for the fixed-size form.
+
 Values (and keys) may themselves be any type, including nested maps/arrays and
 unions: `map<string, [map<i32, bool>]>`.
 
@@ -140,8 +157,15 @@ nickname: string?
 level:    i32?
 ```
 
-`T?` is present-or-absent, packed into a per-message optional-flags header.
-Decodes to `Option<T>`.
+`T?` can hold a value or be absent. Optional record fields share a presence
+bitmap. Optional values inside collections or tuples carry their own presence
+byte.
+
+Rust uses `Option<T>`, with `None` for absence. TypeScript uses `T | null`,
+with `null` for absence. The generated properties are required, so a decoded
+TypeScript object always has `nickname: string | null` and
+`level: number | null`. You can omit either property when calling `create()`
+to fill in its schema default.
 
 ### Nested declared types
 
@@ -162,19 +186,16 @@ tags:   [string](min: 0, max: 5)     = []
 label:  string(min: 1, max: 20)      = "x"
 ```
 
-Bounds a numeric value, or an array/map/string's element **count**/byte
-**length**. Enforced on both encode and decode — violating a bound is a
-runtime error (`Error::ConstraintViolation`), not a silent clamp.
+`min` and `max` bound numeric values, UTF-8 string byte lengths, and array or
+map element counts. On encode and decode, Rust returns
+`Error::ConstraintViolation` and TypeScript throws `RangeError` when a value
+falls outside its bounds.
 
-- On numbers: bounds the value itself.
-- On `string`: bounds the byte length.
-- On `[T]` / `map<K, V>`: bounds the element count.
-- Composes with everything else a type supports, e.g. `[string(min: 1, max: 20)]`.
+Constraints can be nested. `[string(min: 1, max: 20)]` bounds the byte length
+of each string in the array.
 
-> The generated `Default` impl uses each field's declared `= value` default
-> (falling back to the type's zero value for a field with none). A
-> constrained field's default — declared or zero — must itself satisfy the
-> constraint, or encoding `T::default()` fails with `Error::ConstraintViolation`.
+The field's default must satisfy its constraints to be encoded. See
+[Defaults](#defaults) for how each target fills in fields.
 
 ### `box<T>` — recursive types
 
@@ -185,17 +206,14 @@ type Node {
 }
 ```
 
-A type that references itself — directly, or through a cycle of types — must
-go through `box<T>`, which heap-allocates the field (`Box<T>` in the
-generated struct). Referencing a type from itself **without** `box`, plain or
-as `T?`, is a compile-time error, since the generated struct would otherwise
-need infinite size.
+A cycle of direct struct fields must go through `box<T>` so the Rust struct
+has a finite size. Rust represents `box<T>` as `Box<T>`. TypeScript uses `T`
+as the field type, so `next` in this example is `Node | null`.
 
 - `box<T>` alone doesn't terminate a recursive chain — pair it with `?` (as
   above) so the chain can end.
 - Composes with everything else: `box<T>?`, `[box<T>]`, `Mono<box<T>>`, etc.
-- On the wire, `box<T>` is transparent — it costs nothing beyond `T` itself;
-  it only changes the Rust representation.
+- `box<T>` has the same wire layout as `T`.
 
 ---
 
@@ -213,11 +231,12 @@ enum Status {
 }
 ```
 
-Wire values are assigned by declaration order, starting at 1 — every enum gets
-a compiler-injected `Unknown = 0` variant ahead of your declared ones, which
-is the `#[default]` and the value `T::default()` produces. `Unknown` is a
-reserved variant name; declaring your own is a compile-time error. Decoding an
-unrecognized discriminant is an error.
+Wire values are assigned by declaration order, starting at 1. Every enum gets
+a compiler-injected `Unknown = 0` variant, which is also the type's default
+value. `Unknown` is reserved. Decoding an unrecognized discriminant is an error.
+
+Rust generates an enum. TypeScript generates a union of numeric literals and
+a named object with the same values, so `Status.Alive` has the value `1`.
 
 The wire discriminant is a fixed-width unsigned integer — `u8` for up to 256
 total variants (including the injected `Unknown`), `u16` up to 65536, `u32`
@@ -241,7 +260,8 @@ type Stats {
 type Empty {}   // zero-field structs are allowed
 ```
 
-Struct fields follow the same type/default rules as root fields.
+Struct fields follow the same type and default rules as root fields. Rust
+generates a struct and TypeScript exports a plain object type.
 
 ### `union` (tagged)
 
@@ -252,10 +272,11 @@ union Payload {
 }
 ```
 
-A discriminant + length-prefixed payload. An unrecognized discriminant is
-preserved losslessly as an `Unknown { discriminant, data }` variant (so a proxy
-running an older schema can forward newer variants unchanged). Payloads are
-typically structs.
+A wire discriminant and a length-prefixed payload. Both targets preserve an
+unrecognized discriminant and its payload bytes so proxies can forward them.
+Rust uses enum variants, including `Unknown { discriminant, data }`. TypeScript
+uses a discriminated union with cases such as `{ kind: "Move", value: payload }`
+and `{ kind: "Unknown", discriminant, data }`, where `data` is a `Uint8Array`.
 
 The discriminant is a fixed-width unsigned integer, same as `enum`'s — but
 where an enum collapses to a single wire representation using its *latest*
@@ -292,16 +313,17 @@ bitset SystemPrivileges {
 }
 ```
 
-A packed set of boolean flags (1/2/4 bytes by flag count). Generated code gets
-getters/setters/`with_*` builders and `|` `&` `!` operators. See
-[Defaults](#defaults) for bitset default syntax.
+A packed set of boolean flags (1/2/4 bytes by flag count). Rust generates
+getters, setters, `with_*` builders, and `|`, `&`, `!` operators. TypeScript
+uses a `Uint8Array` and exports `SystemPrivilegesBits` with the bit index of
+each flag. See [Defaults](#defaults) for bitset default syntax.
 
 ---
 
 ## Generics
 
-Templates are monomorphized per distinct instantiation — each `(template, args)`
-becomes its own generated struct.
+Templates are monomorphized per distinct instantiation. Each `(template, args)`
+becomes its own Rust struct or TypeScript object type.
 
 ```pojoc
 type Box<T>          { value: T }
@@ -314,7 +336,7 @@ fields {
 }
 ```
 
-- `as Alias` names the generated struct instead of using the auto-mangled name.
+- `as Alias` sets the generated type's name.
 - Generics compose with everything: `[Box<i32>]`, `map<string, Box<bool>>`, etc.
 
 Generics also evolve (see [Schema evolution](#schema-evolution)), including
@@ -324,11 +346,12 @@ crossing template names and dropping a type parameter with `_`.
 
 ## Defaults
 
-A field may declare a default with `= value`. Defaults fill in fields that are
-missing when decoding older data, and also back the generated `Default` impl
-— `T::default()` and a freshly-decoded old-version message use the same
-declared value. A field with no declared default zero-inits instead (see the
-[Constraints](#constraints-minmax) note above).
+A field may declare a default with `= value`. Both codecs fill in missing
+fields when decoding older data. Rust also uses these defaults in `T::default()`.
+TypeScript's `create()` fills in omitted root fields, so `create({ name: "Ada" })`
+sets `name` and fills in the remaining fields. A field without a declared
+default uses its type's default value. This is `None` in Rust and `null` in
+TypeScript for optional fields.
 
 Retyping a field in place (`~ field: NewType`, with or without a rename) has
 no syntax to supply a new default alongside the new type, since the old
@@ -370,8 +393,9 @@ max_hp: const f32  = 100.0
 verified: const bool = true
 ```
 
-A compile-time constant baked into the generated type as an associated `const`
-(not encoded on the wire). Holds primitive values only.
+A primitive compile-time constant that takes up no bytes on the wire. Rust
+generates an associated `const`. TypeScript exports root constants in
+`constants` and named type constants in `<Type>Constants`.
 
 ### `lazy`
 
@@ -380,13 +404,13 @@ audit_log: lazy [string]?
 big_blob:  lazy [u8] = []
 ```
 
-The field's bytes are **skipped** on decode and kept as a raw slice; you decode
-them on demand via `LazyView::get()`. Use it for large, rarely-inspected
-payloads to get near-zero-copy decode speed for the fields that don't need eager
-decoding.
+Rust `decode()` retains the field's bytes for on-demand decoding through
+`LazyView::get()`. TypeScript `decode()` materializes the field as its normal
+value. For the latest version, TypeScript `open(bytes)` reads top-level
+fields on demand, including fields declared `lazy`.
 
 > A `lazy` field **added in a `diff`** must be optional (`?`), so that older
-> messages lacking it decode to `None`.
+> messages lacking it decode as absent.
 
 ### `seekable`
 
@@ -396,8 +420,9 @@ name: seekable string  = ""
 blob: seekable lazy [u8] = []
 ```
 
-Generates accessors that pull this one field out of an encoded message without
-decoding the rest:
+Both targets generate accessors that can read individual fields from encoded
+bytes. Rust provides a dedicated accessor per field and macros for reading
+subsets.
 
 ```rust
 let tag = seek_tag(&buf)?;                    // one field, dispatched on the envelope version
@@ -410,7 +435,12 @@ version's cast and, for a message predating the field, its declared default. A
 per-version `seek_v<N>_<field>` is also generated, taking the payload and a start
 offset.
 
-#### Plucking a subset
+In TypeScript, use `seek(bytes, "tag")`. It returns the same field value as
+`decode(bytes).tag`. For arbitrary top-level fields, use `open(bytes).field`
+or `select(["tag", "name"])(bytes)`. `open` and `select` decode the full
+message for historical versions.
+
+#### Plucking a subset in Rust
 
 `seek_all` has to reach the *last* seekable field before it can return, so on a
 schema with many of them it costs far more than the few you wanted. Each schema
@@ -445,8 +475,8 @@ one is hoisted to the front of the variable region so reaching it crosses only
 other seekable fields. Marking every field can make the generated code grow
 quadratically.
 
-- Combines with `lazy`, in that order (`seekable lazy T`): you get the raw slice
-  without decoding it.
+- Combines with `lazy`, in that order (`seekable lazy T`). Rust returns a
+  `LazyView`. TypeScript decodes the selected field.
 - Toggling a root field in a later version relayouts **only that version**. Messages
   already written under earlier versions are unaffected.
 - `~ field: T` in a diff **clears** it, like `lazy`. Restate `seekable` to keep
@@ -474,6 +504,13 @@ fields {
 let x = pluck!(schema, &buf, movement.velocity.x)?;
 ```
 
+```ts
+const x = seek(bytes, "movement.velocity.x");
+```
+
+TypeScript infers the return type for a top-level field name. Dotted paths
+use the `unknown` return type.
+
 Mark every component of the path `seekable`. Intermediate fields must be
 required, eager fields of a local named struct type. The selected leaf can
 itself be optional or lazy. Markers inside named structs preserve declaration
@@ -481,9 +518,9 @@ order on the wire. The reader skips the prefix at each level and returns as
 soon as it reads the leaf. Historical layouts that require conversion or a
 missing-field default can fall back to the version decoder.
 
-Tuples can mix root and dotted selectors. Calls with dotted selectors read each
-path separately and preserve the requested tuple order. Root-only calls use
-one const-mask walk.
+Rust `pluck!` can mix root and dotted selectors. Calls with dotted selectors
+read each path separately and preserve the requested tuple order. Root-only
+calls use one const-mask walk.
 
 ### `intern`
 
@@ -503,8 +540,7 @@ per-struct) and referenced elsewhere by index — essentially free compression
 whenever the same strings recur, e.g. tags, labels, or enum-like string values
 drawn from a small pool.
 
-- Decodes to the same `&'buf str` as a plain string — no API difference at the
-  call site.
+- Decodes to `&str` in Rust and `string` in TypeScript, just like `string`.
 - Encoding does a hash-map lookup-or-insert per interned value (a small CPU
   cost); decoding a table index is _cheaper_ than reading a plain string, so
   `intern` is close to a pure win whenever a value repeats.
@@ -518,11 +554,10 @@ drawn from a small pool.
 
 ## Schema evolution
 
-The generated struct is always the latest version. Each historical version gets
-`encode_vN` / `decode_vN` functions, and the compiler maps every field across
-versions by a stable identity (so a field survives renames and retypes). Two
-mechanisms drive evolution: `diff` for the root message, and `extends` for named
-types.
+Both targets decode into the latest shape. Rust's `encode_for_version` and
+TypeScript's `encodeForVersion` write an envelope for a selected version.
+The compiler tracks each field across renames and retypes. Use `diff` to evolve
+the root message and `extends` to evolve a named type.
 
 ### `diff` — evolving the root message
 
@@ -614,9 +649,10 @@ schema Edge {
 }
 ```
 
-Imports are compiled as nested modules. The `@N` pins which version of the
-imported message the field expects; re-pin it in a later `diff` to advance it
-(`~ owner -> new_owner: Player@6`).
+Rust generates nested modules for imports. TypeScript emits the imported
+types and codec functions into the same generated module. The `@N` pins the
+version of the imported message used on the wire. Re-pin it in a later `diff`
+to advance it (`~ owner -> new_owner: Player@6`).
 
 ---
 
@@ -630,7 +666,7 @@ type Stats { ... }
 ```
 
 `///` doc comments attach to the following declaration (schema, type, field,
-variant) and appear as `///` docs in the generated code.
+variant) and appear as `///` docs in the generated Rust code.
 
 ---
 
@@ -638,6 +674,7 @@ variant) and appear as `///` docs in the generated code.
 
 ```sh
 pojoc build <input.pojoc> --out-dir out/   # generate <stem>.rs (default out dir: out/)
+pojoc build <input.pojoc> --target typescript --out-dir out/   # generate <stem>.ts
 pojoc check <input.pojoc>                  # validate without writing output
 pojoc show  <input.pojoc>                  # print the latest version, all diffs applied
 ```
@@ -648,6 +685,13 @@ folded in, so you can read the current shape without replaying the history by
 hand. It prints declared enums, bitsets, unions and types followed by the root
 `fields` block; pass `--fields-only` to skip the declared types.
 
-`build` and `check` accept `--verbose`. In a build script, prefer
-`pojoc_build::compile_dir("schemas", &out_dir)` (see the README's
-[setup section](../README.md#using-it-in-your-project)).
+`build` and `check` accept `--verbose`. A Cargo build script can use
+`pojoc_build::compile_dir` for Rust or `pojoc_build::compile_typescript` for
+TypeScript.
+
+The TypeScript target imports the `pojoc` npm runtime by default. Use
+`--standalone` to embed the runtime, `--runtime portable|bun|node` to select
+a runtime profile, or `--compact` to omit dedicated seek code for historical
+layouts. Historical seeks fall back to decoding when a dedicated path is
+unavailable. See the [TypeScript runtime guide](../packages/runtime/README.md)
+for setup and examples.

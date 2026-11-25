@@ -262,52 +262,37 @@ impl ResolvedTypeRef {
     }
 }
 
+mod primitive;
+pub(crate) use primitive::primitive_info;
+
 pub fn normalize_type(name: &str) -> &str {
     match name {
-        "byte" | "uchar" | "u8" => "u8",
-        "ushort" | "u16" => "u16",
-        "uint" | "u32" => "u32",
-        "ulong" | "u64" => "u64",
-        "char" | "i8" => "i8",
-        "short" | "i16" => "i16",
-        "int" | "i32" => "i32",
-        "long" | "i64" => "i64",
-        "float" | "f32" => "f32",
-        "double" | "f64" => "f64",
-        "varint32" => "varint32",
-        "varint64" => "varint64",
-        "bool" | "boolean" => "bool",
-        "string" | "str" => "string",
+        "byte" | "uchar" => "u8",
+        "ushort" => "u16",
+        "uint" => "u32",
+        "ulong" => "u64",
+        "char" => "i8",
+        "short" => "i16",
+        "int" => "i32",
+        "long" => "i64",
+        "float" => "f32",
+        "double" => "f64",
+        "boolean" => "bool",
+        "str" => "string",
         other => other,
     }
 }
 
-// eligible for the bytemuck bulk array fast path (read_pod_array /
-// write_pod_array). excludes bool since not every byte is a valid bool.
+// Packed numeric arrays can bulk-cast all bit patterns. Bool cannot.
 pub fn is_bulk_castable_scalar(name: &str) -> bool {
-    matches!(
-        normalize_type(name),
-        "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "f32" | "f64"
-    )
+    let name = normalize_type(name);
+    name != "bool"
+        && primitive_info(name)
+            .is_some_and(|primitive| matches!(primitive.wire_size, WireSize::Fixed(_)))
 }
 
 pub fn is_primitive(name: &str) -> bool {
-    matches!(
-        normalize_type(name),
-        "u8" | "u16"
-            | "u32"
-            | "u64"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "f32"
-            | "f64"
-            | "varint32"
-            | "varint64"
-            | "bool"
-            | "string"
-    )
+    primitive_info(name).is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -696,77 +681,39 @@ pub fn type_info(ty: &ResolvedTypeRef) -> TypeInfo {
 }
 
 fn scalar_info(name: &str) -> TypeInfo {
-    macro_rules! fixed {
-        ($size:expr, $rust:expr, $read:expr, $write:expr, $default:expr) => {
-            TypeInfo {
-                wire_size: WireSize::Fixed($size),
-                rust_type: $rust.into(),
-                skip_stmt: format!("let _ = {}(__buf, __pos)?;", $read),
-                read_fn: $read.into(),
-                write_fn: $write.into(),
-                default_expr: $default.into(),
-                size_fn: None,
-            }
+    let name = normalize_type(name);
+    if let Some(primitive) = primitive_info(name) {
+        let read_fn = format!("read_{name}");
+        let skip_stmt = match primitive.wire_size {
+            WireSize::Fixed(_) => format!("let _ = {read_fn}(__buf, __pos)?;"),
+            WireSize::Variable => format!("skip_{name}(__buf, __pos)?;"),
+        };
+        return TypeInfo {
+            wire_size: primitive.wire_size,
+            rust_type: primitive.rust_type.into(),
+            skip_stmt,
+            read_fn,
+            write_fn: format!("write_{name}"),
+            default_expr: primitive.rust_default.into(),
+            size_fn: matches!(name, "varint32" | "varint64").then(|| "varint_size".into()),
         };
     }
 
-    match normalize_type(name) {
-        "u8" => fixed!(1, "u8", "read_u8", "write_u8", "0u8"),
-        "i8" => fixed!(1, "i8", "read_i8", "write_i8", "0i8"),
-        "bool" => fixed!(1, "bool", "read_bool", "write_bool", "false"),
-        "u16" => fixed!(2, "u16", "read_u16", "write_u16", "0u16"),
-        "i16" => fixed!(2, "i16", "read_i16", "write_i16", "0i16"),
-        "u32" => fixed!(4, "u32", "read_u32", "write_u32", "0u32"),
-        "i32" => fixed!(4, "i32", "read_i32", "write_i32", "0i32"),
-        "f32" => fixed!(4, "f32", "read_f32", "write_f32", "0.0f32"),
-        "u64" => fixed!(8, "u64", "read_u64", "write_u64", "0u64"),
-        "i64" => fixed!(8, "i64", "read_i64", "write_i64", "0i64"),
-        "f64" => fixed!(8, "f64", "read_f64", "write_f64", "0.0f64"),
-        "varint32" => TypeInfo {
-            wire_size: WireSize::Variable,
-            rust_type: "u32".into(),
-            skip_stmt: "skip_varint32(__buf, __pos)?;".into(),
-            read_fn: "read_varint32".into(),
-            write_fn: "write_varint32".into(),
-            default_expr: "0u32".into(),
-            size_fn: Some("varint_size".into()),
-        },
-        "varint64" => TypeInfo {
-            wire_size: WireSize::Variable,
-            rust_type: "u64".into(),
-            skip_stmt: "skip_varint64(__buf, __pos)?;".into(),
-            read_fn: "read_varint64".into(),
-            write_fn: "write_varint64".into(),
-            default_expr: "0u64".into(),
-            size_fn: Some("varint_size".into()),
-        },
-        "string" => TypeInfo {
-            wire_size: WireSize::Variable,
-            rust_type: "&'buf str".into(),
-            skip_stmt: "skip_string(__buf, __pos)?;".into(),
-            read_fn: "read_string".into(),
-            write_fn: "write_string".into(),
-            default_expr: "\"\"".into(),
-            size_fn: None,
-        },
-        other => {
-            let lower = other.to_snake_case();
-            // helper fn names stay lifetime-free; the lifetime is inferred at the call site
-            let rust_type = if is_infected(other) {
-                format!("{other}<'buf>")
-            } else {
-                other.into()
-            };
-            TypeInfo {
-                wire_size: WireSize::Variable,
-                rust_type,
-                skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
-                read_fn: format!("read_{lower}"),
-                write_fn: format!("write_{lower}"),
-                default_expr: "Default::default()".into(),
-                size_fn: None,
-            }
-        }
+    let lower = name.to_snake_case();
+    // Helper names stay lifetime-free. The call site infers the lifetime.
+    let rust_type = if is_infected(name) {
+        format!("{name}<'buf>")
+    } else {
+        name.into()
+    };
+    TypeInfo {
+        wire_size: WireSize::Variable,
+        rust_type,
+        skip_stmt: format!("skip_{lower}(__buf, __pos)?;"),
+        read_fn: format!("read_{lower}"),
+        write_fn: format!("write_{lower}"),
+        default_expr: "Default::default()".into(),
+        size_fn: None,
     }
 }
 

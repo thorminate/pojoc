@@ -1,0 +1,26 @@
+schema FixedEnvelope {
+  version 1 {
+    type Point {
+      x: u16 = 0
+      y: u16 = 0
+    }
+    fields {
+      point: Point
+      words: [u32](30)
+      padding: string(3)
+    }
+  }
+  version 2 {
+    diff { + label: string? }
+  }
+  version 128 {
+    type Point extends Point@1 {
+      + z: u8 = 9
+    }
+    diff {
+      - label
+      ~ point: Point
+      + marker: u8 = 7
+    }
+  }
+}

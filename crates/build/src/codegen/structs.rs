@@ -273,7 +273,7 @@ fn emit_lazy_union_serde(
             "write_{lower}_v{latest_version}(&mut __scratch, self, &mut __interner_owned).map_err(serde::ser::Error::custom)?;"
         ));
         w.line("let mut __buf = Vec::new();");
-        w.line("write_intern_table(&mut __buf, &__interner_owned.finish());");
+        w.line("write_intern_table(&mut __buf, &__interner_owned.finish_table());");
         w.line("__buf.extend_from_slice(&__scratch);");
     } else {
         w.line("let mut __buf = Vec::new();");

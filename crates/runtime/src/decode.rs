@@ -309,23 +309,36 @@ pub struct Envelope<'a> {
     pub payload: &'a [u8],
 }
 
-// envelope wire layout: [version:varint] [len:u32] [payload...]
-pub fn read_envelope<'a>(buf: &'a [u8], pos: &mut usize) -> PojocResult<Envelope<'a>> {
+/// Open one envelope. The schema supplies a length for fixed versions and
+/// returns `Ok(None)` for versions that carry a little-endian u32 length.
+#[inline]
+pub fn read_envelope<'a>(
+    buf: &'a [u8],
+    pos: &mut usize,
+    fixed_size: impl FnOnce(u64) -> PojocResult<Option<u32>>,
+) -> PojocResult<Envelope<'a>> {
     let version = read_varint64(buf, pos)?;
-    let len = read_u32(buf, pos)? as usize;
+    let len = match fixed_size(version)? {
+        Some(len) => len,
+        None => read_u32(buf, pos)?,
+    } as usize;
     let end = pos.checked_add(len).ok_or(Error::InvalidLength)?;
     let payload = buf.get(*pos..end).ok_or(Error::InvalidLength)?;
     *pos = end;
     Ok(Envelope { version, payload })
 }
 
-pub fn read_envelope_stream<F>(buf: &[u8], mut f: F) -> PojocResult<()>
+pub fn read_envelope_stream<F>(
+    buf: &[u8],
+    fixed_size: impl Fn(u64) -> PojocResult<Option<u32>>,
+    mut f: F,
+) -> PojocResult<()>
 where
     F: FnMut(u64, &[u8]) -> PojocResult<()>,
 {
     let mut pos = 0;
     while pos < buf.len() {
-        let envelope = read_envelope(buf, &mut pos)?;
+        let envelope = read_envelope(buf, &mut pos, &fixed_size)?;
         f(envelope.version, envelope.payload)?;
     }
     Ok(())

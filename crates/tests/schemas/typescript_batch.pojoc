@@ -1,0 +1,11 @@
+schema TypescriptBatch {
+  version 1 {
+    type Row {
+      id: u16 = 0
+      label: string = ""
+    }
+    fields {
+      rows: [Row] = []
+    }
+  }
+}

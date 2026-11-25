@@ -34,19 +34,21 @@ fn pre_intern_versions_get_no_table_header() {
         "decode_v1 must not read an intern table — v1 predates `intern`:\n{v1_decode}"
     );
     assert!(
-        !v1_encode.contains("write_intern_table") && !v1_encode.contains("InternBuilder"),
+        !v1_encode.contains("encode_interned_v1") && !v1_encode.contains("InternBuilder"),
         "encode_v1 must not write an intern table — v1 predates `intern`:\n{v1_encode}"
     );
 
     let v2_decode = extract_fn(&code, "pub fn decode_v2");
     let v2_encode = extract_fn(&code, "pub fn encode_v2");
+    let v2_interned = extract_fn(&code, "fn encode_interned_v2");
     assert!(
         v2_decode.contains("read_intern_table"),
         "decode_v2 must read an intern table — v2 introduces `intern`:\n{v2_decode}"
     );
     assert!(
-        v2_encode.contains("write_intern_table") && v2_encode.contains("InternBuilder"),
-        "encode_v2 must write an intern table — v2 introduces `intern`:\n{v2_encode}"
+        v2_encode.contains("encode_interned_v2(__buf, __value, &[])")
+            && v2_interned.contains("write_interned_payload"),
+        "encode_v2 must delegate to the table writer — v2 introduces `intern`:\n{v2_encode}\n{v2_interned}"
     );
 }
 
@@ -73,13 +75,15 @@ fn intern_removed_in_a_later_version_keeps_earlier_versions_tabled() {
 
     let v1_decode = extract_fn(&code, "pub fn decode_v1");
     let v1_encode = extract_fn(&code, "pub fn encode_v1");
+    let v1_interned = extract_fn(&code, "fn encode_interned_v1");
     assert!(
         v1_decode.contains("read_intern_table"),
         "decode_v1 must still read a table — v1's own field was interned:\n{v1_decode}"
     );
     assert!(
-        v1_encode.contains("write_intern_table"),
-        "encode_v1 must still write a table — v1's own field was interned:\n{v1_encode}"
+        v1_encode.contains("encode_interned_v1(__buf, __value, &[])")
+            && v1_interned.contains("write_interned_payload"),
+        "encode_v1 must still write a table — v1's own field was interned:\n{v1_encode}\n{v1_interned}"
     );
 
     let v2_decode = extract_fn(&code, "pub fn decode_v2");

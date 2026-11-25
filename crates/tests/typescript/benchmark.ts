@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import protobuf from "protobufjs";
-import { engine, time } from "./benchmark_timer.ts";
+import { engine, timeCases } from "./benchmark_timer.ts";
+import { payloadOffset, withPayload } from "./frame_fixtures.ts";
 import * as pojoc from "./generated/telemetry.ts";
 import * as delta from "./generated/telemetry_delta.ts";
 import * as varint from "./generated/telemetry_varint.ts";
@@ -26,13 +27,13 @@ function verifyVarint32(): void {
     [0xffff_ffff, [0xff, 0xff, 0xff, 0xff, 0x0f]],
   ] as const;
   const value = varint.create();
-  const prefix = varint.encode(value).subarray(0, -1); // Exclude the empty actor_ids count.
+  const empty = varint.encode(value);
+  const prefix = empty.subarray(payloadOffset(empty), -1); // Exclude the empty actor_ids count.
   function withIds(bytes: number[]): Uint8Array {
     const frame = new Uint8Array(prefix.length + bytes.length);
     frame.set(prefix);
     frame.set(bytes, prefix.length);
-    new DataView(frame.buffer).setUint32(1, frame.length - 5, true);
-    return frame;
+    return Uint8Array.from(withPayload(empty, frame));
   }
 
   const repeated = Array.from({ length: 32 }, () => widths).flat();
@@ -80,7 +81,7 @@ function pojocCase<T extends Samples>(
 
 verifyVarint32();
 console.log(engine);
-console.log("elements\tcodec\tbytes\tencode_ns\tdecode_ns\troundtrip_ns");
+console.log("elements\tcodec\tbytes\tencode_ns\tdecode_ns\troundtrip_ns\tencodes_per_second\tdecodes_per_second");
 for (const count of [16, 256, 4096]) {
   const inputs: pojoc.Telemetry[] = Array.from({ length: 16 }, (_, i) => ({
     tick: i + 1,
@@ -120,12 +121,15 @@ for (const count of [16, 256, 4096]) {
       decode: (frame: Uint8Array) => observe(proto.decodeDelimited(frame) as unknown as Samples),
     },
   ];
-  for (const { name, frames, encode, decode } of cases) {
-    const write = time(i => { sink ^= encode(i).length; });
-    const read = time(i => { sink ^= decode(frames[i]); });
-    const roundtrip = time(i => { sink ^= decode(encode(i)); });
+  const writes = timeCases(cases.map(({ encode }) => i => { sink ^= encode(i).length; }));
+  const reads = timeCases(cases.map(({ decode, frames }) => i => { sink ^= decode(frames[i]); }));
+  const trips = timeCases(cases.map(({ encode, decode }) => i => { sink ^= decode(encode(i)); }));
+  for (const [index, { name, frames }] of cases.entries()) {
     const bytes = frames.reduce((sum, frame) => sum + frame.length, 0) / frames.length;
-    console.log(`${count}\t${name}\t${bytes.toFixed(1)}\t${write.toFixed(1)}\t${read.toFixed(1)}\t${roundtrip.toFixed(1)}`);
+    console.log([
+      count, name, bytes.toFixed(1), writes[index].toFixed(1), reads[index].toFixed(1),
+      trips[index].toFixed(1), Math.round(1e9 / writes[index]), Math.round(1e9 / reads[index]),
+    ].join("\t"));
   }
 }
 if (!Number.isInteger(sink)) throw new Error("Invalid benchmark sink");
