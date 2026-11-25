@@ -531,9 +531,23 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     // format shouldn't gain an intern table just because a later version added one
     let interning = crate::codegen::version_uses_intern(schema, &vl.fields);
 
-    w.line(&format!(
-        "pub fn encode_v{v}{lt}(__buf: &mut Vec<u8>, __value: &{name}{lt}){ret} {{"
-    ));
+    let params = format!("__buf: &mut Vec<u8>, __value: &{name}{lt}");
+    w.line(&format!("pub fn encode_v{v}{lt}({params}){ret} {{"));
+    if interning {
+        w.indent();
+        w.line(&format!("encode_interned_v{v}(__buf, __value, &[])"));
+        w.dedent();
+        w.line("}");
+        w.blank();
+        let generics = if lt.is_empty() {
+            "<const VERSION_LEN: usize>"
+        } else {
+            "<'buf, const VERSION_LEN: usize>"
+        };
+        w.line(&format!(
+            "fn encode_interned_v{v}{generics}({params}, __version: &[u8; VERSION_LEN]){ret} {{"
+        ));
+    }
     w.indent();
 
     if fallible {
@@ -581,8 +595,9 @@ fn emit_encode_vn_fn(schema: &ResolvedSchema, vl: &VersionLineage, lt: &str, w: 
     if interning {
         w.dedent();
         w.line("}");
-        w.line("write_intern_table(__buf, &__interner_owned.finish());");
-        w.line("__buf.extend_from_slice(&__scratch);");
+        w.line(
+            "write_interned_payload(__buf, __version, &__interner_owned.finish_table(), &__scratch);",
+        );
     }
 
     if fallible {
@@ -1590,9 +1605,9 @@ fn emit_size_hint_vn_fn(
     let header_bytes = opt_count.div_ceil(8);
 
     if vl.fields.is_empty() {
-        w.line("5usize");
+        w.line("0usize");
     } else {
-        w.line("let mut size = 5usize;");
+        w.line("let mut size = 0usize;");
         if header_bytes > 0 {
             w.line(&format!("size += {header_bytes};"));
         }

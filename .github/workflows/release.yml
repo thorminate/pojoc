@@ -158,10 +158,26 @@ jobs:
         working-directory: jetbrains-plugin
         run: ./gradlew buildPlugin
 
+      - name: Stage JetBrains release archive
+        shell: bash
+        working-directory: jetbrains-plugin
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          archives=(build/distributions/*.zip)
+          if (( ${#archives[@]} != 1 )); then
+            echo "Expected exactly one JetBrains plugin ZIP" >&2
+            exit 1
+          fi
+          mkdir -p build/release
+          cp "${archives[0]}" "build/release/pojoc-jetbrains-plugin-${RELEASE_TAG}.zip"
+
       - uses: actions/upload-artifact@v7
         with:
           name: jetbrains-plugin
-          path: jetbrains-plugin/build/distributions/*.zip
+          path: jetbrains-plugin/build/release/pojoc-jetbrains-plugin-${{ github.ref_name }}.zip
+          if-no-files-found: error
 
   release:
     name: Publish Release

@@ -8,10 +8,23 @@ npm install pojoc
 pojoc build player.pojoc --target typescript -o generated
 ```
 
-Use the exports of the generated module for schema-specific encoding,
-decoding, and seeking. The runtime has zero runtime dependencies and ships
-as JavaScript ES modules with TypeScript declarations. The `pojoc/v1`
-entry point identifies the schema descriptor format used by the generator.
+Use the generated module to create, encode, and decode values.
+
+```ts
+import { create, decode, encode } from "./generated/player.ts";
+
+const player = create();
+const bytes = encode(player); // Uint8Array
+const roundTrip = decode(bytes); // Player
+```
+
+`create()` fills in omitted fields from the schema defaults. Optional fields
+have type `T | null`. Pass `null` to encode an absent value.
+
+The runtime ships as JavaScript ES modules with TypeScript declarations and
+zero runtime dependencies. Generated modules import shared primitives from
+`pojoc/v1/compiler`. The [schema reference](../../docs/schema.md) covers
+type mappings, defaults, and field access.
 
 ## Publishing
 

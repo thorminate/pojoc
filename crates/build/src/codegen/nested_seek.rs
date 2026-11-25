@@ -251,7 +251,7 @@ fn emit_reader(
         "pub fn {reader}(buf: &[u8]) -> PojocResult<{ret}> {{"
     ));
     w.indent();
-    w.line("let envelope = read_envelope(buf, &mut 0)?;");
+    w.line("let envelope = open_envelope(buf, &mut 0)?;");
     w.line("let __buf = envelope.payload;");
     w.line("match envelope.version {");
     w.indent();

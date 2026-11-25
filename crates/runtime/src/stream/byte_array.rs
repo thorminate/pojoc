@@ -8,16 +8,18 @@ use std::io::{self, BufRead, Read};
 pub struct ByteArrayStream {
     prefix: Vec<u8>,
     header: Vec<u8>,
-    reply_version: u64,
+    length_pos: usize,
     preserve_array_length: bool,
 }
 
 impl ByteArrayStream {
     pub fn new(reply_version: u64, preserve_array_length: bool) -> Self {
+        let mut header = Vec::new();
+        let length_pos = write_envelope_header(&mut header, reply_version);
         Self {
             prefix: Vec::new(),
-            header: Vec::new(),
-            reply_version,
+            header,
+            length_pos,
             preserve_array_length,
         }
     }
@@ -53,9 +55,9 @@ impl ByteArrayStream {
         // Use the normal decoder and latest encoder with a synthetic empty array.
         // This preserves upgrades and wire ordering for all the fields before it.
         self.prefix[prefix_len] = 0;
-        self.header.clear();
-        let length_pos = write_envelope_header(&mut self.header, self.reply_version);
-        let payload_start = self.header.len();
+        let length_pos = self.length_pos;
+        let payload_start = length_pos + 4;
+        self.header.truncate(payload_start);
         if let Err(err) = encode_prefix(&self.prefix, &mut self.header) {
             return Self::reject_frame(&mut frame, err);
         }
@@ -64,7 +66,7 @@ impl ByteArrayStream {
 
         let mut first = [0];
         frame.read_exact(&mut first)?;
-        let (array_length, length_len) = match read_stream_varint(&mut frame, first[0]) {
+        let (array_length, length_len) = match read_stream_varint::<10>(&mut frame, first[0]) {
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && frame.limit() == 0 => {
                 return Err(codec_error(Error::UnexpectedEof));
             }
@@ -85,14 +87,17 @@ impl ByteArrayStream {
         } else {
             write_array_len(&mut self.header, bytes);
         }
-        let header_len = self.header.len();
-        let Some(reply_len) = header_len
+        let Some(payload_len) = (self.header.len() - payload_start)
             .checked_add(bytes)
-            .filter(|&len| u32::try_from(len - payload_start).is_ok())
+            .filter(|&len| u32::try_from(len).is_ok())
         else {
             return Self::reject_frame(&mut frame, Error::InvalidLength);
         };
-        patch_envelope_length(&mut self.header, length_pos, reply_len - payload_start);
+        patch_envelope_length(&mut self.header, length_pos, payload_len);
+        let header_len = self.header.len();
+        let Some(reply_len) = header_len.checked_add(bytes) else {
+            return Self::reject_frame(&mut frame, Error::InvalidLength);
+        };
 
         // Retain initialized storage across frames so reading a blob does not zero it first.
         if response.len() < reply_len {

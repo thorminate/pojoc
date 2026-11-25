@@ -87,6 +87,10 @@ jobs:
         with:
           deno-version: '2.7.14'
 
+      - name: Install TypeScript test dependencies
+        working-directory: crates/tests/typescript
+        run: npm ci
+
       - name: Generate TypeScript interoperability fixtures
         working-directory: crates/tests/typescript
         run: npm run fixtures

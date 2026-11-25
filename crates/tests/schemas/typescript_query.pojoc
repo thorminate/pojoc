@@ -1,0 +1,8 @@
+schema TypescriptQuery {
+  version 1 {
+    fields {
+      offset: varint32 = 0
+      limit: varint32 = 1
+    }
+  }
+}

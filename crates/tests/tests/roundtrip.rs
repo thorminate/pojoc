@@ -450,6 +450,35 @@ fn test_edge_schema_cases_across_union_width_change() {
 }
 
 #[test]
+fn interned_envelope_uses_the_staged_payload_length() {
+    use pojoc_tests::pojoc_intern_bench as schema;
+
+    let long = "å".repeat(75);
+    let value = schema::InternBench {
+        tags: std::iter::repeat_n(long.as_str(), 2_000).collect(),
+        ..Default::default()
+    };
+
+    let mut payload = Vec::new();
+    schema::encode_v1(&mut payload, &value);
+    assert_ne!(schema::size_hint_v1(&value), payload.len());
+
+    let mut expected = vec![0xaa];
+    expected.push(1);
+    expected.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    expected.extend_from_slice(&payload);
+
+    let mut current = vec![0xaa];
+    schema::encode(&mut current, &value);
+    assert_eq!(current, expected);
+
+    let mut versioned = vec![0xaa];
+    schema::encode_for_version(&mut versioned, &value, 1).unwrap();
+    assert_eq!(versioned, expected);
+    assert_eq!(schema::decode(&versioned[1..]).unwrap().tags, value.tags);
+}
+
+#[test]
 fn test_raw_passthrough_is_byte_identical() {
     let original = make_populated_edge();
     let mut buf = Vec::new();

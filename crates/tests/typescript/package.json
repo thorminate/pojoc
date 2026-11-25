@@ -5,7 +5,7 @@
   "scripts": {
     "generate": "node generate.mjs",
     "fixtures": "node fixtures.mjs",
-    "typecheck": "deno check --no-config ../../build/src/codegen/typescript_runtime.ts verify.ts benchmark_edge.ts \"generated/*.ts\"",
+    "typecheck": "deno check --no-config --node-modules-dir=manual verify.ts benchmark_edge.ts \"generated/*.ts\"",
     "test:node": "node verify.ts",
     "test:bun": "bun run verify.ts",
     "bench:node": "node benchmark.ts",
@@ -15,5 +15,9 @@
   },
   "dependencies": {
     "protobufjs": "8.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "prettier": "3.6.2"
   }
 }

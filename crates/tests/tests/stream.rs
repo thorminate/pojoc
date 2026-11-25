@@ -1,4 +1,4 @@
-use pojoc_tests::pojoc_player::{self as player, Player, runtime::read_envelope};
+use pojoc_tests::pojoc_player::{self as player, Player};
 use pojoc_tests::pojoc_stdio_bench::{self as eager, StdioBench};
 use pojoc_tests::pojoc_stdio_hybrid::{
     self as hybrid, StdioHybrid,
@@ -31,7 +31,10 @@ fn serves_multiple_envelopes_and_upgrades_older_versions() {
     let latest = *player::supported_versions().last().unwrap();
     for (id, is_nauseous) in [(42.0, false), (81.0, true)] {
         let start = pos;
-        assert_eq!(read_envelope(&responses, &mut pos).unwrap().version, latest);
+        assert_eq!(
+            player::open_envelope(&responses, &mut pos).unwrap().version,
+            latest
+        );
         let response = player::decode(&responses[start..pos]).unwrap();
         assert_eq!(response.player_id, id);
         assert_eq!(response.is_nauseous, is_nauseous);
@@ -64,7 +67,12 @@ fn sidecar_encodes_and_decodes_multiple_records() {
     let mut pos = 0;
     for (id, flags, payload) in [(1, 17, &[0, 10, 255][..]), (2, 0, &[][..])] {
         let start = pos;
-        assert_eq!(read_envelope(&encoded.stdout, &mut pos).unwrap().version, 2);
+        assert_eq!(
+            eager::open_envelope(&encoded.stdout, &mut pos)
+                .unwrap()
+                .version,
+            2
+        );
         let value = eager::decode(&encoded.stdout[start..pos]).unwrap();
         assert_eq!(
             (value.id, value.flags, value.payload.as_slice()),
@@ -139,15 +147,48 @@ fn rejects_truncated_and_oversize_requests_without_a_reply() {
     let mut responses = Vec::new();
     for (mut input, expected) in [
         (&[0x81][..], ErrorKind::UnexpectedEof),
+        (&[1, 0x81][..], ErrorKind::UnexpectedEof),
         (&[1, 1][..], ErrorKind::UnexpectedEof),
-        (&[1, 1, 0, 0, 0][..], ErrorKind::UnexpectedEof),
+        (&[1, 2, 0, 0, 0, 0][..], ErrorKind::UnexpectedEof),
         (&[1, 129, 0, 0, 0][..], ErrorKind::InvalidData),
+        (&[1, 255, 255, 255, 255][..], ErrorKind::InvalidData),
         (&[0x80; 10][..], ErrorKind::InvalidData),
     ] {
         let error = player::serve(&mut input, &mut responses, 128).unwrap_err();
         assert_eq!(error.kind(), expected);
         assert!(responses.is_empty());
     }
+}
+
+#[test]
+fn serves_fixed_and_dynamic_versions_in_one_stream() {
+    use pojoc_tests::pojoc_fixed_envelope as schema;
+
+    let mut requests = Vec::new();
+    for version in [1, 2, 128] {
+        schema::encode_for_version(&mut requests, &schema::FixedEnvelope::default(), version)
+            .unwrap();
+    }
+    let mut input = BufReader::with_capacity(1, requests.as_slice());
+    let mut responses = Vec::new();
+    schema::serve(&mut input, &mut responses, 256).unwrap();
+
+    let mut pos = 0;
+    for _ in 0..3 {
+        let frame = schema::open_envelope(&responses, &mut pos).unwrap();
+        assert_eq!(frame.version, 128);
+        assert_eq!(frame.payload.len(), 129);
+    }
+    assert_eq!(pos, responses.len());
+
+    let mut input = BufReader::with_capacity(1, requests.as_slice());
+    let mut decoded = 0;
+    schema::serve_decode(&mut input, 256, |_| {
+        decoded += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(decoded, 3);
 }
 
 #[test]

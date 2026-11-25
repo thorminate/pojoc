@@ -24,7 +24,8 @@ fn test_unsupported_version() {
 
 #[test]
 fn test_invalid_length() {
-    let mut buf = vec![0x05];
-    buf.extend_from_slice(&u32::MAX.to_le_bytes());
+    let mut buf = Vec::new();
+    let len_pos = write_envelope_header(&mut buf, 5);
+    patch_envelope_length(&mut buf, len_pos, u32::MAX as usize);
     assert!(decode(&buf).is_err());
 }

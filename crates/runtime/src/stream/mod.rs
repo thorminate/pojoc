@@ -11,8 +11,11 @@ pub fn codec_error(err: Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err)
 }
 
-fn read_stream_varint(input: &mut impl Read, first: u8) -> io::Result<([u8; 10], usize)> {
-    let mut bytes = [0; 10];
+fn read_stream_varint<const MAX_BYTES: usize>(
+    input: &mut impl Read,
+    first: u8,
+) -> io::Result<([u8; MAX_BYTES], usize)> {
+    let mut bytes = [0; MAX_BYTES];
     bytes[0] = first;
     let mut len = 1;
     while bytes[len - 1] & 0x80 != 0 && len < bytes.len() {
@@ -25,24 +28,26 @@ fn read_stream_varint(input: &mut impl Read, first: u8) -> io::Result<([u8; 10],
 fn read_header(
     input: &mut impl BufRead,
     max_payload_bytes: usize,
+    fixed_size: &impl Fn(u64) -> PojocResult<Option<u32>>,
 ) -> io::Result<Option<(u64, usize)>> {
     let Some(first) = input.bytes().next().transpose()? else {
         return Ok(None);
     };
-    let (version_bytes, version_len) = read_stream_varint(input, first)?;
+    let (version_bytes, version_len) = read_stream_varint::<10>(input, first)?;
     if version_len == 10 && version_bytes[9] > 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid envelope version varint",
-        ));
+        return Err(codec_error(Error::VarIntOverflow));
     }
     let version = read_varint64(&version_bytes[..version_len], &mut 0).map_err(codec_error)?;
-
-    let mut length = [0; 4];
-    input.read_exact(&mut length)?;
-    let payload_len = u32::from_le_bytes(length) as usize;
+    let (payload_len, length_len) = match fixed_size(version).map_err(codec_error)? {
+        Some(len) => (len as usize, 0),
+        None => {
+            let mut length = [0; 4];
+            input.read_exact(&mut length)?;
+            (u32::from_le_bytes(length) as usize, length.len())
+        }
+    };
     if payload_len > max_payload_bytes
-        || (version_len + length.len())
+        || (version_len + length_len)
             .checked_add(payload_len)
             .is_none()
     {
@@ -58,9 +63,10 @@ pub fn serve_frames<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
     max_payload_bytes: usize,
+    fixed_size: impl Fn(u64) -> PojocResult<Option<u32>>,
     mut reply: impl FnMut(&mut R, &mut W, u64, usize) -> io::Result<()>,
 ) -> io::Result<()> {
-    while let Some((version, payload_len)) = read_header(input, max_payload_bytes)? {
+    while let Some((version, payload_len)) = read_header(input, max_payload_bytes, &fixed_size)? {
         reply(input, output, version, payload_len)?;
         output.flush()?;
     }
@@ -70,10 +76,11 @@ pub fn serve_frames<R: BufRead, W: Write>(
 pub fn visit_payloads(
     input: &mut impl BufRead,
     max_payload_bytes: usize,
+    fixed_size: impl Fn(u64) -> PojocResult<Option<u32>>,
     mut visit: impl FnMut(u64, &[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut payload = Vec::new();
-    while let Some((version, payload_len)) = read_header(input, max_payload_bytes)? {
+    while let Some((version, payload_len)) = read_header(input, max_payload_bytes, &fixed_size)? {
         visit(version, read_payload(input, payload_len, &mut payload)?)?;
     }
     Ok(())

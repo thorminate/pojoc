@@ -1,0 +1,17 @@
+schema ReadableLongWireEvent {
+  version 1 {
+    type ALongNestedTypeNameThatShouldStillBeReadableInGeneratedTypeScript {
+      id: ulong = 0
+      valid: boolean = true
+    }
+    fields {
+      constructor: u8 = 7
+      description: str = "hello"
+      events: map<string, ALongNestedTypeNameThatShouldStillBeReadableInGeneratedTypeScript> = {}
+      maybe: ALongNestedTypeNameThatShouldStillBeReadableInGeneratedTypeScript?
+    }
+  }
+  version 128 {
+    diff { + revision: const u32 = 128 }
+  }
+}

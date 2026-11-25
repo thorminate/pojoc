@@ -103,7 +103,7 @@ pub fn main<C: Codec>() -> ExitCode {
 
 #[cfg(feature = "sidecar-json")]
 pub mod json {
-    use crate::{read_envelope, stream::codec_error};
+    use crate::{Envelope, PojocResult, stream::codec_error};
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::io::{self, BufRead, Read, Write};
@@ -122,6 +122,7 @@ pub mod json {
         input: &mut impl BufRead,
         output: &mut impl Write,
         max_payload_bytes: usize,
+        open_envelope: for<'a> fn(&'a [u8], &mut usize) -> PojocResult<Envelope<'a>>,
         mut transcode: impl FnMut(&Value, &mut Vec<u8>) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut record = Vec::new();
@@ -140,7 +141,7 @@ pub mod json {
             let value = serde_json::from_slice(line).map_err(invalid_data)?;
             envelope.clear();
             transcode(&value, &mut envelope)?;
-            let frame = read_envelope(&envelope, &mut 0).map_err(codec_error)?;
+            let frame = open_envelope(&envelope, &mut 0).map_err(codec_error)?;
             if frame.payload.len() > max_payload_bytes {
                 return Err(invalid_data("envelope payload exceeds limit"));
             }
@@ -203,7 +204,7 @@ macro_rules! stdio_sidecar {
             max_payload_bytes: usize,
         ) -> ::std::io::Result<()> {
             let latest = *$codec::supported_versions().last().unwrap();
-            $crate::sidecar::json::encode(input, output, max_payload_bytes, |json, envelope| {
+            $crate::sidecar::json::encode(input, output, max_payload_bytes, $codec::open_envelope, |json, envelope| {
                 let value = $crate::sidecar::json::from_value(json)?;
                 $codec::encode_for_version(envelope, &value, latest)
                     .map_err($crate::stream::codec_error)

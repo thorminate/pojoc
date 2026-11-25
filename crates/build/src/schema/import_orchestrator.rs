@@ -25,6 +25,10 @@ impl ImportOrchestrator {
         }
     }
 
+    pub(crate) fn source_paths(&self) -> impl Iterator<Item = &Path> {
+        self.cache.keys().map(PathBuf::as_path)
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn resolve_root(&mut self, path: &Path) -> Result<Arc<ResolvedSchema>, AnalysisError> {
         let origin = path.to_path_buf();
