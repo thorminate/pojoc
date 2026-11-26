@@ -7,9 +7,9 @@ use std::fmt::Write;
 
 mod access;
 mod evolution;
-mod historical_seek;
 mod records;
 mod row_access;
+mod seek;
 mod values;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -168,6 +168,10 @@ function readString(r: Cursor): string {
   return decodeText(r.data, start, end);
 }
 
+function readSeekString(r: Cursor): string {
+  return textDecoder.decode(readBytes(r, readLength(r)));
+}
+
 function readIntern(r: Cursor, table: ReadTable): string {
   const index = readLength(r);
   if (index >= table.length) invalid("Invalid Pojoc intern index");
@@ -314,6 +318,7 @@ export {
   readLength,
   readVarint32Array,
   readString,
+  readSeekString,
   readIntern,
   cursorReads,
   limitCollection,

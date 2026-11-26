@@ -1,10 +1,22 @@
-use super::super::literals::{PRINT_WIDTH, string_literal};
+use super::super::literals::string_literal;
 use super::super::readers::fixed_scalar;
+use super::access::Access;
 use super::records::{bitmap, members};
 use super::{Op, Program, call, cast, literal, name, tag};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+
+const SEEK_PATH_ERROR: &str = "  return invalid(`Unknown seekable Pojoc path ${path}`);\n}\n";
+
+fn emit_seek_cases(out: &mut String, cases: &[(String, String)], table: &str) {
+    out.push_str("      switch (path) {\n");
+    for (path, reader) in cases {
+        writeln!(out, "        case {}:", string_literal(path)).unwrap();
+        call(out, 10, "return ", reader, &["r", table], ";");
+    }
+    out.push_str("      }\n      break;\n");
+}
 
 #[derive(Clone, Copy)]
 struct Position {
@@ -29,15 +41,38 @@ enum Leaf<'a> {
 }
 
 impl<'a> Program<'a> {
-    pub(super) fn emit_seek_versions(
+    pub(super) fn emit_seek(
         &mut self,
         out: &mut String,
         current: usize,
         intern: bool,
-        seek: &str,
         compact: bool,
     ) {
+        out.push_str(
+            r#"
+export function seek<K extends keyof __Current & string>(
+  input: Input,
+  path: K,
+): __Current[K];
+export function seek(input: Input, path: string): unknown;
+export function seek(input: Input, path: string): unknown {
+"#,
+        );
+        let paths = self.seek_paths(current);
+        if paths.is_empty() {
+            out.push_str(SEEK_PATH_ERROR);
+            return;
+        }
+
         let scope = self.layouts[current].scope;
+        let current_table = self.seek_table(intern);
+        let current_cases: Vec<_> = paths
+            .iter()
+            .map(|(path, fields)| {
+                let route = self.seek_route(current, current, fields).unwrap();
+                (path.clone(), self.emit_seek_reader(scope, &route, true))
+            })
+            .collect();
         let versions: Vec<_> = self
             .roots
             .iter()
@@ -47,22 +82,23 @@ impl<'a> Program<'a> {
             .collect();
         let mut current_aliases = Vec::new();
         let mut historical = BTreeMap::<_, Vec<u64>>::new();
-        let mut paths = None;
-        let current_table = self.seek_table(intern);
+        let mut needs_fallback = false;
         for (version, old) in versions {
             let old_intern = self.root(scope, version)["intern"] == true;
             if old_intern == intern && self.seek_equivalent(old, current) {
                 current_aliases.push(version);
-            } else if !compact {
-                let paths = paths.get_or_insert_with(|| self.seek_paths(current));
+            } else if compact {
+                needs_fallback = true;
+            } else {
                 let cases: Vec<_> = paths
                     .iter()
                     .filter_map(|(path, fields)| {
-                        let route = self.historical_route(old, current, fields)?;
-                        let reader = self.emit_historical_reader(scope, &route);
+                        let route = self.seek_route(old, current, fields)?;
+                        let reader = self.emit_seek_reader(scope, &route, false);
                         Some((path.clone(), reader))
                     })
                     .collect();
+                needs_fallback |= cases.len() < paths.len();
                 if !cases.is_empty() {
                     let table = self.seek_table(old_intern);
                     historical.entry((table, cases)).or_default().push(version);
@@ -70,40 +106,31 @@ impl<'a> Program<'a> {
             }
         }
 
-        if current_aliases.is_empty() && historical.is_empty() {
-            let read = format!("return {seek}(r, {current_table}, names, 0);");
-            let line = format!("  if (r.version === version) {read}");
-            if line.len() <= PRINT_WIDTH {
-                writeln!(out, "{line}").unwrap();
-            } else {
-                writeln!(out, "  if (r.version === version)\n    {read}").unwrap();
-            }
-            return;
-        }
-        out.push_str("  switch (r.version) {\n    case version:\n");
+        out.push_str(
+            "  const r = __openFrame(input);\n  switch (r.version) {\n    case version:\n",
+        );
         for version in current_aliases {
             writeln!(out, "    case {version}n:").unwrap();
         }
-        call(
-            out,
-            6,
-            "return ",
-            seek,
-            &["r", current_table, "names", "0"],
-            ";",
-        );
+        emit_seek_cases(out, &current_cases, current_table);
         for ((table, cases), versions) in historical {
             for version in versions {
                 writeln!(out, "    case {version}n:").unwrap();
             }
-            out.push_str("      switch (path) {\n");
-            for (path, reader) in cases {
-                writeln!(out, "        case {}:", string_literal(&path)).unwrap();
-                call(out, 10, "return ", &reader, &["r", table], ";");
-            }
-            out.push_str("      }\n      break;\n");
+            emit_seek_cases(out, &cases, table);
         }
         out.push_str("  }\n");
+        if needs_fallback {
+            out.push_str("  switch (path) {\n");
+            for (index, (path, _)) in paths.iter().enumerate() {
+                let block = if index + 1 == paths.len() { " {" } else { "" };
+                writeln!(out, "    case {}:{block}", string_literal(path)).unwrap();
+            }
+            out.push_str(
+                "      let value: unknown = __decodeFrame(r);\n      for (const name of path.split(\".\")) value = object(value)[name];\n      return value;\n    }\n  }\n",
+            );
+        }
+        out.push_str(SEEK_PATH_ERROR);
     }
 
     fn seek_table(&mut self, intern: bool) -> &'static str {
@@ -166,12 +193,7 @@ impl<'a> Program<'a> {
         visiting.remove(&layout);
     }
 
-    fn historical_route(
-        &self,
-        old: usize,
-        current: usize,
-        path: &[&'a Value],
-    ) -> Option<Route<'a>> {
+    fn seek_route(&self, old: usize, current: usize, path: &[&'a Value]) -> Option<Route<'a>> {
         let scope = self.layouts[old].scope;
         let mut wire = old;
         let mut projection = Some(old);
@@ -244,75 +266,82 @@ impl<'a> Program<'a> {
         None
     }
 
-    fn emit_historical_reader(&mut self, scope: usize, route: &Route<'a>) -> String {
+    fn emit_seek_reader(&mut self, scope: usize, route: &Route<'a>, current: bool) -> String {
         let mut body = String::new();
         for &position in &route.prefix {
             let advance = self.emit_seek_position(position);
             writeln!(body, "  {advance}(r);").unwrap();
         }
         let target_ty = &route.target["ty"];
-        match route.leaf {
+        let value = match route.leaf {
             Leaf::Default(supplied) => {
                 let default = self.default_expr(scope, target_ty, supplied);
                 writeln!(body, "  const value = {default};").unwrap();
+                "value"
             }
             Leaf::Read {
                 position,
                 validate_source,
                 convert_from,
             } => {
-                let fields = members(self.layouts[position.layout].fields);
-                let field = &fields[position.index];
-                let reader = self.reader(scope, field.ty, cast(field.spec));
-                let advance = self.emit_seek_position(position);
-                if let Some(bit) = field.bit {
-                    self.use_symbol("hasField");
-                    writeln!(body, "  const header = {advance}(r);").unwrap();
+                let access = Access::new(self.layouts[position.layout].fields);
+                let field = &access.fields[position.index];
+                if current && let Some(offset) = access.offsets.get(position.index) {
+                    self.use_symbol("takeBytes");
+                    let header = bitmap(&access.fields);
                     writeln!(
                         body,
-                        "  let source: unknown = null;\n  if (hasField(r, header, {bit})) {{"
+                        "  const p0 = takeBytes(r, {});",
+                        header + access.width
                     )
                     .unwrap();
-                    call(
-                        &mut body,
-                        4,
-                        "source = ",
-                        &reader,
-                        self.read_args(field.ty),
-                        ";",
-                    );
-                    if validate_source {
-                        self.validate(&mut body, 4, field.ty, "source", &literal(field.spec));
-                    }
-                    body.push_str("  }\n");
+                    self.emit_fixed(&mut body, field.ty, 0, 0, header + offset);
+                    "v0"
                 } else {
-                    writeln!(body, "  {advance}(r);").unwrap();
-                    call(
-                        &mut body,
-                        2,
-                        "const source = ",
-                        &reader,
-                        self.read_args(field.ty),
-                        ";",
-                    );
+                    let reader = if current && field.ty.as_str() == Some("string") {
+                        self.use_symbol("readSeekString").to_owned()
+                    } else {
+                        self.reader(scope, field.ty, cast(field.spec))
+                    };
+                    let args = self.read_args(field.ty);
+                    let advance = self.emit_seek_position(position);
+                    let indent = if let Some(bit) = field.bit {
+                        self.use_symbol("hasField");
+                        writeln!(body, "  const header = {advance}(r);").unwrap();
+                        writeln!(
+                            body,
+                            "  let source: unknown = null;\n  if (hasField(r, header, {bit})) {{"
+                        )
+                        .unwrap();
+                        call(&mut body, 4, "source = ", &reader, args, ";");
+                        4
+                    } else {
+                        writeln!(body, "  {advance}(r);").unwrap();
+                        call(&mut body, 2, "const source = ", &reader, args, ";");
+                        2
+                    };
                     if validate_source {
-                        self.validate(&mut body, 2, field.ty, "source", &literal(field.spec));
+                        self.validate(&mut body, indent, field.ty, "source", &literal(field.spec));
                     }
-                }
-                if let Some(from) = convert_from {
-                    let adapt = self.adapt(scope, from, target_ty, false);
-                    writeln!(body, "  const value = {adapt}(source);").unwrap();
-                } else {
-                    body.push_str("  const value = source;\n");
+                    if field.bit.is_some() {
+                        body.push_str("  }\n");
+                    }
+                    if let Some(from) = convert_from {
+                        let adapt = self.adapt(scope, from, target_ty, false);
+                        writeln!(body, "  const value = {adapt}(source);").unwrap();
+                        "value"
+                    } else {
+                        "source"
+                    }
                 }
             }
-        }
+        };
         if route.validate_target {
-            self.validate(&mut body, 2, target_ty, "value", &literal(route.target));
+            self.validate(&mut body, 2, target_ty, value, &literal(route.target));
         }
-        body.push_str("  return value;\n");
-        let (id, build) = self.reserve(Op::Read, scope, format!("historical-seek:{body}"));
-        let reader = format!("__historySeek{id}");
+        writeln!(body, "  return {value};").unwrap();
+        let (id, build) = self.reserve(Op::Read, scope, format!("seek-read:{body}"));
+        let reader = format!("__seekRead{id}");
         if build {
             self.functions[id] =
                 format!("function {reader}(r: Cursor, table: ReadTable): unknown {{\n{body}}}\n");
