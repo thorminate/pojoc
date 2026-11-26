@@ -184,12 +184,11 @@ impl<K: Eq, V, const N: usize> FromIterator<(K, V)> for PojocFixedMap<K, V, N> {
     }
 }
 
-/// hashing for [`PojocMap`]/`InternBuilder`, random seed per process to
-/// defend against hash-flooding on decoded wire data, see docs/security.md
+/// aHash's randomly seeded hash builder for maps and string interning.
 #[cfg(not(feature = "secure-hasher"))]
-pub type PojocHasher = foldhash::fast::RandomState;
+pub type PojocHasher = ahash::RandomState;
 
-/// same as the foldhash variant but uses std's SipHash-based RandomState
+/// Rust's standard hash builder for maps and string interning.
 #[cfg(feature = "secure-hasher")]
 pub type PojocHasher = std::collections::hash_map::RandomState;
 

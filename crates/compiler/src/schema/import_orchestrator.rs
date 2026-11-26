@@ -25,7 +25,8 @@ impl ImportOrchestrator {
         }
     }
 
-    pub(crate) fn source_paths(&self) -> impl Iterator<Item = &Path> {
+    /// Paths of the root schemas and all imports loaded by this resolver.
+    pub fn source_paths(&self) -> impl Iterator<Item = &Path> {
         self.cache.keys().map(PathBuf::as_path)
     }
 

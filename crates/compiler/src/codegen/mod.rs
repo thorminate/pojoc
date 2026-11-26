@@ -104,9 +104,9 @@ fn generate_module(schema: &ResolvedSchema, export_pluck: bool) -> String {
     w.line("pub mod runtime { pub use pojoc::*; }");
     w.line("use runtime::*;");
     if emit_serde() {
-        w.line("// if this doesn't compile: `serde` (with the `derive` feature) must be a direct");
-        w.line("// dependency, and the `pojoc`/`pojoc-build` `serde` feature must be enabled or");
-        w.line("// disabled together");
+        w.line(
+            "// Requires `serde` with its `derive` feature and `pojoc` with its `serde` feature.",
+        );
     }
     w.blank();
 
@@ -803,15 +803,19 @@ fn compute_constraint_infected(schema: &ResolvedSchema) -> HashSet<String> {
 pub(crate) fn emit_constraint_guard(field: &FieldIR, accessor: &str, w: &mut CodeWriter) {
     match &field.ty {
         ResolvedTypeRef::Constrained { inner, min, max } => {
-            emit_bound_check(inner, accessor, false, &field.name, *min, *max, w);
+            emit_bound_check(inner, accessor, false, None, &field.name, (*min, *max), w);
         }
         ResolvedTypeRef::Optional(boxed) => {
             if let ResolvedTypeRef::Constrained { inner, min, max } = boxed.as_ref() {
-                w.line(&format!("if let Some(__cval) = &{accessor} {{"));
-                w.indent();
-                emit_bound_check(inner, "__cval", true, &field.name, *min, *max, w);
-                w.dedent();
-                w.line("}");
+                emit_bound_check(
+                    inner,
+                    "__cval",
+                    true,
+                    Some(accessor),
+                    &field.name,
+                    (*min, *max),
+                    w,
+                );
             }
         }
         _ => {}
@@ -826,18 +830,17 @@ pub(crate) fn emit_union_variant_constraint_guard(
     w: &mut CodeWriter,
 ) {
     if let ResolvedTypeRef::Constrained { inner, min, max } = payload {
-        emit_bound_check(inner, accessor, true, variant_name, *min, *max, w);
+        emit_bound_check(inner, accessor, true, None, variant_name, (*min, *max), w);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_bound_check(
     inner: &ResolvedTypeRef,
     accessor: &str,
     is_ref: bool,
+    optional: Option<&str>,
     field_name: &str,
-    min: Option<f64>,
-    max: Option<f64>,
+    (min, max): (Option<f64>, Option<f64>),
     w: &mut CodeWriter,
 ) {
     if min.is_none() && max.is_none() {
@@ -870,9 +873,13 @@ fn emit_bound_check(
         .map(|m| format!("Some({m}f64)"))
         .unwrap_or_else(|| "None".into());
 
+    let condition = conds.join(" || ");
+    let guard = match optional {
+        Some(optional) => format!("{optional}.as_ref().is_some_and(|__cval| {condition})"),
+        None => condition,
+    };
     w.line(&format!(
-        "if {} {{ return Err(Error::ConstraintViolation {{ field: \"{field_name}\", min: {min_expr}, max: {max_expr} }}); }}",
-        conds.join(" || ")
+        "if {guard} {{ return Err(Error::ConstraintViolation {{ field: \"{field_name}\", min: {min_expr}, max: {max_expr} }}); }}"
     ));
 }
 

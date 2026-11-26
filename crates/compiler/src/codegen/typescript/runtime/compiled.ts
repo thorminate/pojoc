@@ -199,9 +199,14 @@ function readPairs(
 ): Map<unknown, unknown> | [unknown, unknown][] {
   const count = size ?? readLength(r);
   limitCollection(count);
+  if (size === null) {
+    const result = new Map<unknown, unknown>();
+    for (let i = 0; i < count; i++) result.set(key(r, table), item(r, table));
+    return result;
+  }
   const pairs: [unknown, unknown][] = [];
   for (let i = 0; i < count; i++) pairs.push([key(r, table), item(r, table)]);
-  return size === null ? new Map(pairs) : pairs;
+  return pairs;
 }
 
 function readVariant(
@@ -339,7 +344,20 @@ function writePairs(
 
 function skipTable(r: Cursor): void {
   const count = tableLength(r);
-  for (let i = 0; i < count; i++) takeBytes(r, readLength(r));
+  const { data, end } = r;
+  let pos = r.pos;
+  for (let i = 0; i < count; i++) {
+    const length = pos < end ? data[pos] : undefined;
+    if (length !== undefined && length < 0x80) {
+      pos += 1 + length;
+      if (pos > end) invalid("Unexpected end of Pojoc payload");
+    } else {
+      r.pos = pos;
+      takeBytes(r, readLength(r));
+      pos = r.pos;
+    }
+  }
+  r.pos = pos;
 }
 
 function skipDelta(r: Cursor, count: number): void {

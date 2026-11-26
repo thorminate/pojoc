@@ -20,10 +20,11 @@ serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 simdutf8 = { version = "0.1.5", features = ["aarch64_neon"] }
-foldhash = { version = "0.2.0" }
+ahash = { version = "0.8.14", default-features = false, features = ["runtime-rng", "std"] }
 
 [features]
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_bytes", "smallvec/serde"]
 sidecar-json = ["serde", "dep:serde_json"]
+# Use the standard library's hash builder for maps and string interning.
 secure-hasher = []

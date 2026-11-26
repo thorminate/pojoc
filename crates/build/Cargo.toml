@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Compile .pojoc schemas from build.rs into Rust and TypeScript codecs"
+description = "Compile .pojoc schemas into Rust and TypeScript codecs"
 readme = "../../README.md"
 keywords = ["serialization", "encoding", "binary", "schema", "codegen"]
 categories = ["encoding", "compilers"]
@@ -14,14 +14,14 @@ categories = ["encoding", "compilers"]
 path = "src/lib.rs"
 
 [dependencies]
-heck = { workspace = true }
+pojoc-compiler.workspace = true
+pojoc-build-macros = { workspace = true, optional = true }
 thiserror = { workspace = true }
-compact_str = { workspace = true }
-serde_json = { workspace = true }
 
 [features]
-default = ["serde"]
+default = ["macros", "serde"]
+macros = ["dep:pojoc-build-macros"]
 # Emit `Serialize`/`Deserialize` derives/impls in generated code. Requires the
 # consuming crate to depend on `serde` directly (with the `derive` feature),
 # and the `pojoc` runtime crate's own `serde` feature to also be enabled.
-serde = []
+serde = ["pojoc-compiler/serde"]

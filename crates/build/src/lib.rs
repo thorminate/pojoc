@@ -1,4 +1,5 @@
-//! Call pojoc from a `build.rs` without depending on separate schema/codegen crates.
+//! Compile Pojoc schemas in Rust with `schema!` (the `macros`
+//! feature), or generate files from a `build.rs`.
 //!
 //! ```no_run
 //! let out_dir = std::env::var("OUT_DIR").unwrap();
@@ -11,11 +12,10 @@
 //! `include!(concat!(env!("OUT_DIR"), "/<stem>.rs"))`.
 
 #[doc(hidden)]
-pub mod codegen;
-#[doc(hidden)]
-pub mod core;
-#[doc(hidden)]
-pub mod schema;
+pub use pojoc_compiler::{codegen, core, schema};
+
+#[cfg(feature = "macros")]
+pub use pojoc_build_macros::schema;
 
 pub use codegen::typescript::{
     GenerationOptions as TypeScriptOptions, RuntimeProfile as TypeScriptRuntime,

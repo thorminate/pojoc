@@ -20,9 +20,10 @@ sidecar-json = ["pojoc/sidecar-json"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+pojoc-build = { path = "../build", default-features = false, features = ["macros"] }
 
 [build-dependencies]
-pojoc-build = { path = "../build" }
+pojoc-build = { path = "../build", default-features = false, features = ["serde"] }
 prost-build = "0.14.3"
 capnpc = "0.26.0"
 bebop-tools = "3.2.3"

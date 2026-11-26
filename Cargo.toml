@@ -3,19 +3,23 @@ resolver = "2"
 members = [
     "crates/tests",
     "crates/build",
+    "crates/build-macros",
+    "crates/compiler",
     "crates/cli",
     "crates/runtime",
     "crates/lsp",
 ]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/thorminate/pojoc"
 homepage = "https://github.com/thorminate/pojoc"
 
 [workspace.dependencies]
+pojoc-compiler = { path = "crates/compiler", version = "=0.8.2" }
+pojoc-build-macros = { path = "crates/build-macros", version = "=0.8.2" }
 heck = "0.5.0"
 compact_str = { version = "0.10.0" }
 smallvec = { version = "1.15.1", features = ["union"] }

@@ -9,11 +9,11 @@ use std::fmt::Write;
 
 const SEEK_PATH_ERROR: &str = "  return invalid(`Unknown seekable Pojoc path ${path}`);\n}\n";
 
-fn emit_seek_cases(out: &mut String, cases: &[(String, String)], table: &str) {
+fn emit_seek_cases(out: &mut String, cases: &[(String, String)]) {
     out.push_str("      switch (path) {\n");
     for (path, reader) in cases {
         writeln!(out, "        case {}:", string_literal(path)).unwrap();
-        call(out, 10, "return ", reader, &["r", table], ";");
+        call(out, 10, "return ", reader, &["r"], ";");
     }
     out.push_str("      }\n      break;\n");
 }
@@ -38,6 +38,18 @@ enum Leaf<'a> {
         validate_source: bool,
         convert_from: Option<&'a Value>,
     },
+}
+
+fn seek_needs_table(ty: &Value) -> bool {
+    if let Some(scalar) = ty.as_str() {
+        return scalar == "intern";
+    }
+    match tag(ty) {
+        "optional" | "constraint" | "box" | "array" => seek_needs_table(&ty[1]),
+        "bytes" | "bits" | "enum" | "vfloat" | "delta" | "import" => false,
+        // Leave composite readers that may reach a nested interned field alone.
+        _ => true,
+    }
 }
 
 impl<'a> Program<'a> {
@@ -65,12 +77,14 @@ export function seek(input: Input, path: string): unknown {
         }
 
         let scope = self.layouts[current].scope;
-        let current_table = self.seek_table(intern);
         let current_cases: Vec<_> = paths
             .iter()
             .map(|(path, fields)| {
                 let route = self.seek_route(current, current, fields).unwrap();
-                (path.clone(), self.emit_seek_reader(scope, &route, true))
+                (
+                    path.clone(),
+                    self.emit_seek_reader(scope, &route, true, intern),
+                )
             })
             .collect();
         let versions: Vec<_> = self
@@ -94,14 +108,13 @@ export function seek(input: Input, path: string): unknown {
                     .iter()
                     .filter_map(|(path, fields)| {
                         let route = self.seek_route(old, current, fields)?;
-                        let reader = self.emit_seek_reader(scope, &route, false);
+                        let reader = self.emit_seek_reader(scope, &route, false, old_intern);
                         Some((path.clone(), reader))
                     })
                     .collect();
                 needs_fallback |= cases.len() < paths.len();
                 if !cases.is_empty() {
-                    let table = self.seek_table(old_intern);
-                    historical.entry((table, cases)).or_default().push(version);
+                    historical.entry(cases).or_default().push(version);
                 }
             }
         }
@@ -112,12 +125,12 @@ export function seek(input: Input, path: string): unknown {
         for version in current_aliases {
             writeln!(out, "    case {version}n:").unwrap();
         }
-        emit_seek_cases(out, &current_cases, current_table);
-        for ((table, cases), versions) in historical {
+        emit_seek_cases(out, &current_cases);
+        for (cases, versions) in historical {
             for version in versions {
                 writeln!(out, "    case {version}n:").unwrap();
             }
-            emit_seek_cases(out, &cases, table);
+            emit_seek_cases(out, &cases);
         }
         out.push_str("  }\n");
         if needs_fallback {
@@ -131,15 +144,6 @@ export function seek(input: Input, path: string): unknown {
             );
         }
         out.push_str(SEEK_PATH_ERROR);
-    }
-
-    fn seek_table(&mut self, intern: bool) -> &'static str {
-        if intern {
-            self.use_symbol("readTableOffsets");
-            "readTableOffsets(r)"
-        } else {
-            "emptyTable"
-        }
     }
 
     fn seek_equivalent(&self, old: usize, current: usize) -> bool {
@@ -266,8 +270,29 @@ export function seek(input: Input, path: string): unknown {
         None
     }
 
-    fn emit_seek_reader(&mut self, scope: usize, route: &Route<'a>, current: bool) -> String {
+    fn emit_seek_reader(
+        &mut self,
+        scope: usize,
+        route: &Route<'a>,
+        current: bool,
+        intern: bool,
+    ) -> String {
         let mut body = String::new();
+        let needs_table = match route.leaf {
+            Leaf::Default(_) => false,
+            Leaf::Read { position, .. } => {
+                seek_needs_table(&self.layouts[position.layout].fields[position.index]["ty"])
+            }
+        };
+        if intern {
+            if needs_table {
+                self.use_symbol("readTableOffsets");
+                body.push_str("  const table = readTableOffsets(r);\n");
+            } else {
+                self.use_symbol("skipTable");
+                body.push_str("  skipTable(r);\n");
+            }
+        }
         for &position in &route.prefix {
             let advance = self.emit_seek_position(position);
             writeln!(body, "  {advance}(r);").unwrap();
@@ -303,7 +328,11 @@ export function seek(input: Input, path: string): unknown {
                     } else {
                         self.reader(scope, field.ty, cast(field.spec))
                     };
-                    let args = self.read_args(field.ty);
+                    let mut args = self.read_args(field.ty);
+                    if args.len() == 2 && !(intern && needs_table) {
+                        self.use_symbol("emptyTable");
+                        args = &["r", "emptyTable"];
+                    }
                     let advance = self.emit_seek_position(position);
                     let indent = if let Some(bit) = field.bit {
                         self.use_symbol("hasField");
@@ -343,8 +372,7 @@ export function seek(input: Input, path: string): unknown {
         let (id, build) = self.reserve(Op::Read, scope, format!("seek-read:{body}"));
         let reader = format!("__seekRead{id}");
         if build {
-            self.functions[id] =
-                format!("function {reader}(r: Cursor, table: ReadTable): unknown {{\n{body}}}\n");
+            self.functions[id] = format!("function {reader}(r: Cursor): unknown {{\n{body}}}\n");
         }
         reader
     }

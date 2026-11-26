@@ -9,6 +9,7 @@ This is a reference for the schema language itself. For benchmarks and setup see
 
 - [File structure](#file-structure)
 - [Field types](#field-types)
+- [Rust construction macros](#rust-construction-macros)
 - [Declared types](#declared-types)
 - [Generics](#generics)
 - [Defaults](#defaults)
@@ -147,6 +148,11 @@ Rust uses `PojocMap<K, V>` and `PojocFixedMap<K, V, N>`, respectively.
 TypeScript uses `Map<K, V>` for the variable-size form and `Array<[K, V]>`
 for the fixed-size form.
 
+`PojocMap` and the Rust string interner use aHash with runtime-generated
+seeds by default. Enable the `secure-hasher` feature on your `pojoc`
+dependency to use Rust's standard `RandomState` (currently SipHash-1-3)
+for both.
+
 Values (and keys) may themselves be any type, including nested maps/arrays and
 unions: `map<string, [map<i32, bool>]>`.
 
@@ -214,6 +220,35 @@ as the field type, so `next` in this example is `Node | null`.
   above) so the chain can end.
 - Composes with everything else: `box<T>?`, `[box<T>]`, `Mono<box<T>>`, etc.
 - `box<T>` has the same wire layout as `T`.
+
+---
+
+## Rust construction macros
+
+The `pojoc` runtime provides macros for constructing values to pass to
+generated Rust codecs.
+
+| Macro                                            | Result                                                                   |
+|--------------------------------------------------|--------------------------------------------------------------------------|
+| `pojstr!("ABC123", 6)`                           | A `[u8; 6]` for `string(6)`, with a compile-time UTF-8 byte-length check |
+| `pojvec!["ready", "active"]`                     | A `PojocVec` for a variable-length array                                 |
+| `pojvec![20, 21, 22, 23; 4]`                     | A four-element Rust array for a fixed-length field                       |
+| `pojmap!("wins" => 3_u32)`                       | A `PojocMap` for a variable-length map                                   |
+| `pojmap!("wins" => 3_u32, "losses" => 1_u32; 2)` | A two-entry `PojocFixedMap` with a compile-time entry-count check        |
+| `pojtup!(1_i16, 2_i16)`                          | A tuple whose elements convert to the expected types via `Into`          |
+
+```rust
+use pojoc::{PojocFixedMap, PojocMap, PojocVec, pojmap, pojstr, pojtup, pojvec};
+
+let code = pojstr!("ABC123", 6);
+let tags: PojocVec<&str> = pojvec!["ready", "active"];
+let samples: [i16; 4] = pojvec![20, 21, 22, 23; 4];
+let scores: PojocMap<&str, u32> = pojmap!("wins" => 3_u32);
+let fixed: PojocFixedMap<&str, u32, 2> = pojmap!("wins" => 3_u32, "losses" => 1_u32; 2);
+let coordinates: (i32, i32) = pojtup!(1_i16, 2_i16);
+```
+
+To read selected fields from encoded bytes, use the [generated pluck macro](#plucking-a-subset-in-rust).
 
 ---
 
