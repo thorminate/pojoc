@@ -226,6 +226,19 @@ for (const version of [1, 2]) {
 const seekRetype = codecs.get("seek_retype");
 const retypeV1 = readFileSync(new URL("seek_retype-1.bin", dir));
 assert.equal(seekRetype.seek(trailingByte(retypeV1), "label"), "label");
+assert.throws(() => seekRetype.seek(retypeV1, "label.inner"), RangeError);
+for (const label of [null, "", "plain", "\uFEFFÅ🙂"]) {
+  const frame = seekRetype.encode(seekRetype.create({ id: 0xffff_ffff, label }));
+  assert.equal(seekRetype.seek(frame, "id"), 0xffff_ffff);
+  assert.equal(seekRetype.seek(frame, "label"), label);
+}
+const seekText = Buffer.from(seekRetype.encode(seekRetype.create({ label: "seek UTF-8" })));
+const seekTextStart = seekText.indexOf("seek UTF-8", payloadOffset(seekText));
+assert(seekTextStart >= payloadOffset(seekText));
+const shortSeekText = withPayload(seekText, seekText.subarray(payloadOffset(seekText), -1));
+assert.throws(() => seekRetype.seek(Buffer.concat([shortSeekText, seekText]), "label"), RangeError);
+seekText[seekTextStart] = 0xff;
+assert.throws(() => seekRetype.seek(seekText, "label"), TypeError);
 
 const edge = codecs.get("edge");
 assert.equal(edge.constants.pi_const, Math.PI);

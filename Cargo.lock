@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-build"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "compact_str",
  "heck",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "clap",
  "pojoc-build",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-lsp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "pojoc-tests"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bebop",
  "bebop-tools",

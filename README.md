@@ -28,6 +28,25 @@ and optional note. The Rust fixture includes inventory, flags, and nested
 position data. Its round trip ends with a decoded Pojoc struct or a Cap’n Proto
 root reader. See the [Rust round-trip benchmark](crates/tests/benches/roundtrip.rs).
 
+### TypeScript field access
+
+One field read from an encoded record with 4,096 unrelated strings. The frames
+are 69.7 KB in Pojoc, 114.8 KB in FlatBuffers, and 164.0 KB in Cap’n Proto.
+Times are medians on Node 26.13.1 and Bun 1.3.12.
+
+| Field | Pojoc, Node / Bun | FlatBuffers, Node / Bun | Cap’n Proto, Node / Bun |
+| --- | ---: | ---: | ---: |
+| Fixed `id` | **22 / 25 ns** | 63 / 40 ns | 56.8 / 16.8 µs |
+| Nested `transform.position.x` | **30 / 30 ns** | 94 / 72 ns | 35.6 / 17.0 µs |
+| String `label` | **140 / 126 ns** | 185 / 162 ns | 36.0 / 17.8 µs |
+
+The Cap’n Proto column uses `capnp-es` 0.0.17, which copies the message
+segments when opening a frame.
+
+The latest layout places the seekable label ahead of the array. Reading the
+label from a historical layout where it follows the array requires skipping
+those strings.
+
 ### Over HTTP
 
 In the wire demo, 16 concurrent clients fetched 128-record directory pages

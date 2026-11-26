@@ -85,7 +85,14 @@ impl Program<'_> {
         f
     }
 
-    fn emit_fixed(&mut self, out: &mut String, ty: &Value, i: usize, start: usize, offset: usize) {
+    pub(super) fn emit_fixed(
+        &mut self,
+        out: &mut String,
+        ty: &Value,
+        i: usize,
+        start: usize,
+        offset: usize,
+    ) {
         if matches!(ty.as_str(), Some("u64" | "i64" | "f32" | "f64")) {
             self.use_symbol("cursorView");
         }

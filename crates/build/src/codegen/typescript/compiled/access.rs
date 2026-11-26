@@ -1,7 +1,7 @@
 use super::super::literals::data_key;
 use super::super::readers::fixed_scalar;
 use super::records::{Field, bitmap, members};
-use super::{Op, Program, call, cast, literal, name, tag};
+use super::{Op, Program, call, cast, literal, name};
 use std::fmt::Write;
 
 pub(super) struct Access<'a> {
@@ -11,7 +11,7 @@ pub(super) struct Access<'a> {
 }
 
 impl<'a> Access<'a> {
-    fn new(fields: &'a [serde_json::Value]) -> Self {
+    pub(super) fn new(fields: &'a [serde_json::Value]) -> Self {
         let fields = members(fields);
         let mut width = 0;
         let offsets = fields
@@ -53,7 +53,6 @@ impl Program<'_> {
         let fields = self.layouts[layout].fields;
         let access = Access::new(fields);
         self.access_layout(layout);
-        let seek = self.seek_layout(layout);
 
         out.push_str("\n// Partial field access.\n");
         out.push_str("\nfunction __name(index: number): string {\n  switch (index) {\n");
@@ -127,20 +126,9 @@ export function select<K extends keyof __Current & string>(keys: readonly K[]) {
     return result as Pick<__Current, K>;
   };
 }
-
-export function seek<K extends keyof __Current & string>(
-  input: Input,
-  path: K,
-): __Current[K];
-export function seek(input: Input, path: string): unknown;
-export function seek(input: Input, path: string): unknown {
-  const names = path.split(".");
 "#,
         );
-        writeln!(out, "  {seek}(undefined, emptyTable, names, 0);").unwrap();
-        out.push_str("  const r = __openFrame(input);\n");
-        self.emit_seek_versions(out, layout, intern, &seek, compact);
-        out.push_str("  let value: unknown = __decodeFrame(r);\n  for (const name of names) value = object(value)[name];\n  return value;\n}\n");
+        self.emit_seek(out, layout, intern, compact);
         self.emit_row_access(out, layout, &access, intern);
     }
 
@@ -207,76 +195,5 @@ export function seek(input: Input, path: string): unknown {
         }
         out.push_str("  return invalid(\"Invalid Pojoc field index\");\n}\n");
         self.functions[id] = out;
-    }
-
-    fn seek_layout(&mut self, layout: usize) -> String {
-        let scope = self.layouts[layout].scope;
-        let (id, build) = self.reserve(Op::Read, scope, format!("seek:{layout}"));
-        let f = format!("__seek{id}");
-        if !build {
-            return f;
-        }
-        let access = Access::new(self.layouts[layout].fields);
-        let mut out = format!(
-            "function {f}(\n  r: Cursor | undefined,\n  table: ReadTable,\n  names: readonly string[],\n  depth: number,\n): unknown {{\n"
-        );
-        let seekable: Vec<_> = access
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| field.spec["seek"] == true)
-            .collect();
-        if !seekable.is_empty() {
-            self.imports.extend(["seekField", "startFields"]);
-            out.push_str("  const last = depth + 1 === names.length;\n  switch (names[depth]) {\n");
-            for (index, field) in seekable {
-                let key = literal(field.spec);
-                writeln!(out, "    case {key}: {{").unwrap();
-                let child = (field.bit.is_none()
-                    && tag(field.ty) == "record"
-                    && field.spec["lazy"] != true)
-                    .then(|| self.record(scope, field.ty, false));
-                let seek = child.map(|child| {
-                    self.access_layout(child);
-                    self.seek_layout(child)
-                });
-                if let Some(seek) = &seek {
-                    writeln!(out, "      if (!r) return last ? undefined : {seek}(r, table, names, depth + 1);").unwrap();
-                } else {
-                    out.push_str("      if (!last) return invalid(`Invalid nested path ${names.join(\".\")}`);\n      if (!r) return;\n");
-                }
-                writeln!(
-                    out,
-                    "      const scan = startFields(r, table, {}, {});",
-                    bitmap(&access.fields),
-                    access.width
-                )
-                .unwrap();
-                call(
-                    &mut out,
-                    6,
-                    "",
-                    "seekField",
-                    &[
-                        "scan",
-                        &index.to_string(),
-                        &access.offsets.len().to_string(),
-                        &format!("__offset{layout}"),
-                        &format!("__skipField{layout}"),
-                    ],
-                    ";",
-                );
-                if let Some(seek) = seek {
-                    writeln!(out, "      return last ? __get{layout}(scan, {index}) : {seek}(r, table, names, depth + 1);").unwrap();
-                } else {
-                    writeln!(out, "      return __get{layout}(scan, {index});").unwrap();
-                }
-                out.push_str("    }\n");
-            }
-            out.push_str("  }\n");
-        }
-        out.push_str("  return invalid(`Unknown seekable Pojoc path ${names.join(\".\")}`);\n}\n");
-        self.functions[id] = out;
-        f
     }
 }
