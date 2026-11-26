@@ -1,0 +1,74 @@
+name: Publish release crates
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag
+        required: true
+        type: string
+
+concurrency:
+  group: publish-crates-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable release tag such as v0.8.2" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish missing crate versions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          crates=(pojoc pojoc-compiler pojoc-build-macros pojoc-build pojoc-cli)
+          metadata=$(cargo metadata --locked --no-deps --format-version 1)
+          for crate in "${crates[@]}"; do
+            actual=$(jq -er --arg name "$crate" '.packages[] | select(.name == $name).version' <<< "$metadata")
+            if [[ "$actual" != "$version" ]]; then
+              echo "$crate is at $actual in $RELEASE_TAG; expected $version" >&2
+              exit 1
+            fi
+          done
+          for crate in "${crates[@]}"; do
+            status=$(curl --silent --show-error --retry 3 --output /dev/null \
+              --user-agent 'Pojoc release workflow (https://github.com/thorminate/pojoc)' \
+              --write-out '%{http_code}' "https://crates.io/api/v1/crates/$crate/$version")
+            case "$status" in
+              200) echo "$crate@$version is already published" ;;
+              404) cargo publish -p "$crate" ;;
+              *)
+                echo "crates.io returned HTTP $status for $crate@$version" >&2
+                exit 1
+                ;;
+            esac
+          done
