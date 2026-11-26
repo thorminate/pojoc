@@ -1798,7 +1798,7 @@ schema Test {
 // regression test: a union variant whose payload is a struct holding a `lazy`
 // field used to reach codegen and panic there (a raw Rust assert, not a
 // rendered schema error). Now generalized nested-type lazy support in
-// emit_type_readers (crates/build/src/codegen/decode.rs) makes this analyze
+// emit_type_readers (crates/compiler/src/codegen/decode.rs) makes this analyze
 // and generate cleanly.
 #[test]
 fn allows_lazy_field_inside_union_payload() {
@@ -1856,7 +1856,7 @@ schema Test {
 // contains) an `intern`-marked field used to be rejected outright at
 // analysis time, since union read_*/write_* functions never threaded the
 // intern-table parameter structs get. compute_intern_infected/
-// emit_union_readers/emit_union_writers (crates/build/src/codegen) now cover
+// emit_union_readers/emit_union_writers (crates/compiler/src/codegen) now cover
 // unions the same way structs always have.
 #[test]
 fn allows_interned_field_directly_as_union_payload() {

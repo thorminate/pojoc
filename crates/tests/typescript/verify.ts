@@ -227,7 +227,7 @@ const seekRetype = codecs.get("seek_retype");
 const retypeV1 = readFileSync(new URL("seek_retype-1.bin", dir));
 assert.equal(seekRetype.seek(trailingByte(retypeV1), "label"), "label");
 assert.throws(() => seekRetype.seek(retypeV1, "label.inner"), RangeError);
-for (const label of [null, "", "plain", "\uFEFFÅ🙂"]) {
+for (const label of [null, "", "plain", "12345678", "123456789", "abcdé", "\uFEFFÅ🙂"]) {
   const frame = seekRetype.encode(seekRetype.create({ id: 0xffff_ffff, label }));
   assert.equal(seekRetype.seek(frame, "id"), 0xffff_ffff);
   assert.equal(seekRetype.seek(frame, "label"), label);
@@ -240,10 +240,58 @@ assert.throws(() => seekRetype.seek(Buffer.concat([shortSeekText, seekText]), "l
 seekText[seekTextStart] = 0xff;
 assert.throws(() => seekRetype.seek(seekText, "label"), TypeError);
 
+const asciiLabel = "0123456789abcdefghijklmnopqrstuv";
+for (const label of [
+  ...[0, 1, 4, 15, 16, 17, 31, 32].map(length => asciiLabel.slice(0, length)),
+  asciiLabel + "w",
+  ...[0, 15, 16, 30].map(index => asciiLabel.slice(0, index) + "é" + asciiLabel.slice(index + 2)),
+  "\uFEFF" + asciiLabel.slice(0, 16),
+  "abc\0" + asciiLabel.slice(0, 16),
+]) {
+  const frame = seekRetype.encode(seekRetype.create({ label }));
+  assert.equal(seekRetype.decode(frame).label, label);
+}
+const asciiFrame = Buffer.from(seekRetype.encode(seekRetype.create({ label: asciiLabel })));
+const asciiLabelStart = asciiFrame.indexOf(asciiLabel, payloadOffset(asciiFrame));
+assert(asciiLabelStart >= payloadOffset(asciiFrame));
+for (const index of [0, 15, 16, 31]) {
+  const malformed = Buffer.from(asciiFrame);
+  malformed[asciiLabelStart + index] = 0xff;
+  assert.throws(() => seekRetype.decode(malformed), TypeError);
+}
+
 const edge = codecs.get("edge");
 assert.equal(edge.constants.pi_const, Math.PI);
 const edgeDefaults = edge.create();
+const seekWithInterns = edge.create({
+  seek_tag: 0x1234_5678,
+  seek_label: "lookup",
+  interned_tags: ["x".repeat(160), ...Array.from({ length: 256 }, (_, i) => `tag-${i}`)],
+});
+for (const version of [6, 8]) {
+  const frame = edge.encodeForVersion(seekWithInterns, version);
+  assert.equal(edge.seek(frame, "seek_tag"), seekWithInterns.seek_tag);
+  assert.equal(edge.seek(frame, "seek_label"), seekWithInterns.seek_label);
+  const truncatedTable = withPayload(frame, Uint8Array.of(1, 2, 0x61));
+  assert.throws(() => edge.seek(truncatedTable, "seek_tag"), RangeError);
+  const invalidTable = withPayload(frame, Uint8Array.of(127, 2, 0x61));
+  assert.throws(() => edge.seek(invalidTable, "seek_tag"), /Invalid Pojoc intern table length/);
+}
 const decodedDefaults = edge.decode(edge.encode(edgeDefaults));
+const mapFrame = Buffer.from(edge.encode(edge.create({
+  basic_map: new Map([
+    ["dupe-key-alpha", "first"],
+    ["other-key", "middle"],
+    ["dupe-key-bravo", "last"],
+  ]),
+})));
+const duplicateKeyStart = mapFrame.indexOf("dupe-key-bravo", payloadOffset(mapFrame));
+assert(duplicateKeyStart >= payloadOffset(mapFrame));
+mapFrame.write("dupe-key-alpha", duplicateKeyStart);
+assert.deepEqual([...edge.decode(mapFrame).basic_map], [
+  ["dupe-key-alpha", "last"],
+  ["other-key", "middle"],
+]);
 const edgeCollections = edgeWithCollections(decodedDefaults);
 protobufFixture(protoEdge, edge.decode(edge.encode(edgeCollections)));
 function varintBytes(value: bigint): number[] {

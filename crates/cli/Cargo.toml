@@ -15,7 +15,7 @@ name = "pojoc"
 path = "src/main.rs"
 
 [dependencies]
-pojoc-build = { path = "../build", version = "0.8.1" }
+pojoc-build = { path = "../build", version = "0.8.2", default-features = false, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile = "3"

@@ -2477,7 +2477,7 @@ fn numeric_cast_ok(name: &str) -> bool {
 }
 
 /// true if retyping a field from `old_ty` to `new_ty` has a sound cast in
-/// `emit_cast_value` (crates/build/src/codegen/decode.rs) — keep in sync with
+/// `emit_cast_value` (crates/compiler/src/codegen/decode.rs) — keep in sync with
 /// what that function actually implements.
 fn retype_is_supported(old_ty: &ResolvedTypeRef, new_ty: &ResolvedTypeRef) -> bool {
     use ResolvedTypeRef::*;

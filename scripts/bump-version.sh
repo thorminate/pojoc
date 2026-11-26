@@ -31,11 +31,9 @@ sed "${sed_in_place[@]}" "s/\"version\": \".*\"/\"version\": \"$new_version\"/" 
 sed "${sed_in_place[@]}" "s/\"version\": \".*\"/\"version\": \"$new_version\"/" jetbrains-plugin/src/main/resources/textmate/pojoc/package.json
 sed "${sed_in_place[@]}" "s/^pluginVersion=.*/pluginVersion=$new_version/" jetbrains-plugin/gradle.properties
 
-# pojoc-cli pins its pojoc-build path dependency to an exact published
-# version (needed for `cargo publish`, which can't resolve bare path deps) —
-# version.workspace = true doesn't reach into this string, so it goes stale
-# on every bump unless updated here too.
-sed "${sed_in_place[@]}" -E "s/(pojoc-build = \{ path = \"\.\.\/build\", version = \")[^\"]*(\" \})/\1$new_version\2/" crates/cli/Cargo.toml
+# Published path dependencies also need their registry versions updated.
+sed "${sed_in_place[@]}" -E "s/(pojoc-(compiler|build-macros) = \{ path = \"[^\"]+\", version = \"=)[^\"]+/\1$new_version/" Cargo.toml
+sed "${sed_in_place[@]}" -E "s/(pojoc-build = \{ path = \"\.\.\/build\", version = \")[^\"]+/\1$new_version/" crates/cli/Cargo.toml
 
 # Update the npm package and its lockfile together.
 npm --prefix packages/runtime version "$new_version" --allow-same-version --no-git-tag-version --ignore-scripts

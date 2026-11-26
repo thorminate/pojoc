@@ -34,7 +34,16 @@ function writeVarint32(data: Uint8Array, pos: number, value: number): number {
 function decodeText(data: Uint8Array, start: number, end: number): string {
   if (end - start <= 32) {
     let value = "";
-    for (let i = start; i < end; i++) {
+    let i = start;
+    for (; i <= end - 16; i += 16) {
+      const first = data[i];
+      if (first >= 0x80) return textDecoder.decode(data.subarray(start, end));
+      const block = decodeAscii16(data, i, first);
+      if (block === undefined)
+        return textDecoder.decode(data.subarray(start, end));
+      value += block;
+    }
+    for (; i < end; i++) {
       const byte = data[i];
       if (byte >= 0x80) return textDecoder.decode(data.subarray(start, end));
       value += String.fromCharCode(byte);
@@ -42,6 +51,66 @@ function decodeText(data: Uint8Array, start: number, end: number): string {
     return value;
   }
   return textDecoder.decode(data.subarray(start, end));
+}
+
+function decodeAscii16(
+  data: Uint8Array,
+  start: number,
+  b0: number,
+): string | undefined {
+  const b1 = data[start + 1];
+  const b2 = data[start + 2];
+  const b3 = data[start + 3];
+  const b4 = data[start + 4];
+  const b5 = data[start + 5];
+  const b6 = data[start + 6];
+  const b7 = data[start + 7];
+  const b8 = data[start + 8];
+  const b9 = data[start + 9];
+  const b10 = data[start + 10];
+  const b11 = data[start + 11];
+  const b12 = data[start + 12];
+  const b13 = data[start + 13];
+  const b14 = data[start + 14];
+  const b15 = data[start + 15];
+  if (
+    (b0 |
+      b1 |
+      b2 |
+      b3 |
+      b4 |
+      b5 |
+      b6 |
+      b7 |
+      b8 |
+      b9 |
+      b10 |
+      b11 |
+      b12 |
+      b13 |
+      b14 |
+      b15) >=
+    0x80
+  )
+    return undefined;
+  return String.fromCharCode(
+    b0,
+    b1,
+    b2,
+    b3,
+    b4,
+    b5,
+    b6,
+    b7,
+    b8,
+    b9,
+    b10,
+    b11,
+    b12,
+    b13,
+    b14,
+    b15,
+  );
 }
 
 function cursorView(r: Cursor): DataView {
@@ -169,7 +238,10 @@ function readString(r: Cursor): string {
 }
 
 function readSeekString(r: Cursor): string {
-  return textDecoder.decode(readBytes(r, readLength(r)));
+  const count = readLength(r);
+  const start = takeBytes(r, count);
+  if (count <= 8) return decodeText(r.data, start, r.pos);
+  return textDecoder.decode(r.data.subarray(start, r.pos));
 }
 
 function readIntern(r: Cursor, table: ReadTable): string {

@@ -246,6 +246,75 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish "./$ARCHIVE" --tag "$DIST_TAG"
 
+  publish-npm-cli:
+    name: Publish CLI to npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: cli-bins/
+          merge-multiple: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Stage native npm packages
+        run: node packages/cli/stage.mjs "$GITHUB_REF_NAME" cli-bins npm-cli
+
+      - name: Pack the npm CLI and platform packages
+        run: |
+          mkdir "$RUNNER_TEMP/npm-cli"
+          for package in ./npm-cli/*; do
+            npm pack "$package" --pack-destination "$RUNNER_TEMP/npm-cli"
+          done
+
+      - name: Smoke-test the packed CLI
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archives="$RUNNER_TEMP/npm-cli"
+          consumer=$(mktemp -d)
+          cd "$consumer"
+          echo '{"private":true}' > package.json
+          npm install --offline --ignore-scripts --no-audit --no-fund \
+            "$archives/pojoc-cli-$version.tgz" "$archives/pojoc-cli-linux-x64-$version.tgz"
+          npm exec --offline -- pojoc --version
+          npm exec --offline -- pojoc build "$GITHUB_WORKSPACE/crates/tests/schemas/player.pojoc" --target typescript --standalone -o generated
+          test -s generated/player.ts
+
+      - name: Publish native packages and CLI
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dist_tag=latest
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then dist_tag=next; fi
+          for directory in ./npm-cli/cli-* ./npm-cli/cli; do
+            package="${directory##*/}"
+            name="@pojoc/$package"
+            archive="$RUNNER_TEMP/npm-cli/pojoc-$package-$version.tgz"
+            published=$(npm view "$name@$version" dist.integrity --prefer-online 2>/dev/null) || published=
+            if [[ -z "$published" ]]; then
+              npm publish "$archive" --tag "$dist_tag"
+              continue
+            fi
+            expected="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            if [[ "$published" != "$expected" ]]; then
+              echo "$name@$version is already published with different contents" >&2
+              exit 1
+            fi
+            echo "$name@$version is already published"
+          done
+
   publish-crates:
     name: Publish to crates.io
     needs: release
@@ -262,6 +331,16 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p pojoc
+
+      - name: Publish pojoc-compiler
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p pojoc-compiler
+
+      - name: Publish pojoc-build-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p pojoc-build-macros
 
       - name: Publish pojoc-build
         env:
