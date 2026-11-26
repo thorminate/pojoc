@@ -1,326 +1,65 @@
-﻿name: Release
+name: Verify npm trusted publishing
 
 on:
   push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
+    branches:
+      - codex/verify-npm-oidc
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.artifact_target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact_target: linux-x64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact_target: win32-x64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact_target: darwin-x64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact_target: darwin-arm64
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
-      - name: Build
-        run: |
-          cargo build --release --target ${{ matrix.target }} --package pojoc-cli
-          cargo build --release --target ${{ matrix.target }} --package pojoc-lsp
-
-      - name: Stage artifacts (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/pojoc \
-             dist/pojoc-${{ github.ref_name }}-${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/pojoc-lsp \
-             dist/pojoc-lsp-${{ github.ref_name }}-${{ matrix.target }}
-
-      - name: Stage artifacts (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/pojoc.exe \
-             dist/pojoc-${{ github.ref_name }}-${{ matrix.target }}.exe
-          cp target/${{ matrix.target }}/release/pojoc-lsp.exe \
-             dist/pojoc-lsp-${{ github.ref_name }}-${{ matrix.target }}.exe
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: bin-${{ matrix.artifact_target }}
-          path: dist/
-
-  package-vsix:
-    name: Package VSIX (${{ matrix.artifact }})
-    needs: build
+  verify:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - artifact: linux-x64
-            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-unknown-linux-gnu
-          - artifact: win32-x64
-            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
-          - artifact: darwin-x64
-            lsp_bin: pojoc-lsp-${{ github.ref_name }}-x86_64-apple-darwin
-          - artifact: darwin-arm64
-            lsp_bin: pojoc-lsp-${{ github.ref_name }}-aarch64-apple-darwin
-
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: bin-${{ matrix.artifact }}
-          path: lsp-bin/
-
-      - name: Copy LSP binary into extension
-        shell: bash
-        run: |
-          mkdir -p vscode-extension/bin
-          EXT=""
-          [[ "${{ matrix.artifact }}" == "win32-x64" ]] && EXT=".exe"
-          cp "lsp-bin/${{ matrix.lsp_bin }}" "vscode-extension/bin/pojoc-lsp${EXT}"
-          chmod +x "vscode-extension/bin/pojoc-lsp${EXT}"
-
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Install dependencies
-        run: pnpm install
-        working-directory: vscode-extension
-
-      - name: Compile extension
-        run: pnpm run compile
-        working-directory: vscode-extension
-
-      - name: Package VSIX
-        run: pnpm vsce package --target ${{ matrix.artifact }} --no-dependencies -o pojoc-vscode-extension-${{ github.ref_name }}-${{ matrix.artifact }}.vsix
-        working-directory: vscode-extension
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: vsix-${{ matrix.artifact }}
-          path: vscode-extension/pojoc-vscode-extension-${{ github.ref_name }}-${{ matrix.artifact }}.vsix
-
-  package-jetbrains:
-    name: Package JetBrains Plugin
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          path: lsp-bins/
-          merge-multiple: true
-
-      - name: Stage LSP binaries into plugin
-        shell: bash
-        run: |
-          mkdir -p jetbrains-plugin/src/main/resources/bin
-          cp lsp-bins/pojoc-lsp-* jetbrains-plugin/src/main/resources/bin/
-          chmod +x jetbrains-plugin/src/main/resources/bin/*
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - uses: gradle/actions/setup-gradle@v6
-
-      - name: Build plugin
-        working-directory: jetbrains-plugin
-        run: ./gradlew buildPlugin
-
-      - name: Stage JetBrains release archive
-        shell: bash
-        working-directory: jetbrains-plugin
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          shopt -s nullglob
-          archives=(build/distributions/*.zip)
-          if (( ${#archives[@]} != 1 )); then
-            echo "Expected exactly one JetBrains plugin ZIP" >&2
-            exit 1
-          fi
-          mkdir -p build/release
-          cp "${archives[0]}" "build/release/pojoc-jetbrains-plugin-${RELEASE_TAG}.zip"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: jetbrains-plugin
-          path: jetbrains-plugin/build/release/pojoc-jetbrains-plugin-${{ github.ref_name }}.zip
-          if-no-files-found: error
-
-  release:
-    name: Publish Release
-    needs: [build, package-vsix, package-jetbrains]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist/
-          merge-multiple: true
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS.txt
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete ${{ github.ref_name }} --yes 2>/dev/null || true
-          gh release create ${{ github.ref_name }} dist/** \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
-            ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
-
-  publish-npm:
-    name: Publish TypeScript runtime to npm
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        working-directory: packages/runtime
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org/
           package-manager-cache: false
 
-      - name: Install package build dependencies
-        run: npm ci
-
-      - name: Build the npm tarball for this tag
-        id: npm-pack
+      - name: Check npm token exchange
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          npm version "$version" --allow-same-version --no-git-tag-version
-          archive=$(npm pack --silent)
-          dist_tag=latest
-          if [[ "$version" == *-* ]]; then dist_tag=next; fi
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'JS'
+          const packages = [
+            "pojoc",
+            "@pojoc/cli",
+            "@pojoc/cli-darwin-arm64",
+            "@pojoc/cli-darwin-x64",
+            "@pojoc/cli-linux-x64",
+            "@pojoc/cli-win32-x64",
+          ];
+          const githubUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          githubUrl.searchParams.set("audience", "npm:registry.npmjs.org");
 
-      - name: Publish to npm
-        env:
-          ARCHIVE: ${{ steps.npm-pack.outputs.archive }}
-          DIST_TAG: ${{ steps.npm-pack.outputs.dist-tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish "./$ARCHIVE" --tag "$DIST_TAG"
+          for (const name of packages) {
+            const identity = await fetch(githubUrl, {
+              headers: {
+                Authorization: "Bearer " + process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+              },
+              redirect: "error",
+              signal: AbortSignal.timeout(15000),
+            });
+            if (!identity.ok) throw new Error("GitHub OIDC request returned HTTP " + identity.status);
+            const { value } = await identity.json();
+            if (!value) throw new Error("GitHub did not issue an OIDC identity token");
 
-  publish-npm-cli:
-    name: Publish CLI to npm
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: bin-*
-          path: cli-bins/
-          merge-multiple: true
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org/
-          package-manager-cache: false
-
-      - name: Stage native npm packages
-        run: node packages/cli/stage.mjs "$GITHUB_REF_NAME" cli-bins npm-cli
-
-      - name: Pack the npm CLI and platform packages
-        run: |
-          mkdir "$RUNNER_TEMP/npm-cli"
-          for package in ./npm-cli/*; do
-            npm pack "$package" --pack-destination "$RUNNER_TEMP/npm-cli"
-          done
-
-      - name: Smoke-test the packed CLI
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          archives="$RUNNER_TEMP/npm-cli"
-          consumer=$(mktemp -d)
-          cd "$consumer"
-          echo '{"private":true}' > package.json
-          npm install --offline --ignore-scripts --no-audit --no-fund \
-            "$archives/pojoc-cli-$version.tgz" "$archives/pojoc-cli-linux-x64-$version.tgz"
-          npm exec --offline -- pojoc --version
-          npm exec --offline -- pojoc build "$GITHUB_WORKSPACE/crates/tests/schemas/player.pojoc" --target typescript --standalone -o generated
-          test -s generated/player.ts
-
-      - name: Publish native packages and CLI
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          dist_tag=latest
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then dist_tag=next; fi
-          for directory in ./npm-cli/cli-* ./npm-cli/cli; do
-            package="${directory##*/}"
-            name="@pojoc/$package"
-            archive="$RUNNER_TEMP/npm-cli/pojoc-$package-$version.tgz"
-            published=$(npm view "$name@$version" dist.integrity --prefer-online 2>/dev/null) || published=
-            if [[ -z "$published" ]]; then
-              npm publish "$archive" --tag "$dist_tag"
-              continue
-            fi
-            expected="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
-            if [[ "$published" != "$expected" ]]; then
-              echo "$name@$version is already published with different contents" >&2
-              exit 1
-            fi
-            echo "$name@$version is already published"
-          done
-
-  publish-crates:
-    name: Publish to crates.io
-    needs: release
-    if: ${{ !contains(github.ref_name, '-') }}
-    uses: ./.github/workflows/publish-crates.yml
-    with:
-      tag: ${{ github.ref_name }}
-    secrets:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+            const packageName = name.replace("/", "%2f");
+            const response = await fetch(
+              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/" + packageName,
+              {
+                method: "POST",
+                headers: { Authorization: "Bearer " + value },
+                redirect: "error",
+                signal: AbortSignal.timeout(15000),
+              },
+            );
+            const result = response.ok ? await response.json() : null;
+            if (result?.token_type === "oidc" && typeof result.token === "string" && result.token) {
+              console.log(name + " — npm accepted the workflow identity");
+            } else {
+              console.error(name + " — npm token exchange returned HTTP " + response.status);
+              process.exitCode = 1;
+            }
+          }
+          JS
